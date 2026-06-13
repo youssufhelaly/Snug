@@ -19,9 +19,17 @@ deposit-safe.
 ## Tech stack — do not deviate without asking
 - Swift 5.10+, SwiftUI for all UI
 - iOS 17.0 minimum deployment target
-- RoomPlan for room capture (LiDAR devices only — detect capability
-  at launch and show a graceful unsupported-device screen)
-- RealityKit for the 3D room view and furniture placement
+- Room capture is abstracted behind a `RoomCaptureMethod` protocol that
+  always produces our own `RoomModel`. Two conformers exist:
+  - `ManualARCaptureMethod` (DEFAULT) — AR-assisted corner tapping on
+    ARKit `ARWorldTrackingConfiguration`. No LiDAR; runs on any modern
+    iPhone. This is the device class we actually target.
+  - `RoomPlanCaptureMethod` — Apple RoomPlan / LiDAR sweep. Kept, but
+    offered only on LiDAR-capable Pro devices and never the default.
+  Detect capability at launch; show the graceful unsupported screen
+  only when neither method is available.
+- RealityKit for the live AR capture overlay and the 3D room view;
+  the post-capture floor-plan review is plain SwiftUI Canvas (2D).
 - SwiftData for local persistence (rooms, designs, saved items),
   using SwiftData's native VersionedSchema + SchemaMigrationPlan
   for model evolution. Do NOT add custom version fields to models.
@@ -112,12 +120,17 @@ health score, Android, iPad layouts, in-app checkout (V1 links out
 to retailer with disclosure), multi-room projects, photorealistic
 rendering, photographic inpainting, orbit reveal VIDEO export
 (image pair only in V1 — video is a separately scoped V1.1
-project), manual-dimensions mode for non-LiDAR devices (V2).
+project). NOTE: the old "manual-dimensions mode for non-LiDAR
+devices (V2)" item has been PULLED FORWARD and reframed — V1 now
+ships AR-assisted corner tapping (ManualARCaptureMethod) as the
+default capture path so non-Pro iPhones are first-class. Pure
+typed-dimensions entry with no AR remains out of scope.
 
 ## Testing & quality bar
 - Unit tests for all services using Swift Testing. FitService gets
-  the deepest coverage, driven by real serialized CapturedRoom
-  fixtures exported in Phase 0.
+  the deepest coverage, driven by serialized RoomModel fixtures
+  (exported from either capture method) plus the real CapturedRoom
+  fixtures from Phase 0 where available.
 - Each phase ends with a manual on-device test script.
 - Zero compiler warnings policy.
 - Run and fix the build before declaring any task done.

@@ -15,6 +15,41 @@
 
 ---
 
+## ⚠️ ADDENDUM — Capture pivot (2026-06): AR corner-tapping is now the default
+
+Since this pack was written, capture **pivoted away from LiDAR/RoomPlan as the
+primary path** so the app runs on non-Pro iPhones (the realistic ICP device).
+What changed in the actual build:
+
+- **`RoomCaptureMethod` protocol** abstracts capture; every method produces the
+  app's own **`RoomModel`** (floor-corner polygon, ceiling height, openings,
+  derived walls/dimensions). The editor, catalog, fit system, and accuracy
+  logger depend only on `RoomModel`, never on how it was measured.
+- **`ManualARCaptureMethod` (DEFAULT)** — ARKit `ARWorldTrackingConfiguration`
+  (no LiDAR): coaching to find the floor, tap-to-raycast each floor corner with
+  live markers + edge lengths, close the polygon, capture ceiling height by a
+  plane tap (with a **manual-entry fallback**, since non-LiDAR ceiling capture
+  is the one genuinely unreliable measurement), then optional door/window
+  tapping. ARKit tracking quality is surfaced and low confidence is warned, not
+  hidden.
+- **`RoomPlanCaptureMethod`** — the original LiDAR sweep, KEPT but demoted:
+  offered only on Pro devices, never the default. Its `CapturedRoom` is
+  converted into `RoomModel`. No RoomPlan code was deleted.
+- **Accuracy logger is now method-agnostic** — `GroundTruthView` reads
+  `RoomModel`, so tap-derived vs. tape-measured wall/diagonal/opening errors log
+  to the same CSV regardless of capture method (the "Method" column replaces the
+  old RoomPlan-confidence column, which is *more* useful: it lets you compare AR
+  vs. LiDAR accuracy directly).
+- Phase 0's accuracy gate is unchanged in spirit, but now you're validating the
+  **AR corner-tapping** accuracy distribution, not LiDAR's. The diagonal-error
+  proxy matters even more here.
+
+This addendum supersedes LiDAR-specific assumptions in the phase prompts below;
+read them as "the active capture method" rather than "RoomPlan" unless a prompt
+is explicitly about the RoomPlan conformer.
+
+---
+
 ## ⚠️ READ THIS FIRST — How to use this document
 
 **Do NOT paste this entire document as one prompt.** That's the #1 way AI-coded apps fail: you get a beautiful demo that collapses on the first real feature.
@@ -27,7 +62,10 @@ Instead:
 
 Prerequisites before your first prompt:
 - A Mac with Xcode installed (free)
-- An iPhone Pro with LiDAR (iPhone 12 Pro or newer Pro/Pro Max) — RoomPlan does not work in the simulator
+- Any modern iPhone with ARKit world tracking (roughly iPhone 8 / iOS 17+) for
+  the default AR corner-tapping capture — a LiDAR Pro is now OPTIONAL, only
+  needed to exercise the RoomPlan path. Neither ARKit nor RoomPlan runs in the
+  simulator, so capture testing is still on-device.
 - A tape measure. Seriously. Phase 0 needs ground truth.
 - An Apple Developer account (free tier is fine for device testing)
 - Claude Code installed and running in your project folder
