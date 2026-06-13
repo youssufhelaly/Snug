@@ -1,0 +1,134 @@
+# Snug — Project Context
+
+## What this app is
+Snug is a native iOS app for renters furnishing a new apartment.
+The core loop: scan your room (10-second LiDAR sweep) → clear out
+detected furniture → redesign in a playful stylized 3D view →
+toggle to a true-to-scale, true-color "buy mode" → purchase real
+furniture with an honest, uncertainty-aware fit check.
+
+The product thesis in one line: **trust is the foundation, fun is
+the brand.** Accurate geometry underneath, playful rendering on top.
+
+## Who it's for (V1)
+Urban renters, age 22–35, with a LiDAR-capable iPhone, furnishing
+a first or new apartment on a budget of roughly $500–$2,000.
+Everything in the catalog must be no-drill, no-paint, removable,
+deposit-safe.
+
+## Tech stack — do not deviate without asking
+- Swift 5.10+, SwiftUI for all UI
+- iOS 17.0 minimum deployment target
+- RoomPlan for room capture (LiDAR devices only — detect capability
+  at launch and show a graceful unsupported-device screen)
+- RealityKit for the 3D room view and furniture placement
+- SwiftData for local persistence (rooms, designs, saved items),
+  using SwiftData's native VersionedSchema + SchemaMigrationPlan
+  for model evolution. Do NOT add custom version fields to models.
+- No third-party dependencies in the core app. One exception is
+  pre-approved: the V1.1 video-export module may use a vetted
+  Swift Package if offscreen RealityKit→AVFoundation composition
+  proves too fragile by hand. Ask before adding it.
+- No backend in V1. Everything local. Catalog ships as a bundled
+  JSON + USDZ asset pack. Design models so a remote catalog can
+  replace the bundled one later.
+
+## Architecture rules
+- MVVM. Views are dumb. ViewModels are @Observable classes.
+  Business logic lives in plain services (RoomCaptureService,
+  FitService, CatalogService, DesignStore), injected via
+  environment.
+- One feature = one folder under /Features
+  (Capture, Editor, Catalog, Saved, Share, Onboarding).
+- /Core holds shared services, models, and the design system.
+- All RoomPlan / RealityKit work happens off the main thread
+  except final scene mutations.
+- Write code as if a second engineer joins next month: clear
+  naming, no clever tricks, doc comments on every service's
+  public API.
+
+## Design system — "playful but trustworthy"
+- Aesthetic: warm, rounded, optimistic. Think Headspace meets
+  Nintendo, NOT corporate furniture catalog.
+- Colors (define in Core/DesignSystem/Theme.swift as a single
+  source of truth):
+  - background: warm off-white #FAF7F2 (dark mode: #1C1A17)
+  - primary accent "Clay": #E8714A
+  - secondary "Sage": #7FA886
+  - ink (text): #2B2722 (dark mode: #F0EDE8)
+  - subtle: #8A847C
+- Typography: SF Rounded for headings and buttons, SF Pro for
+  body. Generous sizes — minimum body 16pt.
+- Corners: 16pt radius on cards, 24pt on sheets, fully rounded
+  pill buttons.
+- Motion: spring animations (response 0.4, damping 0.8) on every
+  state change. Bouncy and alive, never abrupt.
+- Haptics on every meaningful action (scan complete, item placed,
+  fit result shown).
+- Empty states and errors are friendly, never blank or technical.
+- Accessibility is not optional: Dynamic Type, VoiceOver labels on
+  all interactive elements, reduced-motion variants.
+
+## The two rendering modes (core product mechanic)
+- PLAY MODE (default): stylized rendering — soft pastel material
+  overrides, slightly exaggerated ambient lighting, simplified
+  shadows. Fun to look at, fast to render.
+- BUY MODE (toggle): TRUE-TO-SCALE, TRUE-COLOR. Catalog items
+  render with their real material colors from the catalog data,
+  neutral lighting, and visible dimension labels. We do not claim
+  or attempt photorealism in V1 — accuracy of size and color is
+  the promise, and stylization must never alter either in this
+  mode. One-tap toggle, always visible, cross-fade < 400ms.
+
+## The fit system (the trust layer — highest-stakes code in the app)
+- FitService computes placement results against REAL scanned
+  geometry, using ONE global error-margin constant in V1, set from
+  Phase 0's measured accuracy data. (Per-room, confidence-weighted
+  margins are a V2 idea — keep it in IDEAS.md.) It reports four
+  states:
+  1. "Fits with room to spare" — clearance > error margin × 2
+  2. "Fits" — clearance > error margin
+  3. "Too close to call — measure this wall" — clearance within
+     the error margin. We TELL the user to grab a tape measure.
+     This honesty IS the brand; never round it to a green check.
+  4. "Won't fit" — negative clearance beyond the error margin
+- FitService is pure, deterministic, and unit-tested against
+  serialized real-scan fixtures. No UI code inside it. Treat any
+  change to it as high-risk and test-first.
+
+## Hard rules
+- NEVER fake the scan. If RoomPlan fails or confidence is low,
+  say so and offer a rescan. No silently invented geometry.
+- Never display false precision. Dimensions shown to users are
+  rounded to the centimeter and accompanied by the fit state, not
+  presented as exact truth.
+- No dark patterns: no fake urgency, no hidden costs. Affiliate
+  relationships disclosed in UI copy.
+- Build offline-first. Fully usable with no network in V1.
+
+## Out of scope for V1 — do NOT build these even if tempted
+Creator marketplace, accounts/auth, co-living multiplayer, room
+health score, Android, iPad layouts, in-app checkout (V1 links out
+to retailer with disclosure), multi-room projects, photorealistic
+rendering, photographic inpainting, orbit reveal VIDEO export
+(image pair only in V1 — video is a separately scoped V1.1
+project), manual-dimensions mode for non-LiDAR devices (V2).
+
+## Testing & quality bar
+- Unit tests for all services using Swift Testing. FitService gets
+  the deepest coverage, driven by real serialized CapturedRoom
+  fixtures exported in Phase 0.
+- Each phase ends with a manual on-device test script.
+- Zero compiler warnings policy.
+- Run and fix the build before declaring any task done.
+
+## How to work with me
+- Before writing code for any task, give me a 5-line plan and wait
+  for my OK if the task touches more than 3 files.
+- After completing a task: summarize what changed, list files
+  touched, and give me the on-device test steps.
+- If you're uncertain about an iOS API's behavior, say so and
+  propose the safest approach — do not guess silently. This
+  matters most for RoomPlan, RealityKit offscreen rendering, and
+  AVFoundation, where confident hallucination is a known failure
+  mode.
