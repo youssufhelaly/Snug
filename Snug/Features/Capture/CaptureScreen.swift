@@ -132,8 +132,19 @@ final class RoomCaptureCoordinator: NSObject, RoomCaptureViewDelegate {
         return view
     }()
 
-    private var isCancelled = false
+    /// Once a scan attempt reaches any terminal outcome (success, failure, or
+    /// cancel) this is set, and every later callback is ignored. RoomPlan can
+    /// deliver `shouldPresent` and `didPresent`, and a cancel can race
+    /// processing — without this, the parent could receive both an
+    /// `onComplete` and an `onFailure` for one attempt.
+    private var hasFinished = false
     private var hasStarted = false
+
+    /// Backstop so the "Measuring your room…" overlay can never hang forever:
+    /// if RoomPlan never calls back after the sweep stops, surface a friendly
+    /// failure instead of a frozen screen.
+    private static let processingTimeout: TimeInterval = 30
+    private var timeoutTask: Task<Void, Never>?
 
     func startSessionIfNeeded() {
         guard !hasStarted else { return }
@@ -145,33 +156,62 @@ final class RoomCaptureCoordinator: NSObject, RoomCaptureViewDelegate {
     /// the delegate methods below.
     func finish() {
         captureView.captureSession.stop()
+        startProcessingTimeout()
     }
 
-    /// Abandons the scan: stops the session and reports `.cancelled`. The
-    /// `isCancelled` flag makes any late delegate callbacks no-ops.
+    /// Abandons the scan: stops the session and reports `.cancelled`.
     func cancel() {
-        isCancelled = true
         captureView.captureSession.stop(pauseARSession: true)
-        onFailure?(.cancelled)
+        deliverFailure(.cancelled)
+    }
+
+    // MARK: - Terminal delivery (fires at most once per attempt)
+
+    private func deliverSuccess(_ room: CapturedRoom) {
+        guard !hasFinished else { return }
+        // A scan with no walls and no floor isn't a room we can stand behind;
+        // per CLAUDE.md we'd rather tell the user and rescan than show an
+        // empty diorama or feed garbage geometry to FitService.
+        guard !room.walls.isEmpty || !room.floors.isEmpty else {
+            deliverFailure(.processingFailed("The scan didn't capture any walls or floor."))
+            return
+        }
+        hasFinished = true
+        timeoutTask?.cancel()
+        onComplete?(room)
+    }
+
+    private func deliverFailure(_ failure: CaptureFailure) {
+        guard !hasFinished else { return }
+        hasFinished = true
+        timeoutTask?.cancel()
+        onFailure?(failure)
+    }
+
+    private func startProcessingTimeout() {
+        timeoutTask = Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.processingTimeout * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            self?.deliverFailure(.processingFailed("Processing took too long. Try a slower, steadier sweep."))
+        }
     }
 
     // MARK: - RoomCaptureViewDelegate
 
     func captureView(shouldPresent roomDataForProcessing: CapturedRoomData, error: Error?) -> Bool {
-        guard !isCancelled else { return false }
+        guard !hasFinished else { return false }
         if let error {
-            onFailure?(.processingFailed(error.localizedDescription))
+            deliverFailure(.processingFailed(error.localizedDescription))
             return false
         }
         return true
     }
 
     func captureView(didPresent processedResult: CapturedRoom, error: Error?) {
-        guard !isCancelled else { return }
         if let error {
-            onFailure?(.processingFailed(error.localizedDescription))
+            deliverFailure(.processingFailed(error.localizedDescription))
         } else {
-            onComplete?(processedResult)
+            deliverSuccess(processedResult)
         }
     }
 

@@ -92,13 +92,7 @@ struct GroundTruthView: View {
         if !roomSamples.isEmpty {
             Section("Logged for this room") {
                 ForEach(roomSamples) { sample in
-                    VStack(alignment: .leading, spacing: 2) {
-                        Text("\(sample.type.label) — scanned \(SnugFormat.meters(sample.scannedMeters)), measured \(SnugFormat.meters(sample.measuredMeters))")
-                        Text("Error \(SnugFormat.errorCentimeters(sample.errorMeters)) · confidence \(sample.confidence)")
-                            .font(.subheadline)
-                            .foregroundStyle(.secondary)
-                    }
-                    .accessibilityElement(children: .combine)
+                    SampleRow(sample: sample)
                 }
                 .onDelete { offsets in
                     store.delete(ids: offsets.map { roomSamples[$0].id })

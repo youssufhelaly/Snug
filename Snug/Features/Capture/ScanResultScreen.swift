@@ -11,6 +11,7 @@ struct ScanResultScreen: View {
 
     @State private var shareItem: ShareItem?
     @State private var exportErrorMessage: String?
+    @State private var isExporting = false
 
     var body: some View {
         NavigationStack {
@@ -34,20 +35,7 @@ struct ScanResultScreen: View {
                         .fontWeight(.semibold)
                 }
             }
-            .sheet(item: $shareItem) { item in
-                ShareSheet(items: [item.url])
-            }
-            .alert(
-                "Export didn't work",
-                isPresented: Binding(
-                    get: { exportErrorMessage != nil },
-                    set: { if !$0 { exportErrorMessage = nil } }
-                )
-            ) {
-                Button("OK", role: .cancel) {}
-            } message: {
-                Text(exportErrorMessage ?? "")
-            }
+            .exportPresentation(shareItem: $shareItem, errorMessage: $exportErrorMessage)
         }
     }
 
@@ -57,13 +45,15 @@ struct ScanResultScreen: View {
                 Button {
                     export { try FixtureExporter.exportUSDZ(for: record) }
                 } label: {
-                    Label("Export USDZ", systemImage: "square.and.arrow.up")
+                    exportLabel("Export USDZ", systemImage: "square.and.arrow.up")
                 }
+                .disabled(isExporting)
                 Button {
                     export { try FixtureExporter.exportFixture(for: record) }
                 } label: {
-                    Label("Export test fixture (JSON)", systemImage: "doc.badge.gearshape")
+                    exportLabel("Export test fixture (JSON)", systemImage: "doc.badge.gearshape")
                 }
+                .disabled(isExporting)
                 NavigationLink {
                     GroundTruthView(record: record)
                 } label: {
@@ -71,19 +61,11 @@ struct ScanResultScreen: View {
                 }
             }
 
-            surfaceSection("Walls", surfaces: record.room.walls) { surface in
-                "\(SnugFormat.meters(surface.dimensions.x)) wide × \(SnugFormat.meters(surface.dimensions.y)) tall"
-            }
-            surfaceSection("Doors", surfaces: record.room.doors) { surface in
-                "\(SnugFormat.meters(surface.dimensions.x)) wide × \(SnugFormat.meters(surface.dimensions.y)) tall"
-            }
-            surfaceSection("Windows", surfaces: record.room.windows) { surface in
-                "\(SnugFormat.meters(surface.dimensions.x)) wide × \(SnugFormat.meters(surface.dimensions.y)) tall"
-            }
-            surfaceSection("Openings", surfaces: record.room.openings) { surface in
-                "\(SnugFormat.meters(surface.dimensions.x)) wide × \(SnugFormat.meters(surface.dimensions.y)) tall"
-            }
-            surfaceSection("Floor", surfaces: record.room.floors) { surface in
+            surfaceSection("Walls", singular: "Wall", surfaces: record.room.walls)
+            surfaceSection("Doors", singular: "Door", surfaces: record.room.doors)
+            surfaceSection("Windows", singular: "Window", surfaces: record.room.windows)
+            surfaceSection("Openings", singular: "Opening", surfaces: record.room.openings)
+            surfaceSection("Floor", singular: "Floor", surfaces: record.room.floors) { surface in
                 "\(SnugFormat.meters(surface.dimensions.x)) × \(SnugFormat.meters(surface.dimensions.y)) footprint"
             }
 
@@ -102,17 +84,24 @@ struct ScanResultScreen: View {
         .listStyle(.insetGrouped)
     }
 
+    /// `singular` is passed explicitly rather than derived by trimming an "s"
+    /// off the section title — that string trick mislabels irregular plurals.
+    /// `subtitle` defaults to the "W wide × H tall" form every surface but the
+    /// floor uses.
     @ViewBuilder
     private func surfaceSection(
         _ title: String,
+        singular: String,
         surfaces: [CapturedRoom.Surface],
-        subtitle: @escaping (CapturedRoom.Surface) -> String
+        subtitle: @escaping (CapturedRoom.Surface) -> String = { surface in
+            "\(SnugFormat.meters(surface.dimensions.x)) wide × \(SnugFormat.meters(surface.dimensions.y)) tall"
+        }
     ) -> some View {
         if !surfaces.isEmpty {
             Section(title) {
                 ForEach(Array(surfaces.enumerated()), id: \.element.identifier) { index, surface in
                     row(
-                        title: "\(title.hasSuffix("s") ? String(title.dropLast()) : title) \(index + 1)",
+                        title: "\(singular) \(index + 1)",
                         subtitle: subtitle(surface),
                         confidence: surface.confidence
                     )
@@ -139,11 +128,33 @@ struct ScanResultScreen: View {
         .accessibilityElement(children: .combine)
     }
 
-    private func export(_ makeFile: () throws -> URL) {
-        do {
-            shareItem = ShareItem(url: try makeFile())
-        } catch {
-            exportErrorMessage = error.localizedDescription
+    /// A row label that swaps in a spinner while an export is running, so the
+    /// (off-main) file work reads as "working," not "frozen."
+    @ViewBuilder
+    private func exportLabel(_ title: String, systemImage: String) -> some View {
+        if isExporting {
+            Label { Text(title) } icon: { ProgressView() }
+        } else {
+            Label(title, systemImage: systemImage)
+        }
+    }
+
+    /// Runs file generation off the main thread (USDZ export and the fixture
+    /// round-trip can take a noticeable beat on a large room — CLAUDE.md keeps
+    /// RoomPlan/RealityKit work off-main), then presents the share sheet back
+    /// on the main actor.
+    private func export(_ makeFile: @escaping () throws -> URL) {
+        guard !isExporting else { return }
+        isExporting = true
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = Result { try makeFile() }
+            DispatchQueue.main.async {
+                isExporting = false
+                switch result {
+                case .success(let url): shareItem = ShareItem(url: url)
+                case .failure(let error): exportErrorMessage = error.localizedDescription
+                }
+            }
         }
     }
 }

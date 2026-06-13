@@ -20,3 +20,31 @@ struct ShareSheet: UIViewControllerRepresentable {
 
     func updateUIViewController(_ controller: UIActivityViewController, context: Context) {}
 }
+
+extension View {
+    /// Standard presentation for the "generate a file, then share it (or
+    /// report why it failed)" pattern used by every export in the app: a
+    /// share sheet driven by `shareItem` and a friendly error alert driven by
+    /// `errorMessage`. Keeping it in one place means the export-failure copy
+    /// and behavior can't drift between screens.
+    func exportPresentation(
+        shareItem: Binding<ShareItem?>,
+        errorMessage: Binding<String?>
+    ) -> some View {
+        self
+            .sheet(item: shareItem) { item in
+                ShareSheet(items: [item.url])
+            }
+            .alert(
+                "Export didn't work",
+                isPresented: Binding(
+                    get: { errorMessage.wrappedValue != nil },
+                    set: { if !$0 { errorMessage.wrappedValue = nil } }
+                )
+            ) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text(errorMessage.wrappedValue ?? "")
+            }
+    }
+}

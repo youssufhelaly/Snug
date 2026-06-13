@@ -156,8 +156,17 @@ final class AccuracyStore {
     }
 
     /// Writes the CSV to a temporary file for the share sheet.
+    ///
+    /// The filename timestamp deliberately avoids colons: ISO8601's "HH:mm:ss"
+    /// is fine in the iOS temp dir but gets mangled or rejected when the user
+    /// saves the file to a destination that treats ":" as a path separator
+    /// (Files, AirDrop to a Mac). This CSV is an investor-data-room artifact —
+    /// it should arrive with a clean name.
     func writeCSVForExport() throws -> URL {
-        let stamp = ISO8601DateFormatter().string(from: Date())
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let stamp = formatter.string(from: Date())
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnugAccuracy-\(stamp).csv")
         try csvString().write(to: url, atomically: true, encoding: .utf8)

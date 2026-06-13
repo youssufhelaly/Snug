@@ -118,11 +118,14 @@ final class OrbitController: NSObject {
     private func frame(room: CapturedRoom) {
         var points: [SIMD3<Float>] = []
         let surfaces = room.walls + room.floors + room.doors + room.windows + room.openings
+        // Use each element's transformed corners, not just its center: a long
+        // wall centered at the origin still reaches metres in each direction,
+        // and framing on centers alone leaves the room's far ends clipped.
         for surface in surfaces {
-            points.append(surface.transform.translation)
+            points.append(contentsOf: corners(transform: surface.transform, dimensions: surface.dimensions))
         }
         for object in room.objects {
-            points.append(object.transform.translation)
+            points.append(contentsOf: corners(transform: object.transform, dimensions: object.dimensions))
         }
         guard let first = points.first else { return }
 
@@ -133,6 +136,24 @@ final class OrbitController: NSObject {
         let extent = simd_length(maxPoint - minPoint)
         radius = max(extent * 1.4, 3)
         radiusRange = max(extent * 0.3, 0.5)...max(extent * 4, 8)
+    }
+
+    /// The eight world-space corners of a transform's local bounding box.
+    /// A surface plane has near-zero depth, so its corners collapse to a
+    /// rectangle — exactly the span we want to frame.
+    private func corners(transform: simd_float4x4, dimensions: SIMD3<Float>) -> [SIMD3<Float>] {
+        let half = dimensions / 2
+        var result: [SIMD3<Float>] = []
+        for sx: Float in [-1, 1] {
+            for sy: Float in [-1, 1] {
+                for sz: Float in [-1, 1] {
+                    let local = SIMD4<Float>(sx * half.x, sy * half.y, sz * half.z, 1)
+                    let world = transform * local
+                    result.append(SIMD3(world.x, world.y, world.z))
+                }
+            }
+        }
+        return result
     }
 
     // MARK: - Gestures

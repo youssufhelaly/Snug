@@ -19,20 +19,7 @@ struct AccuracySummaryView: View {
         }
         .navigationTitle("Accuracy log")
         .navigationBarTitleDisplayMode(.inline)
-        .sheet(item: $shareItem) { item in
-            ShareSheet(items: [item.url])
-        }
-        .alert(
-            "Export didn't work",
-            isPresented: Binding(
-                get: { exportErrorMessage != nil },
-                set: { if !$0 { exportErrorMessage = nil } }
-            )
-        ) {
-            Button("OK", role: .cancel) {}
-        } message: {
-            Text(exportErrorMessage ?? "")
-        }
+        .exportPresentation(shareItem: $shareItem, errorMessage: $exportErrorMessage)
     }
 
     private var emptyState: some View {
@@ -103,13 +90,7 @@ struct AccuracySummaryView: View {
         let sorted = store.samples.sorted { $0.loggedAt > $1.loggedAt }
         return Section("Samples (\(sorted.count))") {
             ForEach(sorted) { sample in
-                VStack(alignment: .leading, spacing: 2) {
-                    Text("\(sample.type.label) — scanned \(SnugFormat.meters(sample.scannedMeters)), measured \(SnugFormat.meters(sample.measuredMeters))")
-                    Text("Error \(SnugFormat.errorCentimeters(sample.errorMeters)) · confidence \(sample.confidence) · \(sample.loggedAt.formatted(date: .abbreviated, time: .shortened))")
-                        .font(.subheadline)
-                        .foregroundStyle(.secondary)
-                }
-                .accessibilityElement(children: .combine)
+                SampleRow(sample: sample, showsDate: true)
             }
             .onDelete { offsets in
                 store.delete(ids: offsets.map { sorted[$0].id })
