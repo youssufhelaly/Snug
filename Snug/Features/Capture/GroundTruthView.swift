@@ -1,17 +1,17 @@
 import SwiftUI
-import RoomPlan
 import UIKit
 
-/// The tape-measure screen. After a scan, pick a wall, the room diagonal, or
-/// an opening, type in what the tape measure says, and the pair (scanned vs.
-/// measured) lands in the accuracy log. This is the data Phase 0 exists to
-/// collect.
+/// The tape-measure screen. After a capture, pick a wall, the room diagonal,
+/// or an opening, type in what the tape measure says, and the pair (captured
+/// vs. measured) lands in the accuracy log. This is the data Phase 0 exists to
+/// collect — and now it works for any capture method, since it reads the
+/// shared `RoomModel` rather than RoomPlan output directly.
 struct GroundTruthView: View {
-    let record: ScanRecord
+    let room: RoomModel
 
     @Environment(AccuracyStore.self) private var store
     @State private var measurementType: AccuracyStore.MeasurementType = .wall
-    @State private var selectedCandidateID: UUID?
+    @State private var selectedCandidateID: String?
     @State private var measuredText = ""
     @FocusState private var isMeasuredFieldFocused: Bool
 
@@ -28,7 +28,7 @@ struct GroundTruthView: View {
                 Text(typeHint)
             }
 
-            scannedSection
+            capturedSection
 
             if selectedCandidate != nil {
                 Section("Tape measure") {
@@ -40,14 +40,12 @@ struct GroundTruthView: View {
                     if let measured = measuredMeters, let candidate = selectedCandidate {
                         LabeledContent(
                             "Difference",
-                            value: SnugFormat.errorCentimeters(candidate.scannedMeters - measured)
+                            value: SnugFormat.errorCentimeters(Double(candidate.capturedMeters) - measured)
                         )
                     }
 
-                    Button("Log measurement") {
-                        logMeasurement()
-                    }
-                    .disabled(measuredMeters == nil)
+                    Button("Log measurement") { logMeasurement() }
+                        .disabled(measuredMeters == nil)
                 }
             }
 
@@ -55,22 +53,20 @@ struct GroundTruthView: View {
         }
         .navigationTitle("Ground truth")
         .navigationBarTitleDisplayMode(.inline)
-        .onChange(of: measurementType) {
-            selectedCandidateID = nil
-        }
+        .onChange(of: measurementType) { selectedCandidateID = nil }
     }
 
     // MARK: - Sections
 
     @ViewBuilder
-    private var scannedSection: some View {
+    private var capturedSection: some View {
         if candidates.isEmpty {
-            Section("Scanned value") {
-                Text("This scan didn't detect any \(measurementType.label.lowercased())s to compare against. Try another type, or rescan.")
+            Section("Captured value") {
+                Text("This room has no \(measurementType.label.lowercased())s to compare against. Try another type.")
                     .foregroundStyle(.secondary)
             }
         } else {
-            Section("Scanned value") {
+            Section("Captured value") {
                 if candidates.count > 1 {
                     Picker("Element", selection: selectionBinding) {
                         ForEach(candidates) { candidate in
@@ -79,8 +75,8 @@ struct GroundTruthView: View {
                     }
                 }
                 if let candidate = selectedCandidate {
-                    LabeledContent("Scanned", value: SnugFormat.meters(candidate.scannedMeters))
-                    LabeledContent("Confidence", value: candidate.confidence)
+                    LabeledContent("Captured", value: SnugFormat.meters(candidate.capturedMeters))
+                    LabeledContent("Method", value: methodLabel)
                 }
             }
         }
@@ -88,7 +84,7 @@ struct GroundTruthView: View {
 
     @ViewBuilder
     private var loggedSection: some View {
-        let roomSamples = store.samples(forRoom: record.id)
+        let roomSamples = store.samples(forRoom: room.id)
         if !roomSamples.isEmpty {
             Section("Logged for this room") {
                 ForEach(roomSamples) { sample in
@@ -103,67 +99,53 @@ struct GroundTruthView: View {
 
     // MARK: - Candidates
 
-    /// One selectable scanned element (a wall, the diagonal, or an opening).
     private struct Candidate: Identifiable {
-        let id: UUID
+        let id: String
         let label: String
-        let scannedMeters: Double
-        let confidence: String
+        let capturedMeters: Float
     }
 
     private var candidates: [Candidate] {
         switch measurementType {
         case .wall:
-            return record.room.walls.enumerated().map { index, wall in
+            return room.walls.map { wall in
                 Candidate(
-                    id: wall.identifier,
-                    label: "Wall \(index + 1) — \(SnugFormat.meters(wall.dimensions.x))",
-                    scannedMeters: Double(wall.dimensions.x),
-                    confidence: wall.confidence.snugLabel
+                    id: "wall-\(wall.id)",
+                    label: "Wall \(wall.id + 1) — \(SnugFormat.meters(wall.length))",
+                    capturedMeters: wall.length
                 )
             }
         case .diagonal:
-            guard let diagonal = record.room.scannedDiagonalMeters else { return [] }
-            // The record's own id doubles as a stable id for the single
-            // synthetic "diagonal" candidate.
-            return [
-                Candidate(
-                    id: record.id,
-                    label: "Room diagonal — \(SnugFormat.meters(diagonal))",
-                    scannedMeters: diagonal,
-                    confidence: record.room.scannedDiagonalConfidence?.snugLabel ?? "Unknown"
-                )
-            ]
+            guard room.floorCorners.count >= 2 else { return [] }
+            return [Candidate(
+                id: "diagonal",
+                label: "Room diagonal — \(SnugFormat.meters(room.longestDiagonal))",
+                capturedMeters: room.longestDiagonal
+            )]
         case .opening:
-            let groups: [(String, [CapturedRoom.Surface])] = [
-                ("Door", record.room.doors),
-                ("Window", record.room.windows),
-                ("Opening", record.room.openings),
-            ]
-            return groups.flatMap { name, surfaces in
-                surfaces.enumerated().map { index, surface in
-                    Candidate(
-                        id: surface.identifier,
-                        label: "\(name) \(index + 1) — \(SnugFormat.meters(surface.dimensions.x)) wide",
-                        scannedMeters: Double(surface.dimensions.x),
-                        confidence: surface.confidence.snugLabel
-                    )
-                }
+            return room.openings.enumerated().map { index, opening in
+                Candidate(
+                    id: "opening-\(opening.id.uuidString)",
+                    label: "\(opening.kind.label) \(index + 1) — \(SnugFormat.meters(opening.width)) wide",
+                    capturedMeters: opening.width
+                )
             }
         }
     }
 
-    /// Falls back to the first candidate so the screen is usable without an
-    /// explicit pick; the binding still tracks manual selections.
     private var selectedCandidate: Candidate? {
         candidates.first { $0.id == selectedCandidateID } ?? candidates.first
     }
 
-    private var selectionBinding: Binding<UUID?> {
-        Binding(
-            get: { selectedCandidate?.id },
-            set: { selectedCandidateID = $0 }
-        )
+    private var selectionBinding: Binding<String?> {
+        Binding(get: { selectedCandidate?.id }, set: { selectedCandidateID = $0 })
+    }
+
+    private var methodLabel: String {
+        switch room.provenance {
+        case .roomPlan: "LiDAR"
+        case .manualAR: "Manual AR"
+        }
     }
 
     private var typeHint: String {
@@ -188,11 +170,11 @@ struct GroundTruthView: View {
     private func logMeasurement() {
         guard let candidate = selectedCandidate, let measured = measuredMeters else { return }
         store.log(
-            roomID: record.id,
+            roomID: room.id,
             type: measurementType,
-            scannedMeters: candidate.scannedMeters,
+            scannedMeters: Double(candidate.capturedMeters),
             measuredMeters: measured,
-            confidence: candidate.confidence
+            confidence: methodLabel
         )
         measuredText = ""
         isMeasuredFieldFocused = false

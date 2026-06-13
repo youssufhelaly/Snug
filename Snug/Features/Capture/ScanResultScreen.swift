@@ -55,7 +55,9 @@ struct ScanResultScreen: View {
                 }
                 .disabled(isExporting)
                 NavigationLink {
-                    GroundTruthView(record: record)
+                    // Convert RoomPlan output into the shared RoomModel so the
+                    // accuracy logger is identical across capture methods.
+                    GroundTruthView(room: RoomModel(capturedRoom: record.room, id: record.id, capturedAt: record.capturedAt))
                 } label: {
                     Label("Log ground truth", systemImage: "ruler")
                 }

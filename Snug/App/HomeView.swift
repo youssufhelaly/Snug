@@ -1,25 +1,19 @@
 import SwiftUI
-import RoomPlan
 
-/// Phase-0 home screen: a capability gate, one big "Scan my room" button,
-/// and a link to the running accuracy log. Deliberately plain — Phase 0 is
-/// about proving the scan, not styling it.
+/// Home screen: pick a capture method and start. The AR-assisted "tap the
+/// corners" method is the default (it runs on any modern iPhone); LiDAR is
+/// offered as a higher-fidelity option only when the device supports it.
 struct HomeView: View {
-    @State private var isScanFlowPresented = false
+    @State private var activeCapture: ActiveCapture?
 
-    /// `RoomCaptureSession.isSupported` is false on non-LiDAR devices and in
-    /// the simulator. Checked once here so the unsupported path is a friendly
-    /// screen, not a crash mid-capture.
-    private var isRoomPlanSupported: Bool {
-        RoomCaptureSession.isSupported
-    }
+    private var methods: [any RoomCaptureMethod] { CaptureMethodRegistry.supported }
 
     var body: some View {
         NavigationStack {
-            if isRoomPlanSupported {
-                supportedHome
-            } else {
+            if methods.isEmpty {
                 UnsupportedDeviceView()
+            } else {
+                supportedHome
             }
         }
     }
@@ -36,22 +30,17 @@ struct HomeView: View {
             Text("Snug")
                 .font(.largeTitle.bold())
 
-            Text("Scan your room with a slow 10-second sweep.\nWe'll measure it for real.")
+            Text("Measure your room, then see what really fits.")
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
 
-            Button {
-                isScanFlowPresented = true
-            } label: {
-                Text("Scan my room")
-                    .font(.headline)
-                    .frame(maxWidth: .infinity)
-                    .padding(.vertical, 16)
+            VStack(spacing: 12) {
+                ForEach(methods, id: \.id) { method in
+                    methodButton(method, isPrimary: method.id == methods.first?.id)
+                }
             }
-            .buttonStyle(.borderedProminent)
             .padding(.horizontal, 32)
-            .accessibilityHint("Starts a LiDAR room scan")
 
             Spacer()
 
@@ -61,19 +50,45 @@ struct HomeView: View {
                 Label("Accuracy log", systemImage: "ruler")
             }
             .padding(.bottom, 16)
-            .accessibilityHint("Shows scanned versus tape-measured accuracy so far")
+            .accessibilityHint("Shows captured versus tape-measured accuracy so far")
         }
         .padding()
-        .navigationTitle("")
         .toolbar(.hidden, for: .navigationBar)
-        .fullScreenCover(isPresented: $isScanFlowPresented) {
-            ScanFlowView(onClose: { isScanFlowPresented = false })
+        .fullScreenCover(item: $activeCapture) { active in
+            RoomCaptureFlowView(method: active.method, onClose: { activeCapture = nil })
         }
+    }
+
+    @ViewBuilder
+    private func methodButton(_ method: any RoomCaptureMethod, isPrimary: Bool) -> some View {
+        Button {
+            activeCapture = ActiveCapture(method: method)
+        } label: {
+            VStack(spacing: 2) {
+                Text(isPrimary ? "Scan my room" : method.displayName)
+                    .font(.headline)
+                Text(method.summary)
+                    .font(.caption)
+                    .opacity(0.8)
+                    .multilineTextAlignment(.center)
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.vertical, 14)
+        }
+        .buttonStyle(.borderedProminent)
+        .tint(isPrimary ? .accentColor : .secondary)
+        .accessibilityHint(isPrimary ? "Starts capturing your room" : "Capture using \(method.displayName)")
     }
 }
 
-/// Friendly dead-end for devices without LiDAR (and the simulator).
-/// Per CLAUDE.md: graceful, honest, no technical jargon, no fake fallback.
+/// Identifiable box so a chosen capture method can drive `.fullScreenCover`.
+private struct ActiveCapture: Identifiable {
+    let id = UUID()
+    let method: any RoomCaptureMethod
+}
+
+/// Friendly dead-end for devices that support neither AR world tracking nor
+/// LiDAR (very old hardware). Per CLAUDE.md: graceful and honest.
 struct UnsupportedDeviceView: View {
     var body: some View {
         VStack(spacing: 16) {
@@ -82,10 +97,10 @@ struct UnsupportedDeviceView: View {
                 .foregroundStyle(.secondary)
                 .accessibilityHidden(true)
 
-            Text("Snug needs a Pro iPhone")
+            Text("This iPhone can't run Snug")
                 .font(.title2.bold())
 
-            Text("Room scanning uses the LiDAR sensor on iPhone 12 Pro and newer Pro models. This device doesn't have one, so Snug can't measure rooms here — and we'd rather not guess.")
+            Text("Snug measures rooms using AR, which needs a newer iPhone. This device doesn't support it — and we'd rather not guess at your room's size.")
                 .font(.body)
                 .multilineTextAlignment(.center)
                 .foregroundStyle(.secondary)
@@ -95,24 +110,26 @@ struct UnsupportedDeviceView: View {
     }
 }
 
-/// Container that walks one scan attempt through its whole life:
-/// capture → (failure | result). Lives inside a single full-screen cover so
-/// the transitions between states can't fight the presentation system.
-struct ScanFlowView: View {
+/// Walks one capture attempt through its life — capture → (failure | room) —
+/// for any `RoomCaptureMethod`. The method supplies the capture UI; the rest
+/// of the flow is identical regardless of how the room was measured.
+struct RoomCaptureFlowView: View {
+    let method: any RoomCaptureMethod
+    let onClose: () -> Void
+
     enum FlowState {
         case capturing
         case failed(CaptureFailure)
-        case completed(ScanRecord)
+        case completed(RoomModel)
     }
 
-    let onClose: () -> Void
     @State private var state: FlowState = .capturing
 
     var body: some View {
         switch state {
         case .capturing:
-            CaptureScreen(
-                onComplete: { record in state = .completed(record) },
+            method.makeCaptureView(
+                onComplete: { room in state = .completed(room) },
                 onFailure: { failure in state = .failed(failure) }
             )
         case .failed(let failure):
@@ -121,11 +138,11 @@ struct ScanFlowView: View {
                 onRetry: { state = .capturing },
                 onClose: onClose
             )
-        case .completed(let record):
-            ScanResultScreen(
-                record: record,
+        case .completed(let room):
+            RoomModelReviewScreen(
+                room: room,
                 onDone: onClose,
-                onRescan: { state = .capturing }
+                onRecapture: { state = .capturing }
             )
         }
     }

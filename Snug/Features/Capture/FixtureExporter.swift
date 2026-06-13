@@ -48,4 +48,18 @@ enum FixtureExporter {
         try record.room.export(to: url, exportOptions: .parametric)
         return url
     }
+
+    /// Serializes a `RoomModel` to JSON for sharing / as a test fixture. Works
+    /// for every capture method, since `RoomModel` is the shared type, and is
+    /// trivially round-trippable (plain Codable value type).
+    static func exportFixture(for room: RoomModel) throws -> URL {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        encoder.dateEncodingStrategy = .iso8601
+        let data = try encoder.encode(room)
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("SnugRoomModel-\(room.id.uuidString).json")
+        try data.write(to: url, options: .atomic)
+        return url
+    }
 }
