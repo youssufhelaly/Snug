@@ -76,7 +76,13 @@ struct ManualARCaptureView: View {
                 .multilineTextAlignment(.center)
 
             if controller.lastRaycastFailed {
-                Text("Couldn't read that point — aim at the floor and tap again.")
+                Text(raycastFailureMessage)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+
+            if let warning = controller.closeWarning {
+                Text(warning)
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -132,8 +138,8 @@ struct ManualARCaptureView: View {
                     .keyboardType(.decimalPad)
                     .textFieldStyle(.roundedBorder)
                 Button("Use") {
-                    if let cm = Double(manualHeightText.replacingOccurrences(of: ",", with: ".")), cm > 0 {
-                        controller.setManualCeilingHeight(meters: Float(cm / 100))
+                    if let meters = SnugFormat.meters(parsingCentimeters: manualHeightText) {
+                        controller.setManualCeilingHeight(meters: Float(meters))
                         manualHeightText = ""
                     }
                 }
@@ -202,6 +208,15 @@ struct ManualARCaptureView: View {
     private var edgeSummary: String {
         let lengths = controller.edgeLengths.map { SnugFormat.meters($0) }
         return "Walls: " + lengths.joined(separator: ", ")
+    }
+
+    private var raycastFailureMessage: String {
+        switch controller.step {
+        case .measuringHeight:
+            "That didn't look like the ceiling — aim where the wall meets the ceiling, or type the height below."
+        default:
+            "Couldn't read that point — aim at the floor and tap again."
+        }
     }
 
     // MARK: - Permission gate

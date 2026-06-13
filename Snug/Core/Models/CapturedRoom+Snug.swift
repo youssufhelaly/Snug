@@ -106,4 +106,14 @@ enum SnugFormat {
     static func percent(_ fraction: Double) -> String {
         String(format: "%.0f%%", fraction * 100)
     }
+
+    /// Parses a user-typed centimeter measurement (accepting "," or "." as the
+    /// decimal mark) into meters. Returns nil for empty, non-numeric, or
+    /// non-positive input. Single source of truth so every measurement entry
+    /// field validates identically.
+    static func meters(parsingCentimeters text: String) -> Double? {
+        let normalized = text.replacingOccurrences(of: ",", with: ".")
+        guard let centimeters = Double(normalized), centimeters > 0 else { return nil }
+        return centimeters / 100
+    }
 }

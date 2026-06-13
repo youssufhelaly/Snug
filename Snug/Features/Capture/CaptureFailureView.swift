@@ -96,7 +96,7 @@ struct CaptureFailureView: View {
 
     private var title: String {
         switch failure {
-        case .deviceUnsupported: "Snug needs a Pro iPhone"
+        case .deviceUnsupported: "This iPhone can't capture rooms"
         case .cameraPermissionDenied: "Snug needs the camera"
         case .cancelled: "Scan stopped"
         case .processingFailed: "That scan didn't come together"
@@ -106,7 +106,7 @@ struct CaptureFailureView: View {
     private var message: String {
         switch failure {
         case .deviceUnsupported:
-            "Room scanning uses the LiDAR sensor on iPhone 12 Pro and newer Pro models. This device doesn't have one, so Snug can't measure rooms here — and we'd rather not guess."
+            "Snug measures rooms using your camera and AR. This device doesn't support the capture method we tried — and we'd rather not guess at your room's size."
         case .cameraPermissionDenied:
             "Scanning works by looking at your room through the camera. Allow camera access in Settings and we're good to go."
         case .cancelled:

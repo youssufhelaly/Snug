@@ -49,17 +49,37 @@ enum FixtureExporter {
         return url
     }
 
+    /// The date strategy fixtures are written and must be read with. Pinned so
+    /// FitService tests decode `RoomModel` fixtures with a matching decoder
+    /// (`JSONDecoder` defaults to `.deferredToDate`, which would fail on the
+    /// ISO-8601 string we emit).
+    static let fixtureDateStrategy: (
+        encode: JSONEncoder.DateEncodingStrategy,
+        decode: JSONDecoder.DateDecodingStrategy
+    ) = (.iso8601, .iso8601)
+
     /// Serializes a `RoomModel` to JSON for sharing / as a test fixture. Works
-    /// for every capture method, since `RoomModel` is the shared type, and is
-    /// trivially round-trippable (plain Codable value type).
+    /// for every capture method, since `RoomModel` is the shared type. Like the
+    /// `CapturedRoom` export, the fixture is round-trip verified before the
+    /// share sheet opens — a fixture that can't re-import is worthless.
     static func exportFixture(for room: RoomModel) throws -> URL {
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-        encoder.dateEncodingStrategy = .iso8601
+        encoder.dateEncodingStrategy = fixtureDateStrategy.encode
         let data = try encoder.encode(room)
+
         let url = FileManager.default.temporaryDirectory
             .appendingPathComponent("SnugRoomModel-\(room.id.uuidString).json")
         try data.write(to: url, options: .atomic)
+
+        do {
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = fixtureDateStrategy.decode
+            _ = try decoder.decode(RoomModel.self, from: Data(contentsOf: url))
+        } catch {
+            try? FileManager.default.removeItem(at: url)
+            throw ExportError.fixtureVerificationFailed(underlying: error)
+        }
         return url
     }
 }

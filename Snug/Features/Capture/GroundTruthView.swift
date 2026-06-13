@@ -162,9 +162,7 @@ struct GroundTruthView: View {
     // MARK: - Logging
 
     private var measuredMeters: Double? {
-        let normalized = measuredText.replacingOccurrences(of: ",", with: ".")
-        guard let centimeters = Double(normalized), centimeters > 0 else { return nil }
-        return centimeters / 100
+        SnugFormat.meters(parsingCentimeters: measuredText)
     }
 
     private func logMeasurement() {

@@ -47,6 +47,14 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     @Published private(set) var pendingOpeningStart: PlanePoint?
     /// Which kind of opening the next tap-pair will create.
     @Published var openingKind: RoomOpening.Kind = .door
+    /// Set when an attempt to close the room was rejected (e.g. the corners are
+    /// nearly in a line, so there's no real floor area). Surfaced to the user
+    /// rather than silently producing a fake room.
+    @Published private(set) var closeWarning: String?
+
+    /// Smallest floor area we'll accept as a real room (m²). Below this the
+    /// corners are effectively collinear/coincident — honesty over a fake scan.
+    private static let minimumFloorArea: Float = 0.1
 
     /// Called once with the finished room.
     var onComplete: ((RoomModel) -> Void)?
@@ -164,15 +172,23 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     private func addCorner(at hit: SIMD3<Float>) {
         lastRaycastFailed = false
+        closeWarning = nil
         if floorY == nil { floorY = hit.y }
         corners.append(PlanePoint(x: hit.x, z: hit.z))
         placeCornerMarker(at: SIMD3(hit.x, floorY ?? hit.y, hit.z))
-        rebuildEdges()
+        // Only the one new trailing edge changed — append it rather than
+        // rebuilding every edge mesh on each tap during live AR.
+        if corners.count >= 2, let y = floorY {
+            let a = corners[corners.count - 2].simd2
+            let b = corners[corners.count - 1].simd2
+            addEdge(from: SIMD3(a.x, y, a.y), to: SIMD3(b.x, y, b.y))
+        }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
     func undoLastCorner() {
         guard !corners.isEmpty else { return }
+        closeWarning = nil
         corners.removeLast()
         if let marker = cornerMarkers.popLast() {
             marker.removeFromParent()
@@ -183,8 +199,28 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     func closePolygon() {
         guard canClosePolygon else { return }
+        // Reject a degenerate outline (collinear/coincident taps) instead of
+        // advancing with a zero-area "room" the fit system would trust.
+        guard Self.polygonArea(corners) >= Self.minimumFloorArea else {
+            closeWarning = "That doesn't look like a room yet — the corners are nearly in a line. Re-tap them around the floor."
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+            return
+        }
+        closeWarning = nil
         rebuildEdges(closed: true)
         step = .measuringHeight
+    }
+
+    /// Shoelace area of a floor polygon, winding-agnostic.
+    private static func polygonArea(_ corners: [PlanePoint]) -> Float {
+        guard corners.count >= 3 else { return 0 }
+        var sum: Float = 0
+        for i in corners.indices {
+            let a = corners[i]
+            let b = corners[(i + 1) % corners.count]
+            sum += a.x * b.z - b.x * a.z
+        }
+        return abs(sum) / 2
     }
 
     /// Manual escape from the floor-finding step: if coaching never completes
@@ -294,13 +330,20 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     // MARK: - ARSessionDelegate
 
     func session(_ session: ARSession, cameraDidChangeTrackingState camera: ARCamera) {
+        let quality: TrackingQuality
         switch camera.trackingState {
         case .normal:
-            trackingQuality = .good
+            quality = .good
         case .limited(let reason):
-            trackingQuality = .limited(Self.describe(reason))
+            quality = .limited(Self.describe(reason))
         case .notAvailable:
-            trackingQuality = .initializing
+            quality = .initializing
+        }
+        // ARSession delegate callbacks are not guaranteed to run on the main
+        // thread (the delegate queue defaults to a private queue), and
+        // @Published mutations must be made on the main thread — hop explicitly.
+        DispatchQueue.main.async { [weak self] in
+            self?.trackingQuality = quality
         }
     }
 
