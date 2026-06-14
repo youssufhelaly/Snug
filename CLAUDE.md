@@ -55,6 +55,97 @@ deposit-safe.
   naming, no clever tricks, doc comments on every service's
   public API.
 
+## Manual AR capture (ManualARCaptureMethod)
+`ManualARCaptureMethod` is a stateless factory; all per-session AR
+state lives in `ManualARCaptureController` (it owns the ARSession and
+must be an NSObject delegate). When this section says "on
+ManualARCaptureMethod" it means the manual-AR capture feature as a
+whole, implemented in that controller. Per the architecture rules,
+NONE of this state leaks into `RoomModel` except
+`resolvedCeilingHeight`, written once at scan close. `RoomModel`
+stores a single ceiling-height value and does not know how it was
+derived. `FitService` is unchanged.
+
+### Floor baseline — weighted average
+- `floorTaps: [(y, weight, anchorID, position)]` accumulates one
+  sample per accepted direct floor-corner tap. `sessionFloorY` is the
+  weight-weighted average of their `y`. High-wall taps NEVER append to
+  `floorTaps`.
+- Weights map to exactly three ARKit outcomes (no invented confidence
+  APIs): `ARPlaneAnchor` classified `.floor` → `1.0`; any other
+  detected plane anchor → `0.5`; estimated geometry only (no plane
+  anchor) → `0.2`.
+- Spatial deduplication runs BEFORE accumulating: a tap is kept only
+  if its XZ position is ≥ `0.5 m` from every existing tap, OR it
+  belongs to a plane anchor whose identifier isn't represented yet.
+  This exists so repeated taps in one spot can't dominate the weighted
+  average and bias (warp) every projected high-wall corner.
+- Floor is "locked" once the cumulative deduplicated weight exceeds
+  `2.0`. The UI shows "Floor locked" / "Tap a floor corner first".
+
+### High-wall projection (replaces two-tap intersection)
+- The "Corner blocked?" toggle is always tappable (never disabled);
+  when the floor isn't locked yet it shows a soft warning instead.
+- On a high-wall tap: retain the raycast's X/Z, snap Y to
+  `sessionFloorY`. Store as a corner — it's already floor-snapped.
+  `usedHighWallProjection` is set to `true` on this path.
+- Fallback (live, not dead code): if `sessionFloorY` is nil, use
+  `cameraTransform.columns.3.y - 1.4` and log a warning. The correct
+  camera-height accessor is `cameraTransform.columns.3.y`.
+- A dotted vertical alignment guide is drawn (2D SwiftUI overlay) from
+  the centre crosshair to the bottom of the viewport while aiming;
+  without it, horizontal aiming error warps the floor plan.
+- Two-tap intersection is deprecated (`@available(*, deprecated)`) and
+  removed from all active UI paths, but not deleted yet. It was
+  replaced because it needed two precise wall-parallel sightings —
+  fiddly to aim, prone to near-parallel lines and corners resolving
+  behind the user. High-wall projection needs a single tap.
+
+### Ceiling height — estimate + edit, never typed
+We never ask the user to type a number. The goal is a reasonable
+estimate plus an edit option, not perfect measurement — chasing exact
+ceiling measurement on non-LiDAR hardware is the one genuinely
+unreliable measurement, so a sensible default + a visible adjust
+control is more honest than fake precision.
+- Device split (do not unify): LiDAR is detected via
+  `ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)`.
+  LiDAR uses RoomPlan height when available, else mesh-anchor sampling
+  during look-up. Non-LiDAR uses feature points only (no mesh).
+- Passive estimation runs silently all scan on all devices into
+  `ceilingCandidates`. A candidate is kept only when its Y is ≥
+  `sessionFloorY + 1.8`, the camera has moved ≥ `0.4 m` horizontally
+  from prior contributing positions, and across ≥ 3 distinct camera
+  positions. Usable only at ≥ `12` candidates / ≥ 3 positions, else
+  discarded. Passive height = 95th-percentile candidate Y − floor.
+- The "look up" active step triggers automatically at close when the
+  passive estimate is nil or the passive camera spread is < `1.0 m`.
+  It shows a 1-second full-screen prompt (not skippable on first
+  trigger); LiDAR samples mesh hits (≥ 5 required, else falls through
+  to feature points), non-LiDAR collects ≥ 15 distinct feature points
+  (extends one extra second with "Keep pointing up…" if short, then
+  the default).
+- Final resolution, strict priority: (1) RoomPlan height (LiDAR),
+  (2) `activeCeilingHeight`, (3) `passiveCeilingHeight`,
+  (4) `2.5 m` default. Result stored in `resolvedCeilingHeight` and
+  written to `RoomModel` once. Confidence is high for RoomPlan/active,
+  low for passive-only/default.
+
+### Conditional drag-to-correct canvas
+- The canvas opens automatically after scan close when
+  `usedHighWallProjection`, the floor never locked (cumulative weight
+  < `2.0`), or the ceiling confidence is low. Together these three
+  flags drive the trigger. Otherwise the result screen shows an
+  unobtrusive "Review layout" button.
+- The canvas edits `position.x`/`position.z` on corners only (never
+  `position.y`); handles are keyed by stable `UUID`, never array
+  index. It includes the ceiling-height edit control (2.0–4.5 m, 0.1
+  steps); committing overwrites `resolvedCeilingHeight` and
+  re-extrudes the room.
+- `GeometryValidator` is a standalone, unit-testable struct (no UI).
+  It runs reactively on corner changes (never on button press) and
+  drives the commit button's disabled state and the error ribbon:
+  no self-intersection, every wall > 0.3 m, shoelace area > 1.0 m².
+
 ## Design system — "playful but trustworthy"
 - Aesthetic: warm, rounded, optimistic. Think Headspace meets
   Nintendo, NOT corporate furniture catalog.

@@ -175,4 +175,72 @@ enum Geometry2D {
         }
         return (lo, hi)
     }
+
+    /// Shoelace area (absolute value, winding-agnostic) of a floor polygon.
+    /// The single source of truth for floor area — `RoomModel.floorArea`, the
+    /// capture controller's close check, and `GeometryValidator` all call here.
+    static func polygonArea(_ polygon: [SIMD2<Float>]) -> Float {
+        guard polygon.count >= 3 else { return 0 }
+        var sum: Float = 0
+        for i in polygon.indices {
+            let a = polygon[i]
+            let b = polygon[(i + 1) % polygon.count]
+            sum += a.x * b.y - b.x * a.y
+        }
+        return abs(sum) / 2
+    }
+
+    /// Whether any pair of non-adjacent edges of the closed polygon cross — the
+    /// self-intersection ("bow-tie") test the drag-to-correct canvas gates on.
+    static func hasSelfIntersection(_ polygon: [SIMD2<Float>]) -> Bool {
+        let n = polygon.count
+        guard n >= 4 else { return false }
+        for i in 0..<n {
+            let a = polygon[i]
+            let b = polygon[(i + 1) % n]
+            for j in (i + 1)..<n {
+                // Skip adjacent segments (they legitimately share a vertex),
+                // including the wrap-around pair (last segment ↔ first segment).
+                if (j + 1) % n == i || (i + 1) % n == j { continue }
+                let c = polygon[j]
+                let d = polygon[(j + 1) % n]
+                if segmentsIntersect(a, b, c, d) { return true }
+            }
+        }
+        return false
+    }
+
+    // MARK: - Segment intersection (orientation method)
+
+    private static func segmentsIntersect(_ p1: SIMD2<Float>, _ p2: SIMD2<Float>,
+                                          _ p3: SIMD2<Float>, _ p4: SIMD2<Float>) -> Bool {
+        let d1 = orientation(p3, p4, p1)
+        let d2 = orientation(p3, p4, p2)
+        let d3 = orientation(p1, p2, p3)
+        let d4 = orientation(p1, p2, p4)
+
+        if ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+           ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0)) {
+            return true
+        }
+
+        // Collinear overlap cases.
+        if d1 == 0 && onSegment(p3, p4, p1) { return true }
+        if d2 == 0 && onSegment(p3, p4, p2) { return true }
+        if d3 == 0 && onSegment(p1, p2, p3) { return true }
+        if d4 == 0 && onSegment(p1, p2, p4) { return true }
+        return false
+    }
+
+    /// Signed area sign of triangle (a, b, c): >0 CCW, <0 CW, 0 collinear.
+    private static func orientation(_ a: SIMD2<Float>, _ b: SIMD2<Float>, _ c: SIMD2<Float>) -> Float {
+        (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)
+    }
+
+    /// Whether point `p` lies within the bounding box of segment a–b (used only
+    /// when the three points are already known collinear).
+    private static func onSegment(_ a: SIMD2<Float>, _ b: SIMD2<Float>, _ p: SIMD2<Float>) -> Bool {
+        min(a.x, b.x) <= p.x && p.x <= max(a.x, b.x) &&
+        min(a.y, b.y) <= p.y && p.y <= max(a.y, b.y)
+    }
 }

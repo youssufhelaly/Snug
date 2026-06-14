@@ -19,6 +19,10 @@ struct RoomShapeEditorView: View {
     let onConfirm: (RoomModel) -> Void
     /// Throws this capture away and restarts the sweep.
     let onRecapture: () -> Void
+    /// When true the ceiling value was estimated with low confidence, so the
+    /// edit control is framed as "Estimated … tap to adjust". Pure UI hint —
+    /// confidence never lives on `RoomModel`.
+    let ceilingConfidenceIsLow: Bool
 
     /// Working copy of the corners, each tagged with a stable id so a drag
     /// handle keeps its identity across SwiftUI updates. We deliberately do NOT
@@ -27,6 +31,13 @@ struct RoomShapeEditorView: View {
     /// fixtures); the count and order are fixed for a session, so a wrapper
     /// built once at open is enough.
     @State private var editable: [EditableCorner]
+    /// Editable ceiling height (m). Committing overwrites `RoomModel.ceilingHeight`
+    /// so the 3D view re-extrudes the walls to the corrected height.
+    @State private var ceilingHeight: Float
+    /// Live geometry-validity result, recomputed reactively on every drag.
+    @State private var validation: GeometryValidator.Result = .valid
+
+    private let validator = GeometryValidator()
 
     /// World-space bounds of the ORIGINAL corners, captured once. The render
     /// transform is derived from these (never from the live, dragged corners) so
@@ -35,15 +46,24 @@ struct RoomShapeEditorView: View {
 
     private let coordinateSpaceName = "roomPlanEditor"
 
+    /// Ceiling-height edit range and step (m), shared by canvas and result view.
+    private static let ceilingRange: ClosedRange<Float> = 2.0...4.5
+    private static let ceilingStep: Float = 0.1
+
     init(
         room: RoomModel,
         onConfirm: @escaping (RoomModel) -> Void,
-        onRecapture: @escaping () -> Void
+        onRecapture: @escaping () -> Void,
+        ceilingConfidenceIsLow: Bool = false
     ) {
         self.room = room
         self.onConfirm = onConfirm
         self.onRecapture = onRecapture
+        self.ceilingConfidenceIsLow = ceilingConfidenceIsLow
         _editable = State(initialValue: room.floorCorners.map { EditableCorner(point: $0) })
+        // Clamp into the edit range so the Stepper opens on a valid value even
+        // if a passive/default estimate landed just outside it.
+        _ceilingHeight = State(initialValue: min(max(room.ceilingHeight, Self.ceilingRange.lowerBound), Self.ceilingRange.upperBound))
         bounds = PlanBounds(corners: room.floorCorners)
     }
 
@@ -52,25 +72,32 @@ struct RoomShapeEditorView: View {
         zip(editable, room.floorCorners).contains { $0.point != $1 }
     }
 
+    /// Live corner positions, the value validation observes.
+    private var currentCorners: [PlanePoint] { editable.map(\.point) }
+
     var body: some View {
         NavigationStack {
             VStack(spacing: 0) {
                 instructions
                 planCanvas
+                errorRibbon
+                ceilingControl
                 footer
             }
             .navigationTitle("Fix the shape")
             .navigationBarTitleDisplayMode(.inline)
             .toolbar {
-                ToolbarItem(placement: .topBarLeading) {
-                    Button("Recapture", action: onRecapture)
-                        .accessibilityHint("Throws this capture away and starts a new one")
-                }
                 ToolbarItem(placement: .topBarTrailing) {
                     Button("Reset", action: resetEdits)
                         .disabled(!hasEdits)
                         .accessibilityHint("Moves every corner back to where it was captured")
                 }
+            }
+            .onAppear { validation = validator.validate(currentCorners) }
+            // Reactive validation — drives the button state and the error ribbon.
+            // Never runs on button press.
+            .onChange(of: currentCorners) { _, corners in
+                validation = validator.validate(corners)
             }
         }
     }
@@ -86,18 +113,75 @@ struct RoomShapeEditorView: View {
             .padding(.top, 8)
     }
 
-    private var footer: some View {
-        Button(action: confirm) {
-            Text("Confirm room shape")
-                .font(.headline)
-                .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
+    /// Error ribbon, visible only while the shape is invalid.
+    @ViewBuilder
+    private var errorRibbon: some View {
+        if let message = validation.errorMessage {
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .font(.footnote.weight(.medium))
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .background(.red.opacity(0.9))
+                .transition(.opacity)
+                .accessibilityLabel(message)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(.orange)
-        .clipShape(Capsule())
+    }
+
+    /// Always-visible ceiling-height editor. Committing re-extrudes the room.
+    private var ceilingControl: some View {
+        VStack(spacing: 6) {
+            HStack {
+                Text(ceilingConfidenceIsLow ? "Estimated ceiling height" : "Ceiling height")
+                    .font(.subheadline.weight(.medium))
+                Spacer()
+                Text(SnugFormat.meters(ceilingHeight))
+                    .font(.subheadline.monospacedDigit())
+                    .foregroundStyle(ceilingConfidenceIsLow ? .orange : .primary)
+            }
+            Stepper(
+                value: $ceilingHeight,
+                in: Self.ceilingRange,
+                step: Self.ceilingStep
+            ) {
+                if ceilingConfidenceIsLow {
+                    Text("Tap to adjust")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .accessibilityLabel("Ceiling height")
+            .accessibilityValue(SnugFormat.meters(ceilingHeight))
+        }
+        .padding(.horizontal)
+        .padding(.vertical, 8)
+    }
+
+    private var footer: some View {
+        HStack(spacing: 12) {
+            Button(role: .destructive, action: onRecapture) {
+                Text("Rescan")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+            }
+            .buttonStyle(.bordered)
+            .clipShape(Capsule())
+            .accessibilityHint("Discards this capture and starts a new scan")
+
+            Button(action: confirm) {
+                Text("Looks good")
+                    .font(.headline)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 14)
+            }
+            .buttonStyle(.borderedProminent)
+            .tint(.orange)
+            .clipShape(Capsule())
+            .disabled(!validation.isValid)
+            .accessibilityHint("Saves the room with these corner positions and ceiling height")
+        }
         .padding()
-        .accessibilityHint("Saves the room with these corner positions")
     }
 
     // MARK: - Plan
@@ -189,8 +273,12 @@ struct RoomShapeEditorView: View {
     }
 
     private func confirm() {
+        // Belt-and-braces: the button is already disabled while invalid, but
+        // never commit a shape the validator rejects.
+        guard validation.isValid else { return }
         var corrected = room
         corrected.floorCorners = editable.map(\.point)
+        corrected.ceilingHeight = ceilingHeight
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         onConfirm(corrected)
     }

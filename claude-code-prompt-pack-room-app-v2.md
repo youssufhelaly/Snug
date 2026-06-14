@@ -27,11 +27,28 @@ What changed in the actual build:
   logger depend only on `RoomModel`, never on how it was measured.
 - **`ManualARCaptureMethod` (DEFAULT)** — ARKit `ARWorldTrackingConfiguration`
   (no LiDAR): coaching to find the floor, tap-to-raycast each floor corner with
-  live markers + edge lengths, close the polygon, capture ceiling height by a
-  plane tap (with a **manual-entry fallback**, since non-LiDAR ceiling capture
-  is the one genuinely unreliable measurement), then optional door/window
+  live markers + edge lengths, close the polygon, then optional door/window
   tapping. ARKit tracking quality is surfaced and low confidence is warned, not
-  hidden.
+  hidden. Per-session AR state lives in `ManualARCaptureController` (the method
+  struct is a stateless factory); none of it leaks into `RoomModel` except the
+  resolved ceiling height. Three capability upgrades layer on top:
+  - **Floor baseline** — a weighted, spatially-deduplicated running average of
+    floor taps (`sessionFloorY`); floor "locks" once cumulative weight > 2.0.
+  - **High-wall projection** — a "Corner blocked?" toggle: tap the wall above a
+    blocked corner and we keep its X/Z but snap Y to the floor baseline (falling
+    back to `cameraTransform.columns.3.y − 1.4` if the floor isn't locked). A
+    dotted vertical guide keeps aim true. This *replaces* the old two-tap
+    wall-intersection solution (now deprecated, not deleted).
+  - **Automatic ceiling height** — estimated, never typed: a passive pass runs
+    all scan (feature points / mesh above floor + 1.8 m), with a conditional
+    1-second "point at the ceiling" look-up at close. Resolution priority:
+    RoomPlan (LiDAR) → active look-up → passive → 2.5 m default. The value is
+    always shown with an edit control on the correction canvas.
+  - **Conditional correction canvas** — the drag-to-correct floor-plan editor
+    opens automatically when high-wall projection was used, the floor never
+    locked, or the ceiling is low-confidence; otherwise the result screen offers
+    an unobtrusive "Review layout" button. A standalone `GeometryValidator`
+    (no self-intersection, walls > 0.3 m, area > 1.0 m²) gates the commit.
 - **`RoomPlanCaptureMethod`** — the original LiDAR sweep, KEPT but demoted:
   offered only on Pro devices, never the default. Its `CapturedRoom` is
   converted into `RoomModel`. No RoomPlan code was deleted.
