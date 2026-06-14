@@ -45,9 +45,9 @@ struct RoomModelReviewScreen: View {
             if let onEditShape {
                 Section {
                     Button(action: onEditShape) {
-                        Label("Edit room shape", systemImage: "hand.draw")
+                        Label("Review layout", systemImage: "hand.draw")
                     }
-                    .accessibilityHint("Reopens the floor plan so you can drag corners")
+                    .accessibilityHint("Reopens the floor plan so you can drag corners and adjust the ceiling height")
                 }
             }
 

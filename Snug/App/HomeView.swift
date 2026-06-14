@@ -120,9 +120,9 @@ struct RoomCaptureFlowView: View {
     enum FlowState {
         case capturing
         case failed(CaptureFailure)
-        /// Drag-to-correct shape editing, before the read-only review. Only the
-        /// manual-AR path lands here — its raycasts can snag on furniture, so
-        /// the user gets a chance to drag corners back to the wall.
+        /// Drag-to-correct shape editing. Reached via the "Review layout" button
+        /// on the result screen (the forced, conditional canvas is presented
+        /// inside the manual-AR capture view itself).
         case correcting(RoomModel)
         case completed(RoomModel)
     }
@@ -162,10 +162,14 @@ struct RoomCaptureFlowView: View {
         }
     }
 
-    /// Manual-AR captures route through the drag-to-correct editor first;
-    /// RoomPlan/LiDAR geometry is trusted straight to review (unchanged).
+    /// Every capture now lands on the review screen. The manual-AR path decides
+    /// *inside* its own capture view whether the drag-to-correct canvas is needed
+    /// (high-wall projection used, floor never locked, or low-confidence ceiling)
+    /// and presents it before completing, so the geometry arriving here is final.
+    /// The `.correcting` state below is reused only for the "Review layout"
+    /// re-open from the result screen.
     private func afterCapture(_ room: RoomModel) -> FlowState {
-        room.provenance == .manualAR ? .correcting(room) : .completed(room)
+        .completed(room)
     }
 }
 

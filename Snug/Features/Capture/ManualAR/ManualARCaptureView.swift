@@ -6,15 +6,50 @@ import AVFoundation
 /// The AR-assisted corner-tapping capture screen: a live ARKit camera view
 /// with a step-by-step overlay. Drives `ManualARCaptureController` and reports
 /// the finished `RoomModel` (or a failure) to its parent flow.
+///
+/// This view also owns the conditional drag-to-correct canvas (Part 3): when
+/// the controller flags a low-confidence capture (`needsCorrectionCanvas`) it
+/// presents `RoomShapeEditorView` automatically before completing; otherwise it
+/// completes straight through and the result screen offers an unobtrusive
+/// "Review layout" button.
 struct ManualARCaptureView: View {
     let onComplete: (RoomModel) -> Void
     let onFailure: (CaptureFailure) -> Void
 
     @StateObject private var controller = ManualARCaptureController()
     @State private var hasCameraAccess = false
-    @State private var manualHeightText = ""
+
+    /// Local post-capture phase. Capture stays in `.capturing` until the room is
+    /// resolved; a low-confidence capture detours through `.correcting`.
+    private enum Phase: Equatable {
+        case capturing
+        case correcting(RoomModel)
+    }
+    @State private var phase: Phase = .capturing
 
     var body: some View {
+        ZStack {
+            switch phase {
+            case .capturing:
+                captureContent
+            case .correcting(let room):
+                RoomShapeEditorView(
+                    room: room,
+                    onConfirm: { corrected in onComplete(corrected) },
+                    onRecapture: {
+                        controller.reset()
+                        phase = .capturing
+                    },
+                    ceilingConfidenceIsLow: controller.ceilingConfidence == .low
+                )
+            }
+        }
+        .task { await prepare() }
+    }
+
+    // MARK: - Capture content
+
+    private var captureContent: some View {
         ZStack {
             if hasCameraAccess {
                 ARViewContainer(controller: controller)
@@ -23,15 +58,27 @@ struct ManualARCaptureView: View {
                 Color.black.ignoresSafeArea()
             }
 
+            // Vertical alignment guide: without it, horizontal aiming error on a
+            // high-wall tap warps the floor plan. Shown only while aiming up.
+            if controller.isHighWallModeActive {
+                HighWallAlignmentGuide()
+                    .allowsHitTesting(false)
+                    .ignoresSafeArea()
+            }
+
             VStack {
                 topBar
                 trackingBanner
+                floorIndicator
                 Spacer()
                 instructionCard
             }
             .padding()
+
+            if controller.isLookingUp {
+                lookUpOverlay
+            }
         }
-        .task { await prepare() }
     }
 
     // MARK: - Chrome
@@ -64,6 +111,46 @@ struct ManualARCaptureView: View {
         }
     }
 
+    /// Always-visible floor-baseline confidence chip.
+    @ViewBuilder
+    private var floorIndicator: some View {
+        if controller.step == .markingCorners {
+            Label(
+                controller.floorLocked ? "Floor locked" : "Tap a floor corner first",
+                systemImage: controller.floorLocked ? "checkmark.seal.fill" : "scope"
+            )
+            .font(.caption.weight(.medium))
+            .padding(.horizontal, 12).padding(.vertical, 6)
+            .background(.thinMaterial, in: Capsule())
+            .foregroundStyle(controller.floorLocked ? .green : .secondary)
+            .padding(.top, 4)
+        }
+    }
+
+    // MARK: - Look-up overlay (Part 2)
+
+    private var lookUpOverlay: some View {
+        ZStack {
+            Color.black.opacity(0.6).ignoresSafeArea()
+            VStack(spacing: 16) {
+                Image(systemName: "arrow.up.to.line")
+                    .font(.system(size: 44))
+                    .symbolEffect(.bounce, options: .repeating)
+                Text(controller.lookUpPrompt)
+                    .font(.headline)
+                    .multilineTextAlignment(.center)
+                ProgressView()
+                    .progressViewStyle(.linear)
+                    .frame(maxWidth: 200)
+            }
+            .padding(28)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 24))
+            .padding(40)
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(controller.lookUpPrompt)
+    }
+
     // MARK: - Step-specific instruction card
 
     private var instructionCard: some View {
@@ -76,7 +163,7 @@ struct ManualARCaptureView: View {
                 .multilineTextAlignment(.center)
 
             if controller.lastRaycastFailed {
-                Text(raycastFailureMessage)
+                Text("Couldn't read that point — aim at the floor and tap again.")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }
@@ -105,13 +192,7 @@ struct ManualARCaptureView: View {
                     .disabled(!controller.trackingQuality.isUsable)
             }
         case .markingCorners:
-            if controller.intersectionStage == .inactive {
-                markingControls
-            } else {
-                intersectionControls
-            }
-        case .measuringHeight:
-            heightControls
+            markingControls
         case .markingOpenings:
             openingControls
         case .review:
@@ -119,7 +200,7 @@ struct ManualARCaptureView: View {
         }
     }
 
-    /// Normal corner-tapping controls plus the entry point to intersection mode.
+    /// Corner-tapping controls plus the high-wall "Corner blocked?" toggle.
     private var markingControls: some View {
         VStack(spacing: 10) {
             if !controller.edgeLengths.isEmpty {
@@ -135,67 +216,28 @@ struct ManualARCaptureView: View {
                     .fontWeight(.semibold)
                     .disabled(!controller.canClosePolygon)
             }
-            Button("Corner blocked?", systemImage: "rectangle.on.rectangle.angled") {
-                controller.beginIntersectionMode()
-            }
-            .font(.subheadline)
-            .accessibilityHint("Use this when furniture hides a corner: sight down each wall instead")
-        }
-    }
 
-    /// Two-tap wall-intersection controls (Solution 2).
-    private var intersectionControls: some View {
-        VStack(spacing: 10) {
-            Text(intersectionGuidance)
+            // High-wall toggle: always tappable. When the floor isn't locked yet
+            // we warn rather than disable (the projection still works off the
+            // camera-height fallback, just less accurately).
+            VStack(spacing: 4) {
+                Button(
+                    controller.isHighWallModeActive ? "Aiming at wall — tap above the corner" : "Corner blocked?",
+                    systemImage: controller.isHighWallModeActive ? "checkmark.rectangle.portrait" : "rectangle.on.rectangle.angled"
+                ) {
+                    controller.toggleHighWallMode()
+                }
                 .font(.subheadline)
-                .multilineTextAlignment(.center)
-            if let warning = controller.intersectionWarning {
-                Text(warning)
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            }
-            HStack {
-                Button("Cancel", systemImage: "xmark") { controller.cancelIntersectionMode() }
-                Spacer()
-                if controller.intersectionStage == .preview {
-                    Button("Use this corner", systemImage: "checkmark.circle.fill") {
-                        controller.confirmIntersectionCorner()
-                    }
-                    .fontWeight(.semibold)
+                .fontWeight(controller.isHighWallModeActive ? .semibold : .regular)
+                .accessibilityHint("Use this when furniture hides a corner: tap the wall directly above it")
+
+                if controller.isHighWallModeActive && !controller.floorLocked {
+                    Text("Best results after tapping a floor corner first.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                        .multilineTextAlignment(.center)
                 }
             }
-        }
-    }
-
-    private var intersectionGuidance: String {
-        switch controller.intersectionStage {
-        case .awaitingLeft: "Aim along the LEFT wall and tap the floor where you can see it."
-        case .awaitingRight: "Now aim along the RIGHT wall and tap the floor."
-        case .preview: "The green dot is the corner. Use it, or Cancel to retry."
-        case .inactive: ""
-        }
-    }
-
-    private var heightControls: some View {
-        VStack(spacing: 10) {
-            if let height = controller.ceilingHeight {
-                Text("Ceiling height: \(SnugFormat.meters(height))")
-                    .font(.subheadline.weight(.semibold))
-            }
-            HStack {
-                TextField("Height (cm)", text: $manualHeightText)
-                    .keyboardType(.decimalPad)
-                    .textFieldStyle(.roundedBorder)
-                Button("Use") {
-                    if let meters = SnugFormat.meters(parsingCentimeters: manualHeightText) {
-                        controller.setManualCeilingHeight(meters: Float(meters))
-                        manualHeightText = ""
-                    }
-                }
-            }
-            Button("Continue", systemImage: "arrow.right") { controller.confirmHeightAndContinue() }
-                .fontWeight(.semibold)
-                .disabled(controller.ceilingHeight == nil)
         }
     }
 
@@ -232,9 +274,7 @@ struct ManualARCaptureView: View {
     private var title: String {
         switch controller.step {
         case .findingFloor: "Point at the floor"
-        case .markingCorners:
-            controller.intersectionStage == .inactive ? "Tap each floor corner" : "Corner blocked"
-        case .measuringHeight: "Measure the ceiling"
+        case .markingCorners: controller.isHighWallModeActive ? "Tap the wall above the corner" : "Tap each floor corner"
         case .markingOpenings: "Mark doors & windows"
         case .review: "All set"
         }
@@ -245,11 +285,9 @@ struct ManualARCaptureView: View {
         case .findingFloor:
             "Slowly move your phone so it can find the floor."
         case .markingCorners:
-            controller.intersectionStage == .inactive
-                ? "Walk the room and tap where each wall meets the floor. Tap corners in order; close the loop when you're back to the start."
-                : "Furniture's hiding this corner — sight down each wall and we'll find where they cross."
-        case .measuringHeight:
-            "Aim where a wall meets the ceiling and tap — or type the height if it won't catch."
+            controller.isHighWallModeActive
+                ? "Aim at the wall straight above the hidden corner and tap — we drop it down to the floor for you."
+                : "Tap a clear floor corner first. If a corner is blocked by furniture, tap the wall above it instead."
         case .markingOpenings:
             "Tap the two bottom corners of each door or window. Skip with Done if you'd rather not."
         case .review:
@@ -262,15 +300,6 @@ struct ManualARCaptureView: View {
         return "Walls: " + lengths.joined(separator: ", ")
     }
 
-    private var raycastFailureMessage: String {
-        switch controller.step {
-        case .measuringHeight:
-            "That didn't look like the ceiling — aim where the wall meets the ceiling, or type the height below."
-        default:
-            "Couldn't read that point — aim at the floor and tap again."
-        }
-    }
-
     // MARK: - Permission gate
 
     private func prepare() async {
@@ -278,7 +307,15 @@ struct ManualARCaptureView: View {
             onFailure(.deviceUnsupported)
             return
         }
-        controller.onComplete = onComplete
+        // Route completion through the conditional-canvas decision rather than
+        // straight out: a low-confidence capture detours to the editor first.
+        controller.onComplete = { room in
+            if controller.needsCorrectionCanvas {
+                phase = .correcting(room)
+            } else {
+                onComplete(room)
+            }
+        }
 
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:
@@ -288,6 +325,35 @@ struct ManualARCaptureView: View {
             if !hasCameraAccess { onFailure(.cameraPermissionDenied) }
         default:
             onFailure(.cameraPermissionDenied)
+        }
+    }
+}
+
+/// A dotted vertical guide from the screen-centre crosshair down to the bottom,
+/// drawn as a plain 2D overlay. Helps the user keep the phone level when tapping
+/// a wall above a blocked corner so the projected X/Z lands true.
+private struct HighWallAlignmentGuide: View {
+    var body: some View {
+        GeometryReader { geo in
+            let centerX = geo.size.width / 2
+            let centerY = geo.size.height / 2
+            ZStack {
+                // Crosshair at centre.
+                Path { p in
+                    p.move(to: CGPoint(x: centerX - 12, y: centerY))
+                    p.addLine(to: CGPoint(x: centerX + 12, y: centerY))
+                    p.move(to: CGPoint(x: centerX, y: centerY - 12))
+                    p.addLine(to: CGPoint(x: centerX, y: centerY + 12))
+                }
+                .stroke(.white.opacity(0.9), lineWidth: 2)
+
+                // Dotted plumb line down to the bottom edge.
+                Path { p in
+                    p.move(to: CGPoint(x: centerX, y: centerY))
+                    p.addLine(to: CGPoint(x: centerX, y: geo.size.height))
+                }
+                .stroke(.white.opacity(0.8), style: StrokeStyle(lineWidth: 2, dash: [4, 6]))
+            }
         }
     }
 }
