@@ -8,6 +8,10 @@ struct RoomModelReviewScreen: View {
     let room: RoomModel
     let onDone: () -> Void
     let onRecapture: () -> Void
+    /// Re-opens the drag-to-correct editor on this room. Provided only for
+    /// capture methods that go through it (manual AR); nil hides the control so
+    /// Confirm is never a one-way door.
+    var onEditShape: (() -> Void)? = nil
 
     @State private var shareItem: ShareItem?
     @State private var exportErrorMessage: String?
@@ -38,6 +42,15 @@ struct RoomModelReviewScreen: View {
 
     private var detailList: some View {
         List {
+            if let onEditShape {
+                Section {
+                    Button(action: onEditShape) {
+                        Label("Edit room shape", systemImage: "hand.draw")
+                    }
+                    .accessibilityHint("Reopens the floor plan so you can drag corners")
+                }
+            }
+
             Section("Room") {
                 LabeledContent("Ceiling height", value: SnugFormat.meters(room.ceilingHeight))
                 LabeledContent("Diagonal", value: SnugFormat.meters(room.longestDiagonal))

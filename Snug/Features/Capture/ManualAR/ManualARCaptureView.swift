@@ -105,6 +105,23 @@ struct ManualARCaptureView: View {
                     .disabled(!controller.trackingQuality.isUsable)
             }
         case .markingCorners:
+            if controller.intersectionStage == .inactive {
+                markingControls
+            } else {
+                intersectionControls
+            }
+        case .measuringHeight:
+            heightControls
+        case .markingOpenings:
+            openingControls
+        case .review:
+            ProgressView("Saving room…")
+        }
+    }
+
+    /// Normal corner-tapping controls plus the entry point to intersection mode.
+    private var markingControls: some View {
+        VStack(spacing: 10) {
             if !controller.edgeLengths.isEmpty {
                 Text(edgeSummary)
                     .font(.caption.monospacedDigit())
@@ -118,12 +135,44 @@ struct ManualARCaptureView: View {
                     .fontWeight(.semibold)
                     .disabled(!controller.canClosePolygon)
             }
-        case .measuringHeight:
-            heightControls
-        case .markingOpenings:
-            openingControls
-        case .review:
-            ProgressView("Saving room…")
+            Button("Corner blocked?", systemImage: "rectangle.on.rectangle.angled") {
+                controller.beginIntersectionMode()
+            }
+            .font(.subheadline)
+            .accessibilityHint("Use this when furniture hides a corner: sight down each wall instead")
+        }
+    }
+
+    /// Two-tap wall-intersection controls (Solution 2).
+    private var intersectionControls: some View {
+        VStack(spacing: 10) {
+            Text(intersectionGuidance)
+                .font(.subheadline)
+                .multilineTextAlignment(.center)
+            if let warning = controller.intersectionWarning {
+                Text(warning)
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+            }
+            HStack {
+                Button("Cancel", systemImage: "xmark") { controller.cancelIntersectionMode() }
+                Spacer()
+                if controller.intersectionStage == .preview {
+                    Button("Use this corner", systemImage: "checkmark.circle.fill") {
+                        controller.confirmIntersectionCorner()
+                    }
+                    .fontWeight(.semibold)
+                }
+            }
+        }
+    }
+
+    private var intersectionGuidance: String {
+        switch controller.intersectionStage {
+        case .awaitingLeft: "Aim along the LEFT wall and tap the floor where you can see it."
+        case .awaitingRight: "Now aim along the RIGHT wall and tap the floor."
+        case .preview: "The green dot is the corner. Use it, or Cancel to retry."
+        case .inactive: ""
         }
     }
 
@@ -183,7 +232,8 @@ struct ManualARCaptureView: View {
     private var title: String {
         switch controller.step {
         case .findingFloor: "Point at the floor"
-        case .markingCorners: "Tap each floor corner"
+        case .markingCorners:
+            controller.intersectionStage == .inactive ? "Tap each floor corner" : "Corner blocked"
         case .measuringHeight: "Measure the ceiling"
         case .markingOpenings: "Mark doors & windows"
         case .review: "All set"
@@ -195,7 +245,9 @@ struct ManualARCaptureView: View {
         case .findingFloor:
             "Slowly move your phone so it can find the floor."
         case .markingCorners:
-            "Walk the room and tap where each wall meets the floor. Tap corners in order; close the loop when you're back to the start."
+            controller.intersectionStage == .inactive
+                ? "Walk the room and tap where each wall meets the floor. Tap corners in order; close the loop when you're back to the start."
+                : "Furniture's hiding this corner — sight down each wall and we'll find where they cross."
         case .measuringHeight:
             "Aim where a wall meets the ceiling and tap — or type the height if it won't catch."
         case .markingOpenings:

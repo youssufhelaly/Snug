@@ -20,3 +20,12 @@ Every "while we're at it..." idea lands here instead of in the build.
   error-margin constant from Phase 0's measured accuracy data.
 
 ## New ideas (append below, do not build)
+
+- **Openings follow dragged corners (V2)** — the manual-AR drag-to-correct
+  editor (`RoomShapeEditorView`) repositions floor corners only. Doors/windows
+  keep their captured world coordinates, so heavily re-dragging a wall can leave
+  an opening detached from it. V1 priority is wall geometry for the fit check;
+  re-projecting openings onto their nearest corrected wall is a V2 polish.
+- **Drag-to-correct for RoomPlan captures (V2?)** — the editor is gated to
+  `.manualAR` provenance. LiDAR geometry is trusted straight to review. If real
+  RoomPlan scans also bulge around furniture, open the editor to them too.

@@ -120,6 +120,10 @@ struct RoomCaptureFlowView: View {
     enum FlowState {
         case capturing
         case failed(CaptureFailure)
+        /// Drag-to-correct shape editing, before the read-only review. Only the
+        /// manual-AR path lands here — its raycasts can snag on furniture, so
+        /// the user gets a chance to drag corners back to the wall.
+        case correcting(RoomModel)
         case completed(RoomModel)
     }
 
@@ -129,7 +133,7 @@ struct RoomCaptureFlowView: View {
         switch state {
         case .capturing:
             method.makeCaptureView(
-                onComplete: { room in state = .completed(room) },
+                onComplete: { room in state = afterCapture(room) },
                 onFailure: { failure in state = .failed(failure) }
             )
         case .failed(let failure):
@@ -138,13 +142,30 @@ struct RoomCaptureFlowView: View {
                 onRetry: { state = .capturing },
                 onClose: onClose
             )
+        case .correcting(let room):
+            RoomShapeEditorView(
+                room: room,
+                onConfirm: { corrected in state = .completed(corrected) },
+                onRecapture: { state = .capturing }
+            )
         case .completed(let room):
             RoomModelReviewScreen(
                 room: room,
                 onDone: onClose,
-                onRecapture: { state = .capturing }
+                onRecapture: { state = .capturing },
+                // Manual-AR rooms can always hop back into the drag editor;
+                // confirming the shape is never a one-way door.
+                onEditShape: room.provenance == .manualAR
+                    ? { state = .correcting(room) }
+                    : nil
             )
         }
+    }
+
+    /// Manual-AR captures route through the drag-to-correct editor first;
+    /// RoomPlan/LiDAR geometry is trusted straight to review (unchanged).
+    private func afterCapture(_ room: RoomModel) -> FlowState {
+        room.provenance == .manualAR ? .correcting(room) : .completed(room)
     }
 }
 
