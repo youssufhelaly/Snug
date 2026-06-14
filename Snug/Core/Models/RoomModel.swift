@@ -147,14 +147,7 @@ struct RoomModel: Identifiable, Codable, Equatable {
 
     /// Floor area via the shoelace formula (absolute value, winding-agnostic).
     var floorArea: Float {
-        guard floorCorners.count >= 3 else { return 0 }
-        var sum: Float = 0
-        for i in floorCorners.indices {
-            let a = floorCorners[i]
-            let b = floorCorners[(i + 1) % floorCorners.count]
-            sum += a.x * b.z - b.x * a.z
-        }
-        return abs(sum) / 2
+        Geometry2D.polygonArea(floorCorners.map(\.simd2))
     }
 
     var perimeter: Float {

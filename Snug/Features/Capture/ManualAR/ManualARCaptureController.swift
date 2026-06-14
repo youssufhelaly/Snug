@@ -79,8 +79,10 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     /// the conditional correction-canvas trigger; never written to `RoomModel`.
     @Published private(set) var usedHighWallProjection = false
     /// True when the cumulative deduplicated floor-tap weight exceeds `2.0`.
-    /// Mirrors the private `floorTaps` weight sum for the SwiftUI overlay.
-    @Published private(set) var floorLocked = false
+    /// Derived from `floorTaps` (never stored) so it can't drift out of sync;
+    /// the SwiftUI overlay re-reads it whenever `corners` changes, which is the
+    /// same user action that mutates `floorTaps`.
+    var floorLocked: Bool { cumulativeFloorWeight > 2.0 }
 
     // MARK: Ceiling look-up (Part 2)
 
@@ -143,11 +145,16 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     // MARK: - Ceiling estimation (Part 2)
 
-    /// World-space high points observed passively throughout the scan, tagged
-    /// with the camera position at observation time (for spatial-spread gating).
-    private var ceilingCandidates: [(y: Float, cameraPosition: simd_float3)] = []
+    /// World-space high-point Y values observed passively throughout the scan.
+    /// Capped at `maxCeilingCandidates` so a long sweep can't grow this without
+    /// bound — a 95th-percentile only needs a modest sample.
+    private var ceilingCandidates: [Float] = []
     /// Distinct camera XZ positions that contributed passive candidates.
     private var passiveCameraPositions: [simd_float2] = []
+    /// The most recent camera position that contributed a passive candidate.
+    /// The spread gate compares against this (not against every prior position)
+    /// so revisiting an area doesn't permanently block further collection.
+    private var lastPassiveCameraPosition: simd_float2?
     /// Active "look up" hits: mesh-vertex Y values (LiDAR) above the threshold.
     private var activeMeshHits: [Float] = []
     /// Active "look up" feature points, deduplicated by ARKit identifier.
@@ -177,14 +184,24 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     private static let ceilingFloorClearance: Float = 1.8
     /// Hardcoded final fallback ceiling height (m).
     private static let defaultCeilingHeight: Float = 2.5
+    /// Upper bound on passively-collected candidates (memory cap; a 95th
+    /// percentile is stable well below this).
+    private static let maxCeilingCandidates = 600
 
     // MARK: - Correction-canvas trigger (Part 3)
 
     /// Whether the post-capture drag-to-correct canvas should open automatically.
-    /// True if high-wall projection was used, the floor never locked, or the
-    /// ceiling height is low-confidence.
+    /// True if high-wall projection was used, the floor never locked, the
+    /// ceiling height is low-confidence, OR the captured polygon fails geometry
+    /// validation (self-intersecting / degenerate). The geometry check matters
+    /// even on an otherwise high-confidence capture: raycasts can snag on
+    /// furniture and produce a bow-tie outline that must never reach the fit
+    /// system unreviewed.
     var needsCorrectionCanvas: Bool {
-        usedHighWallProjection || !floorLocked || ceilingConfidence == .low
+        usedHighWallProjection
+            || !floorLocked
+            || ceilingConfidence == .low
+            || !GeometryValidator().validate(corners).isValid
     }
 
     // MARK: - Derived helpers for the UI
@@ -202,6 +219,16 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     func attach(to arView: ARView) {
         self.arView = arView
         arView.session.delegate = self
+        // Pin delegate callbacks to the main queue. Every ceiling/floor/mesh
+        // collection buffer touched in those callbacks (ceilingCandidates,
+        // floorTaps, activeFeaturePoints, meshAnchors) is also read on the main
+        // actor by the close sequence (finish / runLookUp), so delivering the
+        // callbacks on main keeps all of that access on one thread instead of
+        // racing ARKit's default private delegate queue. Per-frame work here is
+        // light and gated (it only runs after the floor is established, is
+        // capped, and the one heavy pass — sampleMeshHits — is bounded), so it
+        // does not block rendering.
+        arView.session.delegateQueue = .main
 
         arView.session.run(makeConfiguration())
 
@@ -241,7 +268,7 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         lastRaycastFailed = false
         floorY = nil
         floorTaps = []
-        floorLocked = false
+        lastPassiveCameraPosition = nil
         isHighWallModeActive = false
         usedHighWallProjection = false
         ceilingCandidates = []
@@ -351,8 +378,11 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         let uniqueAnchor = hit.isPlaneAnchor && !floorTaps.contains { $0.anchorID == hit.anchorID }
         guard farEnough || uniqueAnchor else { return }
 
+        // Mutating @Published `corners` on the same tap drives the overlay
+        // refresh that re-reads the derived `floorLocked`; floorTaps itself is
+        // not published.
+        objectWillChange.send()
         floorTaps.append((y: hit.world.y, weight: hit.weight, anchorID: hit.anchorID, position: posXZ))
-        floorLocked = cumulativeFloorWeight > 2.0
     }
 
     private func flagRaycastFailure() {
@@ -389,8 +419,9 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         }
 
         usedHighWallProjection = true
-        if floorY == nil { floorY = baselineY }
         // X/Z from the wall tap, Y from the floor baseline — already snapped.
+        // `addCorner` is the single writer of `floorY` (it falls back to this
+        // baseline when there's no locked floor yet).
         addCorner(at: SIMD3(hit.world.x, baselineY, hit.world.z))
     }
 
@@ -439,7 +470,7 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         guard canClosePolygon else { return }
         // Reject a degenerate outline (collinear/coincident taps) instead of
         // advancing with a zero-area "room" the fit system would trust.
-        guard Self.polygonArea(corners) >= Self.minimumFloorArea else {
+        guard Geometry2D.polygonArea(corners.map(\.simd2)) >= Self.minimumFloorArea else {
             closeWarning = "That doesn't look like a room yet — the corners are nearly in a line. Re-tap them around the floor."
             UINotificationFeedbackGenerator().notificationOccurred(.warning)
             return
@@ -449,18 +480,6 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         // Ceiling is estimated automatically (no manual measuring step), so go
         // straight to optional openings.
         step = .markingOpenings
-    }
-
-    /// Shoelace area of a floor polygon, winding-agnostic.
-    private static func polygonArea(_ corners: [PlanePoint]) -> Float {
-        guard corners.count >= 3 else { return 0 }
-        var sum: Float = 0
-        for i in corners.indices {
-            let a = corners[i]
-            let b = corners[(i + 1) % corners.count]
-            sum += a.x * b.z - b.x * a.z
-        }
-        return abs(sum) / 2
     }
 
     /// Manual escape from the floor-finding step: if coaching never completes
@@ -475,21 +494,29 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     /// Passive collection runs silently every frame on all devices. A candidate
     /// is kept only when it is comfortably above the floor and the camera has
-    /// moved ≥ 0.4 m horizontally since the last contributing position — so the
-    /// estimate reflects real spatial spread, not one spot stared at repeatedly.
+    /// moved ≥ 0.4 m horizontally since the *last contributing* position — so
+    /// the estimate reflects real spatial spread, while still letting the user
+    /// sweep back over an area they already visited (a "far from every prior
+    /// position" gate would permanently sterilise revisited spots and starve
+    /// collection in a small room).
     private func collectPassiveCeiling(_ frame: ARFrame) {
-        guard let floor = sessionFloorY, let points = frame.rawFeaturePoints?.points else { return }
+        guard ceilingCandidates.count < Self.maxCeilingCandidates,
+              let floor = sessionFloorY,
+              let points = frame.rawFeaturePoints?.points else { return }
         let cam = frame.camera.transform.columns.3
         let camXZ = simd_float2(cam.x, cam.z)
-        guard passiveCameraPositions.allSatisfy({ simd_distance($0, camXZ) >= 0.4 }) else { return }
+        if let last = lastPassiveCameraPosition, simd_distance(last, camXZ) < 0.4 { return }
 
-        let camPos = simd_float3(cam.x, cam.y, cam.z)
         var added = false
         for p in points where p.y >= floor + Self.ceilingFloorClearance {
-            ceilingCandidates.append((y: p.y, cameraPosition: camPos))
+            guard ceilingCandidates.count < Self.maxCeilingCandidates else { break }
+            ceilingCandidates.append(p.y)
             added = true
         }
-        if added { passiveCameraPositions.append(camXZ) }
+        if added {
+            passiveCameraPositions.append(camXZ)
+            lastPassiveCameraPosition = camXZ
+        }
     }
 
     /// Passive estimate: 95th-percentile candidate Y minus the floor, but only
@@ -498,8 +525,7 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     private func computePassiveCeilingHeight() -> Float? {
         guard let floor = sessionFloorY else { return nil }
         guard ceilingCandidates.count >= 12, passiveCameraPositions.count >= 3 else { return nil }
-        let sorted = ceilingCandidates.map(\.y).sorted()
-        return Self.percentile(sorted, 0.95) - floor
+        return Self.percentile(ceilingCandidates.sorted(), 0.95) - floor
     }
 
     /// Largest pairwise distance between passive capture positions — the "spread"
@@ -533,20 +559,29 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     private func sampleMeshHits() {
         guard let floor = sessionFloorY else { return }
         activeMeshHits.removeAll()
-        for anchor in meshAnchors.values {
-            let geometry = anchor.geometry
-            let vertices = geometry.vertices
+        let threshold = floor + Self.ceilingFloorClearance
+        // This runs on the main actor at scan close, so it must stay cheap: a
+        // fully-meshed room can hold hundreds of thousands of vertices. We
+        // stride large meshes down to a bounded sample and stop once we have
+        // plenty of hits for a stable percentile.
+        let maxHits = Self.maxCeilingCandidates
+        sampling: for anchor in meshAnchors.values {
+            let vertices = anchor.geometry.vertices
             let buffer = vertices.buffer.contents()
-            for i in 0..<vertices.count {
+            let stride = max(1, vertices.count / 512)
+            var i = 0
+            while i < vertices.count {
                 let ptr = buffer.advanced(by: vertices.offset + vertices.stride * i)
                 // ARMeshGeometry packs vertices as three tightly-strided floats
                 // (stride 12); read them individually rather than as a 16-byte
                 // SIMD3 to avoid over-reading past the buffer.
                 let local = ptr.assumingMemoryBound(to: (Float, Float, Float).self).pointee
                 let world = anchor.transform * simd_make_float4(local.0, local.1, local.2, 1)
-                if world.y >= floor + Self.ceilingFloorClearance {
+                if world.y >= threshold {
                     activeMeshHits.append(world.y)
+                    if activeMeshHits.count >= maxHits { break sampling }
                 }
+                i += stride
             }
         }
     }
@@ -562,7 +597,10 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     /// Begins the close sequence: compute the passive estimate, optionally run
     /// the look-up step, resolve the final ceiling height, then build the room.
     func finish() {
-        guard corners.count >= 3 else { return }
+        // Guard against a double-tap of "Done": once we advance to `.review`
+        // the close sequence (and its async look-up Task) is already running,
+        // so a second call must not launch it again or emit a second room.
+        guard corners.count >= 3, step != .review else { return }
         step = .review
         passiveCeilingHeight = computePassiveCeilingHeight()
 
@@ -743,12 +781,9 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         case .notAvailable:
             quality = .initializing
         }
-        // ARSession delegate callbacks are not guaranteed to run on the main
-        // thread (the delegate queue defaults to a private queue), and
-        // @Published mutations must be made on the main thread — hop explicitly.
-        DispatchQueue.main.async { [weak self] in
-            self?.trackingQuality = quality
-        }
+        // Delegate callbacks are pinned to the main queue (see `attach`), so the
+        // @Published mutation is already on the main thread.
+        trackingQuality = quality
     }
 
     private static func describe(_ reason: ARCamera.TrackingState.Reason) -> String {

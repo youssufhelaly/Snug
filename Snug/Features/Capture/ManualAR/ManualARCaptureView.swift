@@ -309,7 +309,11 @@ struct ManualARCaptureView: View {
         }
         // Route completion through the conditional-canvas decision rather than
         // straight out: a low-confidence capture detours to the editor first.
-        controller.onComplete = { room in
+        // Capture `controller` weakly — the closure is stored ON the controller
+        // (controller.onComplete), so a strong capture would be a retain cycle
+        // that leaks the controller and all its AR state.
+        controller.onComplete = { [weak controller] room in
+            guard let controller else { return }
             if controller.needsCorrectionCanvas {
                 phase = .correcting(room)
             } else {
