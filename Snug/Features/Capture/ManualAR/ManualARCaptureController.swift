@@ -60,8 +60,14 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     @Published private(set) var openings: [RoomOpening] = []
     @Published private(set) var trackingQuality: TrackingQuality = .initializing
     @Published private(set) var lastRaycastFailed = false
+    /// Set when a placement tap was ignored because tracking wasn't reliable
+    /// enough yet. Surfaced so a tap that "does nothing" is explained, not silent.
+    @Published private(set) var tapNeedsBetterTracking = false
     /// First tap of an in-progress opening; the second tap completes it.
     @Published private(set) var pendingOpeningStart: PlanePoint?
+    /// Wall segment used by the first tap of an in-progress opening, so the
+    /// second tap can be snapped to the same wall instead of a nearby AR plane.
+    private var pendingOpeningWallIndex: Int?
     /// Which kind of opening the next tap-pair will create.
     @Published var openingKind: RoomOpening.Kind = .door
     /// Set when an attempt to close the room was rejected (e.g. the corners are
@@ -120,6 +126,18 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     private var cornerMarkers: [AnchorEntity] = []
     private let edgeContainer = AnchorEntity(world: .zero)
     private let previewContainer = AnchorEntity(world: .zero)
+
+    // Reused render resources. Every corner marker is the same sphere/material
+    // and every edge shares one material, so build them once. More importantly,
+    // the FIRST time RealityKit renders a `ModelEntity` with a `SimpleMaterial`
+    // it compiles that material's Metal shader synchronously on the main thread
+    // — the visible "first corner tap freezes" hitch. Creating these eagerly and
+    // pre-warming them at session start (see `prewarmRenderResources`) pays that
+    // cost during start-up, where a brief stall is invisible, not on the user's
+    // first tap.
+    private lazy var cornerMarkerMesh: MeshResource = .generateSphere(radius: 0.03)
+    private lazy var cornerMarkerMaterial = SimpleMaterial(color: .systemOrange, isMetallic: false)
+    private lazy var edgeMaterial = SimpleMaterial(color: .systemTeal, isMetallic: false)
 
     /// Whether this device can build a scene mesh (LiDAR). Drives the
     /// ceiling-estimation pipeline's device-capability split. Computed once.
@@ -182,10 +200,15 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     /// Floor-relative height below which a point is too low to be ceiling: it's
     /// furniture, a door frame, or a mid-wall feature.
     private static let ceilingFloorClearance: Float = 1.8
+    /// Plausible residential ceiling range accepted from the one-time look-up.
+    private static let ceilingEstimateRange: ClosedRange<Float> = 2.1...3.2
+    /// Minimum plausible ceiling feature points needed before trusting look-up.
+    private static let minimumActiveCeilingPoints = 60
+    /// Round accepted look-up estimates to 5 cm to avoid false precision.
+    private static let ceilingEstimateStep: Float = 0.05
     /// Hardcoded final fallback ceiling height (m).
     private static let defaultCeilingHeight: Float = 2.5
-    /// Upper bound on passively-collected candidates (memory cap; a 95th
-    /// percentile is stable well below this).
+    /// Upper bound on collected candidates (memory cap).
     private static let maxCeilingCandidates = 600
 
     // MARK: - Correction-canvas trigger (Part 3)
@@ -235,9 +258,40 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         arView.scene.addAnchor(edgeContainer)
         arView.scene.addAnchor(previewContainer)
         addCoachingOverlay(to: arView)
+        prewarmRenderResources(in: arView)
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         arView.addGestureRecognizer(tap)
+    }
+
+    /// Renders a zero-scale (invisible) marker for a moment at session start so
+    /// RealityKit generates the marker mesh and compiles the `SimpleMaterial`
+    /// shader up front. Without this the compile happens lazily on the first
+    /// corner tap and stalls the main thread — the reported first-tap freeze.
+    /// One warmed `SimpleMaterial` covers the edge material too (same shader).
+    private func prewarmRenderResources(in arView: ARView) {
+        let warmMarker = ModelEntity(mesh: cornerMarkerMesh, materials: [cornerMarkerMaterial])
+        warmMarker.scale = SIMD3(repeating: 0.001)
+        let warmEdge = ModelEntity(
+            mesh: .generateBox(size: SIMD3(0.1, 0.01, 0.01)),
+            materials: [edgeMaterial]
+        )
+        warmEdge.scale = SIMD3(repeating: 0.001)
+
+        let anchor = AnchorEntity(world: .zero)
+        anchor.addChild(warmMarker)
+        anchor.addChild(warmEdge)
+        arView.scene.addAnchor(anchor)
+        // Keep them in the scene long enough to render at least one frame (which
+        // triggers shader compilation), then drop them.
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            anchor.removeFromParent()
+        }
+
+        // The first haptics also have a small first-fire latency; warm the
+        // generators used by placement so the first taps feel instant.
+        UIImpactFeedbackGenerator(style: .light).prepare()
+        UIImpactFeedbackGenerator(style: .medium).prepare()
     }
 
     private func makeConfiguration() -> ARWorldTrackingConfiguration {
@@ -245,11 +299,9 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         // Horizontal planes anchor the floor; vertical planes help when marking
         // openings on walls.
         config.planeDetection = [.horizontal, .vertical]
-        // On LiDAR devices, build a scene mesh so the ceiling "look up" step can
-        // intersect real geometry rather than sparse feature points.
-        if supportsMesh {
-            config.sceneReconstruction = .mesh
-        }
+        // Avoid scene reconstruction during manual capture. It adds meaningful
+        // startup load on LiDAR devices, while this flow only needs plane
+        // raycasts plus feature points for the optional ceiling estimate.
         return config
     }
 
@@ -264,8 +316,10 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         corners = []
         openings = []
         pendingOpeningStart = nil
+        pendingOpeningWallIndex = nil
         closeWarning = nil
         lastRaycastFailed = false
+        tapNeedsBetterTracking = false
         floorY = nil
         floorTaps = []
         lastPassiveCameraPosition = nil
@@ -315,6 +369,12 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
             // Taps are ignored until the floor plane is established.
             break
         case .markingCorners:
+            // Refuse taps until tracking is reliable: a tap placed during
+            // `.limited`/`.initializing` tracking lands on a drifting estimated
+            // plane and produces the "dots don't connect" outline. CLAUDE.md:
+            // never hide low confidence — explain the refusal instead.
+            guard trackingQuality.isUsable else { rejectTapForTracking(); return }
+            tapNeedsBetterTracking = false
             if isHighWallModeActive {
                 handleHighWallTap(at: point, in: arView)
             } else if let hit = raycastFloor(from: point, in: arView) {
@@ -324,14 +384,27 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
                 flagRaycastFailure()
             }
         case .markingOpenings:
-            if let hit = raycastFloor(from: point, in: arView) {
-                addOpeningPoint(PlanePoint(x: hit.world.x, z: hit.world.z))
+            guard trackingQuality.isUsable else { rejectTapForTracking(); return }
+            tapNeedsBetterTracking = false
+            // Openings can be tapped on the wall face or along the floor/base.
+            // Try both explicitly, then snap the best hit to the captured wall
+            // outline so ARKit's detected wall/floor plane drift does not shift
+            // the saved door/window.
+            if let rawPoint = raycastOpeningPoint(from: point, in: arView) {
+                addOpeningPoint(rawPoint)
             } else {
                 flagRaycastFailure()
             }
         case .review:
             break
         }
+    }
+
+    /// Ignore a placement tap that arrived while tracking wasn't reliable, and
+    /// surface why (the dot would otherwise drift). Cleared on the next good tap.
+    private func rejectTapForTracking() {
+        tapNeedsBetterTracking = true
+        UINotificationFeedbackGenerator().notificationOccurred(.warning)
     }
 
     /// A raycast onto a horizontal surface, tagged with the floor-tap weight and
@@ -352,19 +425,38 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     /// - any other detected plane anchor → `0.5`
     /// - estimated geometry only (no plane anchor) → `0.2`
     private func raycastFloor(from point: CGPoint, in arView: ARView) -> FloorRaycast? {
-        let results = arView.raycast(from: point, allowing: .estimatedPlane, alignment: .horizontal)
-        guard let result = results.first else { return nil }
-        let w = result.worldTransform.columns.3
-        let world = SIMD3(w.x, w.y, w.z)
+        // Prefer real detected geometry over the feature-point estimate. A pure
+        // `.estimatedPlane` raycast (the old behaviour) drifts and never carries
+        // an `ARPlaneAnchor`, so the floor-classified 1.0 weight almost never
+        // fired and the floor barely locked. Try, in order:
+        //   1. `.existingPlaneGeometry` — exact detected floor patch, most
+        //      accurate, and carries the plane anchor for proper weighting.
+        //   2. `.existingPlaneInfinite` — extends that plane so far corners
+        //      beyond the resolved patch still land at the true floor height.
+        //   3. `.estimatedPlane` — last-resort feature-point estimate (0.2).
+        let targets: [ARRaycastQuery.Target] = [
+            .existingPlaneGeometry,
+            .existingPlaneInfinite,
+            .estimatedPlane,
+        ]
+        for target in targets {
+            guard let result = arView.raycast(from: point, allowing: target, alignment: .horizontal).first else { continue }
+            let w = result.worldTransform.columns.3
+            let world = SIMD3(w.x, w.y, w.z)
+            if let baseline = sessionFloorY ?? floorY, abs(world.y - baseline) > 0.15 {
+                continue
+            }
 
-        if let plane = result.anchor as? ARPlaneAnchor {
-            let weight: Float = plane.classification == .floor ? 1.0 : 0.5
-            return FloorRaycast(world: world, weight: weight, anchorID: plane.identifier, isPlaneAnchor: true)
+            if let plane = result.anchor as? ARPlaneAnchor {
+                let weight: Float = plane.classification == .floor ? 1.0 : 0.5
+                return FloorRaycast(world: world, weight: weight, anchorID: plane.identifier, isPlaneAnchor: true)
+            }
+            // Estimated geometry — no plane anchor. A fresh UUID means the
+            // unique-anchor dedup branch can never match for estimated taps; they
+            // fall back to the 0.5 m spatial rule.
+            return FloorRaycast(world: world, weight: 0.2, anchorID: UUID(), isPlaneAnchor: false)
         }
-        // Estimated geometry — no plane anchor. A fresh UUID means the
-        // unique-anchor dedup branch can never match for estimated taps; they
-        // fall back to the 0.5 m spatial rule.
-        return FloorRaycast(world: world, weight: 0.2, anchorID: UUID(), isPlaneAnchor: false)
+        return nil
     }
 
     /// Accumulates a floor-baseline sample after spatial deduplication. A tap is
@@ -403,7 +495,11 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     /// the raycast's X/Z, but replace Y with the floor baseline. The corner is
     /// stored already floor-snapped, so it never appends to `floorTaps`.
     private func handleHighWallTap(at screenPoint: CGPoint, in arView: ARView) {
-        guard let hit = raycastFloor(from: screenPoint, in: arView) else {
+        // The tap lands on the WALL, not the floor, so raycast against surfaces
+        // of any alignment. A horizontal-only raycast (`raycastFloor`) can never
+        // hit a vertical wall and was failing every high-wall tap with
+        // "couldn't read that point".
+        guard let wall = raycastAnySurface(from: screenPoint, in: arView) else {
             flagRaycastFailure()
             return
         }
@@ -422,7 +518,72 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         // X/Z from the wall tap, Y from the floor baseline — already snapped.
         // `addCorner` is the single writer of `floorY` (it falls back to this
         // baseline when there's no locked floor yet).
-        addCorner(at: SIMD3(hit.world.x, baselineY, hit.world.z))
+        addCorner(at: SIMD3(wall.x, baselineY, wall.z))
+        isHighWallModeActive = false
+    }
+    /// Raycasts a screen point to the nearest surface of *any* alignment (used
+    /// for high-wall taps, which land on a vertical wall). Tries progressively
+    /// more permissive targets so a tap high on the wall — the whole point of
+    /// "corner blocked" — still registers:
+    ///
+    /// 1. `.existingPlaneInfinite` — once ARKit has detected *any* vertical
+    ///    plane patch on the wall, this extends it infinitely, so a tap above
+    ///    the resolved extent (high on the wall) still hits. This is the case
+    ///    that was failing before: `.existingPlaneGeometry` only hits within the
+    ///    detected patch, and high taps usually land beyond it.
+    /// 2. `.existingPlaneGeometry` — exact detected extent (tighter, more
+    ///    accurate when the tap does land inside the patch).
+    /// 3. `.estimatedPlane` — feature-point estimate, for walls ARKit hasn't
+    ///    promoted to a plane anchor yet.
+    ///
+    /// All three use `.any` alignment so vertical walls qualify. If every target
+    /// misses (a blank, featureless wall with no detected plane), there is no
+    /// honest depth to recover from a single ray, so we return nil and the
+    /// caller surfaces "couldn't read that point" rather than inventing a corner.
+    private func raycastAnySurface(from point: CGPoint, in arView: ARView) -> SIMD3<Float>? {
+        let targets: [ARRaycastQuery.Target] = [
+            .existingPlaneInfinite,
+            .existingPlaneGeometry,
+            .estimatedPlane,
+        ]
+        for target in targets {
+            let results = arView.raycast(from: point, allowing: target, alignment: .any)
+            if let world = results.first?.worldTransform.columns.3 {
+                return SIMD3(world.x, world.y, world.z)
+            }
+        }
+        return nil
+    }
+
+    private func raycastOpeningPoint(from point: CGPoint, in arView: ARView) -> PlanePoint? {
+        var candidates: [PlanePoint] = []
+        candidates.append(contentsOf: raycastPlanePoints(from: point, in: arView, alignment: .vertical))
+        candidates.append(contentsOf: raycastPlanePoints(from: point, in: arView, alignment: .horizontal))
+
+        return candidates.min { lhs, rhs in
+            openingProjectionDistance(for: lhs) < openingProjectionDistance(for: rhs)
+        }
+    }
+
+    private func raycastPlanePoints(from point: CGPoint, in arView: ARView, alignment: ARRaycastQuery.TargetAlignment) -> [PlanePoint] {
+        let targets: [ARRaycastQuery.Target] = [
+            .existingPlaneGeometry,
+            .existingPlaneInfinite,
+            .estimatedPlane,
+        ]
+        return targets.compactMap { target in
+            guard let world = arView.raycast(from: point, allowing: target, alignment: alignment).first?.worldTransform.columns.3 else {
+                return nil
+            }
+            return PlanePoint(x: world.x, z: world.z)
+        }
+    }
+
+    private func openingProjectionDistance(for point: PlanePoint) -> Float {
+        guard let projection = projectedOpeningPoint(point, preferredWallIndex: pendingOpeningWallIndex) else {
+            return Float.greatestFiniteMagnitude
+        }
+        return simd_distance(point.simd2, projection.point.simd2)
     }
 
     private func cameraY(in arView: ARView) -> Float {
@@ -492,52 +653,11 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     // MARK: - Ceiling estimation: passive collection (Part 2)
 
-    /// Passive collection runs silently every frame on all devices. A candidate
-    /// is kept only when it is comfortably above the floor and the camera has
-    /// moved ≥ 0.4 m horizontally since the *last contributing* position — so
-    /// the estimate reflects real spatial spread, while still letting the user
-    /// sweep back over an area they already visited (a "far from every prior
-    /// position" gate would permanently sterilise revisited spots and starve
-    /// collection in a small room).
+    /// Manual AR does not passively estimate ceiling height. Sparse feature
+    /// points seen during corner capture vary too much scan-to-scan, so ceiling
+    /// height comes only from the explicit one-time look-up step at the end.
     private func collectPassiveCeiling(_ frame: ARFrame) {
-        guard ceilingCandidates.count < Self.maxCeilingCandidates,
-              let floor = sessionFloorY,
-              let points = frame.rawFeaturePoints?.points else { return }
-        let cam = frame.camera.transform.columns.3
-        let camXZ = simd_float2(cam.x, cam.z)
-        if let last = lastPassiveCameraPosition, simd_distance(last, camXZ) < 0.4 { return }
-
-        var added = false
-        for p in points where p.y >= floor + Self.ceilingFloorClearance {
-            guard ceilingCandidates.count < Self.maxCeilingCandidates else { break }
-            ceilingCandidates.append(p.y)
-            added = true
-        }
-        if added {
-            passiveCameraPositions.append(camXZ)
-            lastPassiveCameraPosition = camXZ
-        }
-    }
-
-    /// Passive estimate: 95th-percentile candidate Y minus the floor, but only
-    /// once we have ≥ 12 candidates from ≥ 3 distinct camera positions. Below
-    /// that the data is discarded regardless of the Y values collected.
-    private func computePassiveCeilingHeight() -> Float? {
-        guard let floor = sessionFloorY else { return nil }
-        guard ceilingCandidates.count >= 12, passiveCameraPositions.count >= 3 else { return nil }
-        return Self.percentile(ceilingCandidates.sorted(), 0.95) - floor
-    }
-
-    /// Largest pairwise distance between passive capture positions — the "spread"
-    /// that decides whether the passive estimate is trustworthy on its own.
-    private func passiveCameraSpread() -> Float {
-        var maxD: Float = 0
-        for i in passiveCameraPositions.indices {
-            for j in (i + 1)..<passiveCameraPositions.count {
-                maxD = max(maxD, simd_distance(passiveCameraPositions[i], passiveCameraPositions[j]))
-            }
-        }
-        return maxD
+        // Intentionally empty.
     }
 
     // MARK: - Ceiling estimation: active "look up" step (Part 2)
@@ -586,30 +706,20 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         }
     }
 
-    /// Whether the look-up step should run: there is no usable passive estimate,
-    /// or the passive observations were all bunched within ~1 m of each other.
-    private func shouldRunLookUp() -> Bool {
-        passiveCeilingHeight == nil || passiveCameraSpread() < 1.0
-    }
-
     // MARK: - Finish & ceiling resolution (Part 2)
 
-    /// Begins the close sequence: compute the passive estimate, optionally run
-    /// the look-up step, resolve the final ceiling height, then build the room.
+    /// Begins the close sequence: run the one-time ceiling look-up, resolve the
+    /// final ceiling height, then build the room.
     func finish() {
         // Guard against a double-tap of "Done": once we advance to `.review`
         // the close sequence (and its async look-up Task) is already running,
         // so a second call must not launch it again or emit a second room.
         guard corners.count >= 3, step != .review else { return }
         step = .review
-        passiveCeilingHeight = computePassiveCeilingHeight()
+        passiveCeilingHeight = nil
 
-        if shouldRunLookUp() {
-            Task { @MainActor in
-                await runLookUp()
-                resolveCeilingAndComplete()
-            }
-        } else {
+        Task { @MainActor in
+            await runLookUp()
             resolveCeilingAndComplete()
         }
     }
@@ -625,30 +735,32 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
         try? await Task.sleep(nanoseconds: 1_000_000_000)
 
-        if supportsMesh {
-            sampleMeshHits()
-            if activeMeshHits.count >= 5 {
-                activeCeilingHeight = ceilingHeight(fromHits: activeMeshHits)
-            } else {
-                // Too few mesh hits — fall through to feature points.
-                activeCeilingHeight = featurePointActiveHeight()
-            }
-        } else {
-            if activeFeaturePoints.count < 15 {
-                lookUpPrompt = "Keep pointing up…"
-                try? await Task.sleep(nanoseconds: 1_000_000_000)
-            }
-            activeCeilingHeight = activeFeaturePoints.count >= 15 ? featurePointActiveHeight() : nil
+        if plausibleActiveCeilingHeights().count < Self.minimumActiveCeilingPoints {
+            lookUpPrompt = "Keep pointing up…"
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
         }
+        activeCeilingHeight = featurePointActiveHeight()
 
         isLookingUp = false
     }
 
     private func featurePointActiveHeight() -> Float? {
-        guard let floor = sessionFloorY, !activeFeaturePoints.isEmpty else { return nil }
-        let sorted = activeFeaturePoints.values.sorted()
-        guard sorted.count >= 15 else { return nil }
-        return Self.percentile(sorted, 0.95) - floor
+        let heights = plausibleActiveCeilingHeights().sorted()
+        guard heights.count >= Self.minimumActiveCeilingPoints else { return nil }
+        let median = heights[heights.count / 2]
+        return Self.roundCeilingEstimate(median)
+    }
+
+    private func plausibleActiveCeilingHeights() -> [Float] {
+        guard let floor = sessionFloorY else { return [] }
+        return activeFeaturePoints.values.compactMap { y in
+            let height = y - floor
+            return Self.ceilingEstimateRange.contains(height) ? height : nil
+        }
+    }
+
+    private static func roundCeilingEstimate(_ height: Float) -> Float {
+        (height / ceilingEstimateStep).rounded() * ceilingEstimateStep
     }
 
     private func ceilingHeight(fromHits hits: [Float]) -> Float? {
@@ -657,7 +769,7 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     }
 
     /// Strict priority resolution, then build and emit the `RoomModel`.
-    /// 1. RoomPlan (LiDAR) · 2. active look-up · 3. passive · 4. 2.5 m default.
+    /// 1. RoomPlan/future hand-off · 2. one-time look-up · 3. 2.5 m default.
     private func resolveCeilingAndComplete() {
         if let height = roomPlanCeilingHeight {
             resolvedCeilingHeight = height
@@ -665,9 +777,6 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         } else if let height = activeCeilingHeight {
             resolvedCeilingHeight = height
             ceilingConfidence = .high
-        } else if let height = passiveCeilingHeight {
-            resolvedCeilingHeight = height
-            ceilingConfidence = .low
         } else {
             resolvedCeilingHeight = Self.defaultCeilingHeight
             ceilingConfidence = .low
@@ -693,21 +802,63 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     // MARK: - Openings
 
-    private func addOpeningPoint(_ point: PlanePoint) {
+    private func addOpeningPoint(_ rawPoint: PlanePoint) {
+        guard let projection = projectedOpeningPoint(rawPoint, preferredWallIndex: pendingOpeningWallIndex) else {
+            flagRaycastFailure()
+            return
+        }
+
         lastRaycastFailed = false
+        let point = projection.point
         if let start = pendingOpeningStart {
             openings.append(RoomOpening(kind: openingKind, start: start, end: point))
             pendingOpeningStart = nil
+            pendingOpeningWallIndex = nil
             UIImpactFeedbackGenerator(style: .medium).impactOccurred()
         } else {
             pendingOpeningStart = point
+            pendingOpeningWallIndex = projection.wallIndex
             UIImpactFeedbackGenerator(style: .light).impactOccurred()
         }
+    }
+
+    private struct OpeningProjection {
+        let point: PlanePoint
+        let wallIndex: Int
+    }
+
+    private func projectedOpeningPoint(_ point: PlanePoint, preferredWallIndex: Int?) -> OpeningProjection? {
+        guard corners.count >= 2 else { return nil }
+        let pointVector = point.simd2
+
+        if let preferredWallIndex, corners.indices.contains(preferredWallIndex) {
+            return projection(of: pointVector, ontoWallAt: preferredWallIndex)
+        }
+
+        return corners.indices.compactMap { index in
+            projection(of: pointVector, ontoWallAt: index)
+        }
+        .min { lhs, rhs in
+            simd_distance(lhs.point.simd2, pointVector) < simd_distance(rhs.point.simd2, pointVector)
+        }
+    }
+
+    private func projection(of point: SIMD2<Float>, ontoWallAt index: Int) -> OpeningProjection? {
+        guard corners.indices.contains(index) else { return nil }
+        let a = corners[index].simd2
+        let b = corners[(index + 1) % corners.count].simd2
+        let ab = b - a
+        let lengthSquared = simd_length_squared(ab)
+        guard lengthSquared > 0 else { return nil }
+
+        let t = max(0, min(1, simd_dot(point - a, ab) / lengthSquared))
+        return OpeningProjection(point: PlanePoint(a + t * ab), wallIndex: index)
     }
 
     func removeLastOpening() {
         if pendingOpeningStart != nil {
             pendingOpeningStart = nil
+            pendingOpeningWallIndex = nil
         } else if !openings.isEmpty {
             openings.removeLast()
         }
@@ -716,10 +867,7 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     // MARK: - Rendering
 
     private func placeCornerMarker(at position: SIMD3<Float>) {
-        let sphere = ModelEntity(
-            mesh: .generateSphere(radius: 0.03),
-            materials: [SimpleMaterial(color: .systemOrange, isMetallic: false)]
-        )
+        let sphere = ModelEntity(mesh: cornerMarkerMesh, materials: [cornerMarkerMaterial])
         let anchor = AnchorEntity(world: position)
         anchor.addChild(sphere)
         arView?.scene.addAnchor(anchor)
@@ -744,7 +892,7 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         guard length > 0 else { return }
         let box = ModelEntity(
             mesh: .generateBox(size: SIMD3(length, 0.01, 0.01)),
-            materials: [SimpleMaterial(color: .systemTeal, isMetallic: false)]
+            materials: [edgeMaterial]
         )
         box.position = (a + b) / 2
         let yaw = atan2(b.z - a.z, b.x - a.x)

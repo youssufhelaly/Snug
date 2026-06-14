@@ -162,7 +162,12 @@ struct ManualARCaptureView: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
 
-            if controller.lastRaycastFailed {
+            if controller.tapNeedsBetterTracking {
+                Text("Hold steady and look around slowly first — the room needs to map before taps land accurately.")
+                    .font(.caption)
+                    .foregroundStyle(.orange)
+                    .multilineTextAlignment(.center)
+            } else if controller.lastRaycastFailed {
                 Text("Couldn't read that point — aim at the floor and tap again.")
                     .font(.caption)
                     .foregroundStyle(.orange)
@@ -254,7 +259,7 @@ struct ManualARCaptureView: View {
             .pickerStyle(.segmented)
 
             Text(controller.openings.isEmpty
-                 ? "Optional: tap the two base corners of a door or window."
+                 ? "Optional: tap the two sides of a door or window — on the wall or along the floor."
                  : "\(controller.openings.count) opening(s) marked.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
@@ -289,7 +294,7 @@ struct ManualARCaptureView: View {
                 ? "Aim at the wall straight above the hidden corner and tap — we drop it down to the floor for you."
                 : "Tap a clear floor corner first. If a corner is blocked by furniture, tap the wall above it instead."
         case .markingOpenings:
-            "Tap the two bottom corners of each door or window. Skip with Done if you'd rather not."
+            "Tap each side of a door or window — point at the wall or its base. Skip with Done if you'd rather not."
         case .review:
             "Building your room…"
         }
