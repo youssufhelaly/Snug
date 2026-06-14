@@ -1,0 +1,27 @@
+# macOS
+.DS_Store
+
+# Xcode user state
+xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# Xcode build output
+DerivedData/
+build/
+Products/
+*.ipa
+*.dSYM/
+*.dSYM.zip
+
+# Swift Package Manager build output
+.build/
+
+# Local editor/project metadata
+.vscode/
+.idea/
+
+# Temporary files
+*.swp
+*.tmp
+*.log
