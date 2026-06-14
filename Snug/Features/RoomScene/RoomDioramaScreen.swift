@@ -1,0 +1,160 @@
+import SwiftUI
+import UIKit
+
+/// The room as a place: a full-screen RealityKit diorama with the always-visible
+/// PLAY/BUY toggle and a spring "Reset view". This is the Phase 1 centerpiece —
+/// where a scanned `RoomModel` stops being a floor plan and becomes a room.
+struct RoomDioramaScreen: View {
+    let stored: StoredRoom
+
+    @Environment(RoomStore.self) private var store
+
+    @State private var mode: RoomRenderMode = .play
+    @State private var resetToken = 0
+    @State private var showingRename = false
+    @State private var nameDraft = ""
+
+    /// Decoded once; the diorama doesn't mutate geometry.
+    private var room: RoomModel? { stored.roomModel }
+
+    var body: some View {
+        ZStack {
+            if let room {
+                RoomSceneView(
+                    room: room,
+                    mode: mode,
+                    resetToken: resetToken,
+                    onThumbnail: { data in store.setThumbnail(data, for: stored) }
+                )
+                .ignoresSafeArea()
+
+                controls
+            } else {
+                unreadableRoom
+            }
+        }
+        .navigationTitle(stored.name)
+        .navigationBarTitleDisplayMode(.inline)
+        .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Menu {
+                    Button {
+                        nameDraft = stored.name
+                        showingRename = true
+                    } label: {
+                        Label("Rename room", systemImage: "pencil")
+                    }
+                    if let room {
+                        NavigationLink {
+                            FitDebugView(room: room)
+                        } label: {
+                            Label("Fit harness", systemImage: "shippingbox")
+                        }
+                        NavigationLink {
+                            GroundTruthView(room: room)
+                        } label: {
+                            Label("Log ground truth", systemImage: "ruler")
+                        }
+                    }
+                } label: {
+                    Image(systemName: "ellipsis.circle")
+                }
+                .accessibilityLabel("Room options")
+            }
+        }
+        .alert("Rename room", isPresented: $showingRename) {
+            TextField("Room name", text: $nameDraft)
+            Button("Save") { store.rename(stored, to: nameDraft) }
+            Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    // MARK: - Controls overlay
+
+    private var controls: some View {
+        VStack {
+            Spacer()
+            HStack(alignment: .bottom) {
+                RenderModeToggle(mode: $mode)
+                Spacer()
+                resetButton
+            }
+            .padding(.horizontal, 20)
+            .padding(.bottom, 24)
+        }
+    }
+
+    private var resetButton: some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            resetToken += 1
+        } label: {
+            Image(systemName: "arrow.counterclockwise")
+                .font(.system(size: 18, weight: .semibold))
+                .padding(14)
+                .background(.ultraThinMaterial, in: Circle())
+                .foregroundStyle(SnugTheme.ink)
+        }
+        .accessibilityLabel("Reset view")
+        .accessibilityHint("Recenters the camera on the room")
+    }
+
+    private var unreadableRoom: some View {
+        ContentUnavailableView(
+            "We couldn't open this room",
+            systemImage: "exclamationmark.triangle",
+            description: Text("The saved data looks damaged. Try scanning the room again.")
+        )
+    }
+}
+
+/// The always-visible, one-tap PLAY/BUY pill. A sliding highlight (spring,
+/// reduced-motion aware) gives the brand bounce; the scene handles the < 400 ms
+/// cross-fade. Haptic on every switch.
+private struct RenderModeToggle: View {
+    @Binding var mode: RoomRenderMode
+    @Namespace private var highlight
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    var body: some View {
+        HStack(spacing: 4) {
+            ForEach(RoomRenderMode.allCases) { option in
+                segment(option)
+            }
+        }
+        .padding(4)
+        .background(.ultraThinMaterial, in: Capsule())
+        .accessibilityElement(children: .contain)
+        .accessibilityLabel("Render mode")
+    }
+
+    private func segment(_ option: RoomRenderMode) -> some View {
+        let isSelected = mode == option
+        return Button {
+            guard mode != option else { return }
+            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
+            if reduceMotion {
+                mode = option
+            } else {
+                withAnimation(SnugTheme.spring) { mode = option }
+            }
+        } label: {
+            Label(option.title, systemImage: option.symbol)
+                .font(.subheadline.weight(.semibold))
+                .labelStyle(.titleAndIcon)
+                .padding(.horizontal, 18)
+                .padding(.vertical, 10)
+                .foregroundStyle(isSelected ? Color.white : SnugTheme.ink)
+                .background {
+                    if isSelected {
+                        Capsule()
+                            .fill(SnugTheme.clay)
+                            .matchedGeometryEffect(id: "modeHighlight", in: highlight)
+                    }
+                }
+        }
+        .buttonStyle(.plain)
+        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
+        .accessibilityHint(option == .buy ? "True-to-scale view with dimension labels" : "Playful stylized view")
+    }
+}
