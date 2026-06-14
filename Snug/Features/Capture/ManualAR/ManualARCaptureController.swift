@@ -116,6 +116,16 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     /// corners are effectively collinear/coincident — honesty over a fake scan.
     private static let minimumFloorArea: Float = 0.1
 
+    /// Farthest a single tap can land from the camera and still be trusted (m).
+    /// `.existingPlaneInfinite` raycasts can graze an infinitely-extended plane
+    /// (the floor, or a wall seen edge-on) and resolve a "hit" 20+ m away. No
+    /// renter's room corner is that far from the phone, so anything beyond this
+    /// is a grazing artifact, not a real surface — reject it rather than place a
+    /// corner that warps the whole floor plan and lags the scene. Set generously
+    /// (a large studio's far corner can be ~8 m away when you stand back) but far
+    /// below the 20 m+ artifacts this guards against.
+    private static let maxTapReach: Float = 12.0
+
     /// Called once with the finished room.
     var onComplete: ((RoomModel) -> Void)?
 
@@ -439,10 +449,14 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
             .existingPlaneInfinite,
             .estimatedPlane,
         ]
+        let origin = cameraOrigin(in: arView)
         for target in targets {
             guard let result = arView.raycast(from: point, allowing: target, alignment: .horizontal).first else { continue }
             let w = result.worldTransform.columns.3
             let world = SIMD3(w.x, w.y, w.z)
+            // Reject a grazing intersection on the infinitely-extended floor far
+            // down the room (same warp-and-lag artifact as the high-wall path).
+            if simd_distance(world, origin) > Self.maxTapReach { continue }
             if let baseline = sessionFloorY ?? floorY, abs(world.y - baseline) > 0.15 {
                 continue
             }
@@ -521,35 +535,41 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         addCorner(at: SIMD3(wall.x, baselineY, wall.z))
         isHighWallModeActive = false
     }
-    /// Raycasts a screen point to the nearest surface of *any* alignment (used
-    /// for high-wall taps, which land on a vertical wall). Tries progressively
-    /// more permissive targets so a tap high on the wall — the whole point of
-    /// "corner blocked" — still registers:
+    /// Raycasts a high-wall tap to a point on the wall. A high-wall tap targets a
+    /// *vertical* surface (the wall above a blocked floor corner), so we ask for
+    /// vertical planes FIRST and only fall back to `.any` if none resolve. This
+    /// matters: with `.any` alignment, `.existingPlaneInfinite` happily intersects
+    /// the infinitely-extended FLOOR plane far down the room when you aim high at
+    /// a distant wall, returning a point 20+ m away — the warp-and-lag bug.
     ///
-    /// 1. `.existingPlaneInfinite` — once ARKit has detected *any* vertical
-    ///    plane patch on the wall, this extends it infinitely, so a tap above
-    ///    the resolved extent (high on the wall) still hits. This is the case
-    ///    that was failing before: `.existingPlaneGeometry` only hits within the
-    ///    detected patch, and high taps usually land beyond it.
-    /// 2. `.existingPlaneGeometry` — exact detected extent (tighter, more
-    ///    accurate when the tap does land inside the patch).
-    /// 3. `.estimatedPlane` — feature-point estimate, for walls ARKit hasn't
-    ///    promoted to a plane anchor yet.
+    /// Within each alignment we try progressively more permissive targets:
+    /// 1. `.existingPlaneInfinite` — extends a detected wall patch infinitely, so
+    ///    a tap high on the wall (above the resolved extent) still hits.
+    /// 2. `.existingPlaneGeometry` — exact detected extent (tighter when the tap
+    ///    lands inside the patch).
+    /// 3. `.estimatedPlane` — feature-point estimate for walls not yet promoted
+    ///    to a plane anchor.
     ///
-    /// All three use `.any` alignment so vertical walls qualify. If every target
-    /// misses (a blank, featureless wall with no detected plane), there is no
-    /// honest depth to recover from a single ray, so we return nil and the
-    /// caller surfaces "couldn't read that point" rather than inventing a corner.
+    /// For each target we keep the result CLOSEST to the camera and reject any
+    /// hit beyond `maxTapReach` — a grazing intersection on an infinite plane.
+    /// If everything misses or is implausibly far, we return nil and the caller
+    /// surfaces "couldn't read that point" rather than inventing a far corner.
     private func raycastAnySurface(from point: CGPoint, in arView: ARView) -> SIMD3<Float>? {
         let targets: [ARRaycastQuery.Target] = [
             .existingPlaneInfinite,
             .existingPlaneGeometry,
             .estimatedPlane,
         ]
-        for target in targets {
-            let results = arView.raycast(from: point, allowing: target, alignment: .any)
-            if let world = results.first?.worldTransform.columns.3 {
-                return SIMD3(world.x, world.y, world.z)
+        let origin = cameraOrigin(in: arView)
+        // Vertical first (we want the wall), then any-alignment as a fallback.
+        for alignment in [ARRaycastQuery.TargetAlignment.vertical, .any] {
+            for target in targets {
+                let hits = arView.raycast(from: point, allowing: target, alignment: alignment)
+                    .map { SIMD3($0.worldTransform.columns.3.x, $0.worldTransform.columns.3.y, $0.worldTransform.columns.3.z) }
+                    .filter { simd_distance($0, origin) <= Self.maxTapReach }
+                if let nearest = hits.min(by: { simd_distance($0, origin) < simd_distance($1, origin) }) {
+                    return nearest
+                }
             }
         }
         return nil
@@ -588,6 +608,12 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     private func cameraY(in arView: ARView) -> Float {
         arView.session.currentFrame?.camera.transform.columns.3.y ?? 0
+    }
+
+    /// World-space camera position, used to reject implausibly far raycast hits.
+    private func cameraOrigin(in arView: ARView) -> SIMD3<Float> {
+        let c = arView.session.currentFrame?.camera.transform.columns.3 ?? SIMD4<Float>(repeating: 0)
+        return SIMD3(c.x, c.y, c.z)
     }
 
     // MARK: - Corners

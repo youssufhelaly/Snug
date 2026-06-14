@@ -8,14 +8,23 @@
 
 /* Begin PBXFileReference section */
 		5A0000050000000000000005 /* Snug.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = Snug.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		5A0000110000000000000011 /* SnugTests.xctest */ = {isa = PBXFileReference; explicitFileType = wrapper.cfbundle; includeInIndex = 0; path = SnugTests.xctest; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		5A0000010000000000000001 /* Snug */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = Snug; sourceTree = "<group>"; };
+		5A0000100000000000000010 /* SnugTests */ = {isa = PBXFileSystemSynchronizedRootGroup; explicitFileTypes = {}; explicitFolders = (); path = SnugTests; sourceTree = "<group>"; };
 /* End PBXFileSystemSynchronizedRootGroup section */
 
 /* Begin PBXFrameworksBuildPhase section */
 		5A0000020000000000000002 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5A0000140000000000000014 /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -29,6 +38,7 @@
 			isa = PBXGroup;
 			children = (
 				5A0000010000000000000001 /* Snug */,
+				5A0000100000000000000010 /* SnugTests */,
 				5A0000040000000000000004 /* Products */,
 			);
 			sourceTree = "<group>";
@@ -37,6 +47,7 @@
 			isa = PBXGroup;
 			children = (
 				5A0000050000000000000005 /* Snug.app */,
+				5A0000110000000000000011 /* SnugTests.xctest */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -66,6 +77,29 @@
 			productReference = 5A0000050000000000000005 /* Snug.app */;
 			productType = "com.apple.product-type.application";
 		};
+		5A0000120000000000000012 /* SnugTests */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 5A0000180000000000000018 /* Build configuration list for PBXNativeTarget "SnugTests" */;
+			buildPhases = (
+				5A0000130000000000000013 /* Sources */,
+				5A0000140000000000000014 /* Frameworks */,
+				5A0000150000000000000015 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				5A0000160000000000000016 /* PBXTargetDependency */,
+			);
+			fileSystemSynchronizedGroups = (
+				5A0000100000000000000010 /* SnugTests */,
+			);
+			name = SnugTests;
+			packageProductDependencies = (
+			);
+			productName = SnugTests;
+			productReference = 5A0000110000000000000011 /* SnugTests.xctest */;
+			productType = "com.apple.product-type.bundle.unit-test";
+		};
 /* End PBXNativeTarget section */
 
 /* Begin PBXProject section */
@@ -78,6 +112,10 @@
 				TargetAttributes = {
 					5A0000060000000000000006 = {
 						CreatedOnToolsVersion = 16.0;
+					};
+					5A0000120000000000000012 = {
+						CreatedOnToolsVersion = 16.0;
+						TestTargetID = 5A0000060000000000000006;
 					};
 				};
 			};
@@ -96,12 +134,20 @@
 			projectRoot = "";
 			targets = (
 				5A0000060000000000000006 /* Snug */,
+				5A0000120000000000000012 /* SnugTests */,
 			);
 		};
 /* End PBXProject section */
 
 /* Begin PBXResourcesBuildPhase section */
 		5A0000080000000000000008 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		5A0000150000000000000015 /* Resources */ = {
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
@@ -118,7 +164,32 @@
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
+		5A0000130000000000000013 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 /* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		5A0000160000000000000016 /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			target = 5A0000060000000000000006 /* Snug */;
+			targetProxy = 5A0000170000000000000017 /* PBXContainerItemProxy */;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin PBXContainerItemProxy section */
+		5A0000170000000000000017 /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 5A0000090000000000000009 /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 5A0000060000000000000006;
+			remoteInfo = Snug;
+		};
+/* End PBXContainerItemProxy section */
 
 /* Begin XCBuildConfiguration section */
 		5A00000C000000000000000C /* Debug */ = {
@@ -299,6 +370,44 @@
 			};
 			name = Release;
 		};
+		5A0000190000000000000019 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D56JVY5H7U;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.helaly.SnugTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Snug.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Snug";
+			};
+			name = Debug;
+		};
+		5A00001A000000000000001A /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				BUNDLE_LOADER = "$(TEST_HOST)";
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D56JVY5H7U;
+				GENERATE_INFOPLIST_FILE = YES;
+				IPHONEOS_DEPLOYMENT_TARGET = 17.0;
+				MARKETING_VERSION = 0.1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.helaly.SnugTests;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = NO;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = 1;
+				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Snug.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Snug";
+			};
+			name = Release;
+		};
 /* End XCBuildConfiguration section */
 
 /* Begin XCConfigurationList section */
@@ -316,6 +425,15 @@
 			buildConfigurations = (
 				5A00000E000000000000000E /* Debug */,
 				5A00000F000000000000000F /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		5A0000180000000000000018 /* Build configuration list for PBXNativeTarget "SnugTests" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				5A0000190000000000000019 /* Debug */,
+				5A00001A000000000000001A /* Release */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;

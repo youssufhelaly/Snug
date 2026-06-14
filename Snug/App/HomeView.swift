@@ -44,13 +44,23 @@ struct HomeView: View {
 
             Spacer()
 
-            NavigationLink {
-                AccuracySummaryView()
-            } label: {
-                Label("Accuracy log", systemImage: "ruler")
+            VStack(spacing: 8) {
+                NavigationLink {
+                    AccuracySummaryView()
+                } label: {
+                    Label("Accuracy log", systemImage: "ruler")
+                }
+                .accessibilityHint("Shows captured versus tape-measured accuracy so far")
+
+                NavigationLink {
+                    FitDebugView(room: .fitHarnessSample)
+                } label: {
+                    Label("Fit harness (debug)", systemImage: "shippingbox")
+                }
+                .accessibilityHint("Opens the fit-check debug harness on a sample room")
             }
+            .font(.footnote)
             .padding(.bottom, 16)
-            .accessibilityHint("Shows captured versus tape-measured accuracy so far")
         }
         .padding()
         .toolbar(.hidden, for: .navigationBar)

@@ -84,6 +84,11 @@ struct RoomModelReviewScreen: View {
                 } label: {
                     Label("Log ground truth", systemImage: "ruler")
                 }
+                NavigationLink {
+                    FitDebugView(room: room)
+                } label: {
+                    Label("Fit harness (debug)", systemImage: "shippingbox")
+                }
             }
         }
         .listStyle(.insetGrouped)

@@ -80,6 +80,10 @@ derived. `FitService` is unchanged.
   belongs to a plane anchor whose identifier isn't represented yet.
   This exists so repeated taps in one spot can't dominate the weighted
   average and bias (warp) every projected high-wall corner.
+- After a floor baseline exists, direct floor-corner raycasts more
+  than `0.15 m` above/below that baseline are rejected. This prevents
+  accidental taps on furniture/tabletops from placing wildly shifted
+  corners.
 - Floor is "locked" once the cumulative deduplicated weight exceeds
   `2.0`. The UI shows "Floor locked" / "Tap a floor corner first".
 
@@ -88,7 +92,11 @@ derived. `FitService` is unchanged.
   when the floor isn't locked yet it shows a soft warning instead.
 - On a high-wall tap: retain the raycast's X/Z, snap Y to
   `sessionFloorY`. Store as a corner — it's already floor-snapped.
-  `usedHighWallProjection` is set to `true` on this path.
+  `usedHighWallProjection` is set to `true` on this path. A
+  successful high-wall placement is one-shot: the controller
+  immediately exits high-wall mode so the next tap returns to normal
+  floor-corner tapping. Failed wall taps leave the mode active so the
+  user can retry.
 - Fallback (live, not dead code): if `sessionFloorY` is nil, use
   `cameraTransform.columns.3.y - 1.4` and log a warning. The correct
   camera-height accessor is `cameraTransform.columns.3.y`.
@@ -101,34 +109,44 @@ derived. `FitService` is unchanged.
   fiddly to aim, prone to near-parallel lines and corners resolving
   behind the user. High-wall projection needs a single tap.
 
-### Ceiling height — estimate + edit, never typed
+### Openings — snap to captured walls
+- Door/window/opening taps happen after the room polygon is closed.
+  The user can tap either the wall face or the floor/base of the
+  opening.
+- Opening capture raycasts vertical and horizontal planes separately,
+  then chooses the candidate whose X/Z snaps closest to the captured
+  wall outline. This avoids saving raw AR wall/floor hits that are
+  shifted relative to the user's tapped room polygon.
+- The first tap of an opening stores both the snapped point and the
+  wall segment index. The second tap is forced onto the same wall
+  segment, so a doorway/window cannot drift diagonally onto a nearby
+  plane.
+
+### Ceiling height — one-time look-up + edit, never typed
 We never ask the user to type a number. The goal is a reasonable
 estimate plus an edit option, not perfect measurement — chasing exact
 ceiling measurement on non-LiDAR hardware is the one genuinely
 unreliable measurement, so a sensible default + a visible adjust
 control is more honest than fake precision.
-- Device split (do not unify): LiDAR is detected via
-  `ARWorldTrackingConfiguration.supportsSceneReconstruction(.mesh)`.
-  LiDAR uses RoomPlan height when available, else mesh-anchor sampling
-  during look-up. Non-LiDAR uses feature points only (no mesh).
-- Passive estimation runs silently all scan on all devices into
-  `ceilingCandidates`. A candidate is kept only when its Y is ≥
-  `sessionFloorY + 1.8`, the camera has moved ≥ `0.4 m` horizontally
-  from prior contributing positions, and across ≥ 3 distinct camera
-  positions. Usable only at ≥ `12` candidates / ≥ 3 positions, else
-  discarded. Passive height = 95th-percentile candidate Y − floor.
-- The "look up" active step triggers automatically at close when the
-  passive estimate is nil or the passive camera spread is < `1.0 m`.
-  It shows a 1-second full-screen prompt (not skippable on first
-  trigger); LiDAR samples mesh hits (≥ 5 required, else falls through
-  to feature points), non-LiDAR collects ≥ 15 distinct feature points
-  (extends one extra second with "Keep pointing up…" if short, then
-  the default).
-- Final resolution, strict priority: (1) RoomPlan height (LiDAR),
-  (2) `activeCeilingHeight`, (3) `passiveCeilingHeight`,
-  (4) `2.5 m` default. Result stored in `resolvedCeilingHeight` and
-  written to `RoomModel` once. Confidence is high for RoomPlan/active,
-  low for passive-only/default.
+- Manual AR does NOT passively estimate ceiling height during corner
+  capture. Sparse feature points seen while scanning corners vary too
+  much between runs and create false precision.
+- On `Done`, after all optional doors/windows are marked, the app runs
+  one full-screen "point at the ceiling" look-up step. It collects raw
+  feature points only while `isLookingUp == true`.
+- The look-up accepts only plausible floor-relative heights in
+  `2.1...3.2 m`, requires at least `60` plausible active ceiling
+  points, uses the median of those heights, and rounds to `0.05 m`.
+  If there are too few plausible points after 1 second, the prompt
+  extends once with "Keep pointing up…".
+- Final resolution, strict priority: (1) future RoomPlan hand-off
+  height if populated, (2) accepted one-time look-up height,
+  (3) `2.5 m` default. Result is stored in `resolvedCeilingHeight`
+  and written to `RoomModel` once. Confidence is high for an accepted
+  look-up, low for the default.
+- Manual AR avoids AR scene reconstruction/mesh during capture because
+  it adds startup load on LiDAR devices and the flow only needs plane
+  raycasts plus feature points for the one-time ceiling look-up.
 
 ### Conditional drag-to-correct canvas
 - The canvas opens automatically after scan close when
