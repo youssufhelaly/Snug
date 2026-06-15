@@ -78,10 +78,25 @@ struct ManualARCaptureView: View {
             if controller.isLookingUp {
                 lookUpOverlay
             }
+
+            if controller.cameraInterrupted {
+                cameraPausedOverlay
+            }
         }
     }
 
     // MARK: - Chrome
+
+    /// Shown over the (now black) passthrough while camera capture is interrupted.
+    /// The session restarts automatically when the interruption ends — this just
+    /// explains the black screen instead of leaving the user staring at it.
+    private var cameraPausedOverlay: some View {
+        Label("Camera paused — resuming…", systemImage: "video.slash.fill")
+            .font(.subheadline.weight(.semibold))
+            .padding(.horizontal, 16).padding(.vertical, 10)
+            .background(.regularMaterial, in: Capsule())
+            .transition(.opacity)
+    }
 
     private var topBar: some View {
         HStack {
@@ -325,6 +340,9 @@ struct ManualARCaptureView: View {
                 onComplete(room)
             }
         }
+        // Route hard session/camera failures to the same failure UI as the
+        // permission/unsupported gates, rather than leaving a frozen black view.
+        controller.onFailure = { failure in onFailure(failure) }
 
         switch AVCaptureDevice.authorizationStatus(for: .video) {
         case .authorized:

@@ -1,6 +1,5 @@
 import SwiftUI
 import RealityKit
-import Combine
 import UIKit
 import simd
 
@@ -10,10 +9,23 @@ import simd
 ///
 /// The hard product rule lives here: **geometry is identical between modes.**
 /// Switching PLAY↔BUY only swaps materials and lighting — never a vertex moves.
-/// The cross-fade is done by snapshotting the live frame, swapping materials
-/// underneath, and fading the snapshot out (< 400 ms), which avoids any fragile
-/// offscreen rendering.
-struct RoomSceneView: UIViewRepresentable {
+/// The cross-fade is done by snapshotting the current frame (offscreen, via
+/// `OffscreenSnapshotRenderer`), swapping materials underneath, and fading the
+/// snapshot out (< 400 ms).
+///
+/// ## Migrated to `RealityView`
+/// This was a `UIViewRepresentable` wrapping a `.nonAR` `ARView`. It is now a native
+/// SwiftUI `RealityView`. Three ARView conveniences had no direct `RealityView`
+/// equivalent and moved:
+/// - **Snapshot** (`ARView.snapshot`) → `OffscreenSnapshotRenderer` (RealityKit's
+///   `RealityRenderer`), used for both the cross-fade freeze and the list thumbnail.
+/// - **Image-based lighting** (`ARView.environment.lighting.resource`) → an
+///   `ImageBasedLightComponent` on a dedicated entity plus an
+///   `ImageBasedLightReceiverComponent` on the scene root (PLAY only).
+/// - **Background colour** (`ARView.environment.background`) → a SwiftUI
+///   `Color(palette.background)` layer behind the `RealityView` in
+///   `RoomDioramaScreen`, which cross-fades natively with the mode change.
+struct RoomSceneView: View {
     let room: RoomModel
     let mode: RoomRenderMode
     /// Incremented by the parent to request a spring camera reset.
@@ -22,50 +34,194 @@ struct RoomSceneView: UIViewRepresentable {
     /// list thumbnail. Optional.
     var onThumbnail: ((Data) -> Void)? = nil
 
-    func makeCoordinator() -> RoomSceneController {
-        RoomSceneController()
-    }
+    /// The scene/camera/culling engine. Held in `@State` so the single instance
+    /// survives `body` re-evaluations (mode toggle, reset) — `RealityView`'s `make`
+    /// closure runs once against it; `update` drives it from external state.
+    @State private var controller = RoomSceneController()
 
-    func makeUIView(context: Context) -> ARView {
-        // .nonAR: we render captured geometry with our own camera; there is no
-        // live AR session when reviewing a finished room.
-        let view = ARView(frame: .zero, cameraMode: .nonAR, automaticallyConfigureSession: false)
-        context.coordinator.onThumbnail = onThumbnail
-        context.coordinator.attach(to: view, room: room, mode: mode)
-        return view
-    }
+    /// The current cross-fade freeze frame, produced offscreen on a mode change and
+    /// faded out by `crossfadeOverlay`. Nil when no fade is in flight.
+    @State private var crossfadeImage: UIImage?
+    @State private var fadeOpacity: Double = 0
+    /// Bumped per fade so a finished fade's completion can't clear a freeze a newer
+    /// toggle already replaced it with.
+    @State private var crossfadeToken = 0
 
-    func updateUIView(_ uiView: ARView, context: Context) {
-        let controller = context.coordinator
-        if controller.mode != mode {
-            controller.setMode(mode, animated: true)
+    @Environment(\.displayScale) private var displayScale
+
+    var body: some View {
+        GeometryReader { geo in
+            RealityView { content in
+                controller.makeEntities(room: room, mode: mode, onThumbnail: onThumbnail)
+                content.add(controller.root)
+                content.add(controller.cameraAnchor)
+                // Per-frame loop: reset spring, dollhouse wall culling, one-time
+                // thumbnail. Retained on the controller so it isn't cancelled the
+                // instant `make` returns; `[weak controller]` avoids a retain cycle.
+                // `SceneEvents.Update` fires on the main thread; `assumeIsolated`
+                // bridges the non-isolated handler to the controller's main-actor
+                // methods (and crashes loudly if that ever stops being true).
+                controller.updateSub = content.subscribe(to: SceneEvents.Update.self) { [weak controller] event in
+                    MainActor.assumeIsolated {
+                        controller?.onSceneUpdate(deltaTime: event.deltaTime)
+                    }
+                }
+            } update: { _ in
+                controller.applyExternalState(mode: mode, resetToken: resetToken)
+            }
+            .overlay { gestureLayer }
+            .overlay { crossfadeOverlay }
+            .onChange(of: crossfadeImage) { _, image in startCrossfade(image) }
+            .onChange(of: geo.size) { syncPixelSize(geo.size) }
+            .onChange(of: displayScale) { syncPixelSize(geo.size) }
+            .onAppear {
+                // Snap the freeze to full opacity in the SAME state mutation that
+                // introduces the image, so the overlay's first committed frame is
+                // already opaque. If opacity stayed at 0 until `.onChange` →
+                // `startCrossfade` ran, SwiftUI could commit one frame of the
+                // just-swapped materials showing through the transparent overlay —
+                // the inverse of the intended freeze. `startCrossfade` still drives
+                // the fade-OUT.
+                controller.crossfade = { image in
+                    if image != nil { fadeOpacity = 1 }
+                    crossfadeImage = image
+                }
+                syncPixelSize(geo.size)
+            }
         }
-        if controller.lastResetToken != resetToken {
-            controller.lastResetToken = resetToken
-            controller.resetCamera(animated: true)
+    }
+
+    private func syncPixelSize(_ size: CGSize) {
+        controller.pixelSize = CGSize(width: size.width * displayScale,
+                                      height: size.height * displayScale)
+    }
+
+    // MARK: - Overlays
+
+    private var gestureLayer: some View {
+        SceneGestureOverlay(controller: controller)
+    }
+
+    /// The cross-fade freeze: shown instantly at full opacity (covering the material
+    /// swap), then animated out over 350 ms by `startCrossfade`. Inserted with no
+    /// transition so it does not fade *in*.
+    @ViewBuilder private var crossfadeOverlay: some View {
+        if let image = crossfadeImage {
+            Image(uiImage: image)
+                .resizable()
+                .scaledToFill()
+                .opacity(fadeOpacity)
+                .allowsHitTesting(false)
+                .ignoresSafeArea()
         }
     }
 
-    static func dismantleUIView(_ uiView: ARView, coordinator: RoomSceneController) {
-        coordinator.tearDown()
+    /// Drive the freeze-frame out. Snaps to full opacity (covering the just-swapped
+    /// materials), then animates to clear and drops the image. Triggered by every
+    /// change to `crossfadeImage`, so a rapid re-toggle restarts the fade cleanly.
+    private func startCrossfade(_ image: UIImage?) {
+        guard image != nil else { return }
+        crossfadeToken += 1
+        let token = crossfadeToken
+        fadeOpacity = 1
+        withAnimation(.easeOut(duration: 0.35)) {
+            fadeOpacity = 0
+        } completion: {
+            if crossfadeToken == token { crossfadeImage = nil }
+        }
     }
 }
 
-/// Owns the RealityKit scene, camera rig, gesture handling, per-mode materials,
+/// A transparent UIKit layer over the `RealityView` that hosts the three camera
+/// gesture recognizers. SwiftUI has no clean way to distinguish a one-finger drag
+/// (orbit) from a two-finger drag (pan), so the recognizers — which coordinate on
+/// touch count exactly as they did on the old `ARView` — stay in UIKit and feed the
+/// controller's camera intents. `RealityView` needs no touches of its own here.
+private struct SceneGestureOverlay: UIViewRepresentable {
+    let controller: RoomSceneController
+
+    func makeUIView(context: Context) -> UIView {
+        let view = UIView()
+        view.backgroundColor = .clear
+        context.coordinator.controller = controller
+
+        let orbit = UIPanGestureRecognizer(target: context.coordinator,
+                                            action: #selector(Coordinator.handleOrbit(_:)))
+        orbit.maximumNumberOfTouches = 1
+        view.addGestureRecognizer(orbit)
+
+        let pan = UIPanGestureRecognizer(target: context.coordinator,
+                                         action: #selector(Coordinator.handlePan(_:)))
+        pan.minimumNumberOfTouches = 2
+        pan.maximumNumberOfTouches = 2
+        view.addGestureRecognizer(pan)
+
+        let pinch = UIPinchGestureRecognizer(target: context.coordinator,
+                                             action: #selector(Coordinator.handlePinch(_:)))
+        view.addGestureRecognizer(pinch)
+        return view
+    }
+
+    func updateUIView(_ uiView: UIView, context: Context) {
+        context.coordinator.controller = controller
+    }
+
+    func makeCoordinator() -> Coordinator { Coordinator() }
+
+    /// `@MainActor` so the `@objc` recognizer callbacks (which UIKit always delivers
+    /// on the main thread) can call the controller's main-actor camera intents.
+    @MainActor
+    final class Coordinator: NSObject {
+        weak var controller: RoomSceneController?
+
+        @objc func handleOrbit(_ gesture: UIPanGestureRecognizer) {
+            guard let view = gesture.view else { return }
+            let t = gesture.translation(in: view)
+            controller?.orbit(dx: Float(t.x), dy: Float(t.y))
+            gesture.setTranslation(.zero, in: view)
+        }
+
+        @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
+            guard let view = gesture.view else { return }
+            let t = gesture.translation(in: view)
+            controller?.pan(dx: Float(t.x), dy: Float(t.y))
+            gesture.setTranslation(.zero, in: view)
+        }
+
+        @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+            controller?.pinch(scale: Float(gesture.scale))
+            gesture.scale = 1
+        }
+    }
+}
+
+/// Owns the RealityKit scene, camera rig, gesture math, per-mode materials,
 /// dollhouse wall culling, the cross-fade, and the thumbnail snapshot for one
-/// `RoomSceneView`.
-final class RoomSceneController: NSObject {
+/// `RoomSceneView`. A plain reference type driven by the SwiftUI view; not
+/// `@Observable` — the only thing the view observes is the cross-fade image, which
+/// the controller pushes through the `crossfade` callback.
+@MainActor
+final class RoomSceneController {
 
     // MARK: Scene
-    private weak var arView: ARView?
-    private let root = AnchorEntity(world: .zero)
+    /// Scene root; added to `RealityViewContent` by the view. Holds geometry, lights,
+    /// and the image-based-light source/receiver.
+    let root = AnchorEntity(world: .zero)
+    /// Camera root; added to content separately so root transforms can never bleed
+    /// into the camera pose.
+    let cameraAnchor = AnchorEntity(world: .zero)
     private let camera = Entity()
     private let keyLight = DirectionalLight()
     private let fillA = DirectionalLight()
     private let fillB = DirectionalLight()
-    /// The warm studio environment for PLAY image-based lighting + skybox. Built
-    /// asynchronously (GPU work) after the scene attaches; nil until ready and in
-    /// BUY, where lighting stays neutral.
+    /// The entity carrying the PLAY image-based light. The scene root receives from
+    /// it (PLAY only) via `ImageBasedLightReceiverComponent`. Named so the offscreen
+    /// snapshot can re-point its clone's receiver at the cloned source.
+    private let iblEntity = Entity()
+    static let iblEntityName = "snug_ibl_source"
+    /// The warm studio environment for PLAY image-based lighting. Built asynchronously
+    /// (GPU work) after the scene attaches; nil until ready and in BUY, where lighting
+    /// stays neutral.
     private var environment: EnvironmentResource?
 
     private var floorEntity: ModelEntity?
@@ -101,7 +257,7 @@ final class RoomSceneController: NSObject {
 
     // MARK: Camera state
 
-    /// Calibration for the orthographic view-volume. The diorama now uses a TRUE
+    /// Calibration for the orthographic view-volume. The diorama uses a TRUE
     /// orthographic camera (`OrthographicCameraComponent`), so parallel lines stay
     /// parallel by projection, not by faking a narrow FOV. This constant is no
     /// longer a real field of view: it sets how far the camera sits (`radius`, for
@@ -149,62 +305,48 @@ final class RoomSceneController: NSObject {
     /// delete this flag, `placeDemoFurniture`, and its call) before shipping.
     /// The preview pieces are not mode-aware: they keep their PLAY styling in BUY.
     static let demoFurniture = true
-    /// Bumped on every `setMode`; a snapshot callback applies its palette only if
-    /// it's still the latest generation, so rapid toggles can't flash a stale one.
+    /// Bumped on every `setMode`; a snapshot callback applies its frame only if it's
+    /// still the latest generation, so rapid toggles can't flash a stale one.
     private var modeGeneration = 0
     var lastResetToken = 0
     var onThumbnail: ((Data) -> Void)?
     private var didSnapshot = false
     private var frameCount = 0
-    private var updateSub: Cancellable?
+    /// Retained per-frame subscription (set by the view from `RealityViewContent`).
+    var updateSub: EventSubscription?
+    /// Pushes a cross-fade freeze frame up to the SwiftUI view. Set by the view.
+    var crossfade: ((UIImage?) -> Void)?
+    /// The view's drawable size in PIXELS (points × display scale), kept current by
+    /// the view; the offscreen snapshot renders at this resolution.
+    var pixelSize: CGSize = .zero
 
     // MARK: - Setup
 
-    func attach(to view: ARView, room: RoomModel, mode: RoomRenderMode) {
-        self.arView = view
+    /// Build all scene entities (geometry, lights, camera). The view adds `root` and
+    /// `cameraAnchor` to its `RealityViewContent` and wires the per-frame loop.
+    func makeEntities(room: RoomModel, mode: RoomRenderMode, onThumbnail: ((Data) -> Void)?) {
         self.mode = mode
+        self.onThumbnail = onThumbnail
 
         buildLights()
         root.addChild(keyLight)
         root.addChild(fillA)
         root.addChild(fillB)
+        iblEntity.name = Self.iblEntityName
+        root.addChild(iblEntity)
         buildGeometry(room: room)
-        view.scene.addAnchor(root)
 
-        // True orthographic projection — the canonical isometric-diorama camera.
-        // The ortho `scale` (view-volume height) is set every frame in `updateCamera`,
+        // True orthographic projection — the canonical isometric-diorama camera. The
+        // ortho `scale` (view-volume height) is set every frame in `updateCamera`,
         // derived from `radius`, so the existing orbit / pinch-zoom / reset machinery
         // keeps driving a single value and needs no other change.
-        //
-        // VERIFY ON DEVICE: that `OrthographicCameraComponent` is honored as the
-        // active camera in a `.nonAR ARView`. RealityKit's perspective camera works
-        // here; the ortho component is the one piece we can't compile-check off-device
-        // (no Xcode on this Mac). If the scene renders black/empty, RealityKit isn't
-        // picking up the ortho camera in ARView and this view should migrate to
-        // `RealityView` (iOS 18+), which supports it cleanly — a larger change to
-        // weigh separately. To fall back fast meanwhile: restore `PerspectiveCamera()`
-        // above and `camera.camera.fieldOfViewInDegrees = Self.isoFOVDegrees` here.
         camera.components.set(OrthographicCameraComponent())
-
-        let cameraAnchor = AnchorEntity(world: .zero)
         cameraAnchor.addChild(camera)
-        view.scene.addAnchor(cameraAnchor)
 
         frameCamera(room: room)
         applyPalette(for: mode)
         updateCamera()
-        addGestures(to: view)
         loadEnvironment()
-
-        // Drive culling, label facing, the reset spring, and the one-time
-        // thumbnail off the render loop.
-        updateSub = view.scene.subscribe(to: SceneEvents.Update.self) { [weak self] event in
-            self?.onSceneUpdate(deltaTime: event.deltaTime)
-        }
-    }
-
-    func tearDown() {
-        updateSub = nil
     }
 
     private func buildLights() {
@@ -637,27 +779,25 @@ final class RoomSceneController: NSObject {
             ? DirectionalLightComponent.Shadow(maximumDistance: 8, depthBias: 2.0)
             : nil
 
-        // Warm skybox + image-based lighting in PLAY (once `environment` is built);
-        // flat neutral color in BUY. Kept last so the directional rig is in place
-        // regardless of whether the async environment has loaded yet.
+        // Warm image-based lighting in PLAY (once `environment` is built); none in
+        // BUY. Kept last so the directional rig is in place regardless of whether
+        // the async environment has loaded yet.
         applyEnvironmentLighting()
     }
 
-    /// Apply the warm studio environment as PLAY image-based lighting over a solid
-    /// "void" backdrop, or a flat neutral color in BUY. Called from `applyPalette`
-    /// on every mode change and again from `loadEnvironment` once the async
-    /// resource is ready. Uses `self.mode`, which callers set before invoking.
+    /// Apply the warm studio environment as PLAY image-based lighting, or none in
+    /// BUY. On the old `ARView` this set `environment.lighting.resource`; `RealityView`
+    /// has no such hook, so the IBL is driven by components: the source lives on
+    /// `iblEntity` (set once `environment` loads) and the scene root receives from it
+    /// only in PLAY. Removing the receiver in BUY restores the neutral measuring look.
+    /// The visible "void" backdrop is no longer a skybox here — it's a SwiftUI colour
+    /// layer behind the `RealityView` (see `RoomDioramaScreen`).
     private func applyEnvironmentLighting() {
-        guard let arView else { return }
         if mode == .play, let environment {
-            // Keep the warm IBL wrap for soft global illumination, but show a flat
-            // solid backdrop instead of the skybox gradient, so the room reads as a
-            // model floating in a clean void — the defining diorama composition.
-            arView.environment.lighting.resource = environment
-            arView.environment.background = .color(RoomPalette.palette(for: .play).background)
+            iblEntity.components.set(ImageBasedLightComponent(source: .single(environment)))
+            root.components.set(ImageBasedLightReceiverComponent(imageBasedLight: iblEntity))
         } else {
-            arView.environment.lighting.resource = nil
-            arView.environment.background = .color(RoomPalette.palette(for: mode).background)
+            root.components.remove(ImageBasedLightReceiverComponent.self)
         }
     }
 
@@ -686,40 +826,74 @@ final class RoomSceneController: NSObject {
         entity.model = model
     }
 
-    /// Cross-fade to a new render mode: snapshot the current frame, swap
-    /// materials beneath it, then fade the snapshot out in < 400 ms.
+    /// Cross-fade to a new render mode: snapshot the current frame (offscreen),
+    /// swap materials beneath it, then hand the freeze to the view to fade out in
+    /// < 400 ms. If the offscreen snapshot fails it is surfaced loudly by
+    /// `OffscreenSnapshotRenderer` and we apply the palette WITHOUT a fade — never a
+    /// fabricated frame.
     func setMode(_ newMode: RoomRenderMode, animated: Bool) {
         guard newMode != mode else { return }
+        let oldMode = mode
         mode = newMode
         modeGeneration += 1
         let generation = modeGeneration
-        guard animated, let view = arView else {
+
+        let size = pixelSize
+        guard animated, size.width > 0, size.height > 0 else {
             applyPalette(for: newMode)
             return
         }
-        view.snapshot(saveToHDR: false) { [weak self] image in
-            DispatchQueue.main.async {
-                guard let self, let view = self.arView else { return }
-                // A newer toggle has superseded this one; let its callback apply
-                // the correct palette and cross-fade rather than flashing a stale
-                // frame on top of it.
-                guard self.modeGeneration == generation else { return }
-                guard let image else {
-                    self.applyPalette(for: newMode)
-                    return
-                }
-                let overlay = UIImageView(image: image)
-                overlay.frame = view.bounds
-                overlay.contentMode = .scaleAspectFill
-                overlay.autoresizingMask = [.flexibleWidth, .flexibleHeight]
-                view.addSubview(overlay)
+
+        Task { @MainActor in
+            let image = await self.captureSnapshot(mode: oldMode, pixelSize: size)
+            // A newer toggle has superseded this one; let its callback drive the
+            // cross-fade rather than flashing a stale frame on top of it.
+            guard self.modeGeneration == generation else { return }
+            guard let image else {
+                // Failure already surfaced by the renderer — swap without a fade.
                 self.applyPalette(for: newMode)
-                UIView.animate(withDuration: 0.35, animations: {
-                    overlay.alpha = 0
-                }, completion: { _ in
-                    overlay.removeFromSuperview()
-                })
+                return
             }
+            // Show the freeze first, then swap materials underneath it.
+            self.crossfade?(image)
+            self.applyPalette(for: newMode)
+        }
+    }
+
+    // MARK: - Snapshot
+
+    /// Render the current scene offscreen into a `UIImage`, composited over `mode`'s
+    /// background colour. Clones the live scene + camera (the renderer must not be
+    /// handed live, parented entities) and re-points the cloned IBL receiver at the
+    /// cloned source so PLAY lighting matches the on-screen frame.
+    private func captureSnapshot(mode: RoomRenderMode, pixelSize: CGSize) async -> UIImage? {
+        let sceneClone = root.clone(recursive: true)
+        // A cloned `ImageBasedLightReceiverComponent` still references the ORIGINAL
+        // source entity (not in the offscreen scene), so re-point it at the clone.
+        if root.components[ImageBasedLightReceiverComponent.self] != nil,
+           let clonedSource = sceneClone.findEntity(named: Self.iblEntityName) {
+            sceneClone.components.set(ImageBasedLightReceiverComponent(imageBasedLight: clonedSource))
+        }
+        let cameraClone = camera.clone(recursive: false)
+        cameraClone.transform = Transform(matrix: camera.transformMatrix(relativeTo: nil))
+
+        guard let raw = await OffscreenSnapshotRenderer.image(
+            scene: sceneClone, camera: cameraClone, pixelSize: pixelSize) else { return nil }
+        return Self.composite(raw, over: RoomPalette.palette(for: mode).background)
+    }
+
+    /// Flatten a (transparent-backed) render over a solid background colour so the
+    /// freeze frame and thumbnail carry the diorama's backdrop, matching what the
+    /// SwiftUI background layer shows on screen.
+    private static func composite(_ image: UIImage, over color: UIColor) -> UIImage {
+        let format = UIGraphicsImageRendererFormat.default()
+        format.scale = image.scale
+        format.opaque = true
+        let renderer = UIGraphicsImageRenderer(size: image.size, format: format)
+        return renderer.image { context in
+            color.setFill()
+            context.fill(CGRect(origin: .zero, size: image.size))
+            image.draw(in: CGRect(origin: .zero, size: image.size))
         }
     }
 
@@ -795,9 +969,19 @@ final class RoomSceneController: NSObject {
         }
     }
 
+    // MARK: - External state (driven by the SwiftUI view's `update`)
+
+    func applyExternalState(mode newMode: RoomRenderMode, resetToken: Int) {
+        if mode != newMode { setMode(newMode, animated: true) }
+        if lastResetToken != resetToken {
+            lastResetToken = resetToken
+            resetCamera(animated: true)
+        }
+    }
+
     // MARK: - Per-frame loop
 
-    private func onSceneUpdate(deltaTime: TimeInterval) {
+    func onSceneUpdate(deltaTime: TimeInterval) {
         advanceCameraAnim(deltaTime: deltaTime)
         cullWalls()
         captureThumbnailIfNeeded()
@@ -837,14 +1021,20 @@ final class RoomSceneController: NSObject {
     }
 
     private func captureThumbnailIfNeeded() {
-        guard !didSnapshot, let onThumbnail, let view = arView else { return }
+        guard !didSnapshot, onThumbnail != nil else { return }
         frameCount += 1
-        // Give the scene a few frames to render before grabbing the thumbnail.
+        // Give the scene a few frames to render (and the async environment a chance
+        // to load) before grabbing the thumbnail. Wait, too, until the view's pixel
+        // size is known so the offscreen render is correctly sized.
         guard frameCount >= 8 else { return }
+        let size = pixelSize
+        guard size.width > 0, size.height > 0 else { return }
         didSnapshot = true
-        view.snapshot(saveToHDR: false) { image in
-            guard let data = image?.pngData() else { return }
-            DispatchQueue.main.async { onThumbnail(data) }
+        let mode = self.mode
+        Task { @MainActor in
+            guard let image = await self.captureSnapshot(mode: mode, pixelSize: size),
+                  let data = image.pngData() else { return }
+            self.onThumbnail?(data)
         }
     }
 
@@ -855,58 +1045,40 @@ final class RoomSceneController: NSObject {
         return 1 + c3 * p * p * p + c1 * p * p
     }
 
-    // MARK: - Gestures
+    // MARK: - Gesture intents (from `SceneGestureOverlay`)
 
-    private func addGestures(to view: ARView) {
-        let orbit = UIPanGestureRecognizer(target: self, action: #selector(handleOrbit(_:)))
-        orbit.maximumNumberOfTouches = 1
-        view.addGestureRecognizer(orbit)
-
-        let panTarget = UIPanGestureRecognizer(target: self, action: #selector(handlePan(_:)))
-        panTarget.minimumNumberOfTouches = 2
-        panTarget.maximumNumberOfTouches = 2
-        view.addGestureRecognizer(panTarget)
-
-        let pinch = UIPinchGestureRecognizer(target: self, action: #selector(handlePinch(_:)))
-        view.addGestureRecognizer(pinch)
-    }
-
-    @objc private func handleOrbit(_ gesture: UIPanGestureRecognizer) {
-        guard let view = gesture.view else { return }
+    /// One-finger drag → orbit. `dx`/`dy` are incremental screen-point deltas.
+    func orbit(dx: Float, dy: Float) {
         cameraAnim = nil
-        let t = gesture.translation(in: view)
-        azimuth -= Float(t.x) * 0.008
-        elevation = min(max(elevation - Float(t.y) * 0.008, 0.06), .pi / 2 - 0.05)
-        gesture.setTranslation(.zero, in: view)
+        azimuth -= dx * 0.008
+        elevation = min(max(elevation - dy * 0.008, 0.06), .pi / 2 - 0.05)
         updateCamera()
     }
 
-    @objc private func handlePan(_ gesture: UIPanGestureRecognizer) {
-        guard let view = gesture.view else { return }
+    /// Two-finger drag → pan the look-at target across the floor, in the camera's
+    /// screen plane (right/forward derived from the current azimuth).
+    func pan(dx: Float, dy: Float) {
         cameraAnim = nil
-        let t = gesture.translation(in: view)
-        // Pan the look-at target across the floor, in the camera's screen plane.
-        // Right and "forward on floor" are derived from the current azimuth.
         let right = SIMD3<Float>(cosf(azimuth), 0, -sinf(azimuth))
         let forward = SIMD3<Float>(sinf(azimuth), 0, cosf(azimuth))
         let scale = radius * 0.0016
         var newTarget = target
-        newTarget -= right * Float(t.x) * scale
-        newTarget += forward * Float(t.y) * scale
+        newTarget -= right * dx * scale
+        newTarget += forward * dy * scale
         // Keep the target from wandering far outside the room footprint.
         let limit: Float = radiusRange.upperBound
         newTarget.x = min(max(newTarget.x, centroidXZ.x - limit), centroidXZ.x + limit)
         newTarget.z = min(max(newTarget.z, centroidXZ.y - limit), centroidXZ.y + limit)
         target = newTarget
-        gesture.setTranslation(.zero, in: view)
         updateCamera()
     }
 
-    @objc private func handlePinch(_ gesture: UIPinchGestureRecognizer) {
+    /// Pinch → zoom. `scale` is the recognizer's incremental scale (reset to 1 each
+    /// callback), so dividing `radius` by it matches the old behaviour exactly.
+    func pinch(scale: Float) {
         cameraAnim = nil
-        radius = min(max(radius / Float(gesture.scale), radiusRange.lowerBound), radiusRange.upperBound)
-        gesture.scale = 1
+        guard scale > 0 else { return }
+        radius = min(max(radius / scale, radiusRange.lowerBound), radiusRange.upperBound)
         updateCamera()
     }
 }
-

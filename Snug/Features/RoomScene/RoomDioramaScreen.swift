@@ -28,6 +28,13 @@ struct RoomDioramaScreen: View {
     var body: some View {
         ZStack {
             if let room {
+                // The diorama's "void" backdrop. On the old ARView this was
+                // `environment.background = .color(...)`; RealityView has no such
+                // hook, so it lives here as a SwiftUI layer behind the scene and
+                // cross-fades with the mode change (the scene renders transparent).
+                Color(uiColor: RoomPalette.palette(for: mode).background)
+                    .ignoresSafeArea()
+
                 RoomSceneView(
                     room: room,
                     mode: mode,

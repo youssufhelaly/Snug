@@ -59,6 +59,12 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     @Published private(set) var corners: [PlanePoint] = []
     @Published private(set) var openings: [RoomOpening] = []
     @Published private(set) var trackingQuality: TrackingQuality = .initializing
+    /// True while camera capture is interrupted (a call, another app or Control
+    /// Center grabbing the camera, or the iOS 26 capture-stack hiccup that logs
+    /// `FigCaptureSourceRemote err=-17281`). The passthrough goes black until the
+    /// interruption ends; the overlay shows a brief "camera paused" note and we
+    /// restart automatically. See `sessionWasInterrupted` / `sessionInterruptionEnded`.
+    @Published private(set) var cameraInterrupted = false
     @Published private(set) var lastRaycastFailed = false
     /// Set when a placement tap was ignored because tracking wasn't reliable
     /// enough yet. Surfaced so a tap that "does nothing" is explained, not silent.
@@ -128,6 +134,12 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     /// Called once with the finished room.
     var onComplete: ((RoomModel) -> Void)?
+
+    /// Surfaces an unrecoverable session/camera failure to the capture screen's
+    /// failure UI. Set by the view alongside `onComplete`. Loud, never silent
+    /// (CLAUDE.md): a dead camera ends in an honest failure screen, not a frozen
+    /// black view.
+    var onFailure: ((CaptureFailure) -> Void)?
 
     // MARK: - AR scene
 
@@ -958,6 +970,43 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         // Delegate callbacks are pinned to the main queue (see `attach`), so the
         // @Published mutation is already on the main thread.
         trackingQuality = quality
+    }
+
+    // MARK: Session interruption / failure recovery
+
+    /// Camera capture was taken away (phone call, another app / Control Center, or
+    /// the iOS 26 capture-stack hiccup behind `FigCaptureSource err=-17281`). The
+    /// passthrough goes black; flag it so the overlay can say so.
+    func sessionWasInterrupted(_ session: ARSession) {
+        cameraInterrupted = true
+    }
+
+    /// The interruption ended. Re-run the configuration WITHOUT `.resetTracking`,
+    /// so any corners the user already placed keep their world alignment (ARKit
+    /// relocalizes to the existing map). This is the fix for a passthrough that
+    /// stays black after the camera returns — the session needs an explicit
+    /// re-run, it does not always resume on its own.
+    func sessionInterruptionEnded(_ session: ARSession) {
+        cameraInterrupted = false
+        arView?.session.run(makeConfiguration())
+    }
+
+    /// A hard session failure. Loud, never silent (CLAUDE.md): always log the real
+    /// error. Denied camera routes to the permission screen. Otherwise, if nothing
+    /// has been captured yet, a clean restart costs nothing and clears a black
+    /// startup; once corners exist a reset would misalign them, so we surface an
+    /// honest failure rather than fake a recovery.
+    func session(_ session: ARSession, didFailWithError error: Error) {
+        print("⚠️ Snug: ARSession failed — \(error.localizedDescription)")
+        if (error as? ARError)?.code == .cameraUnauthorized {
+            onFailure?(.cameraPermissionDenied)
+            return
+        }
+        if corners.isEmpty, let arView {
+            arView.session.run(makeConfiguration(), options: [.resetTracking, .removeExistingAnchors])
+        } else {
+            onFailure?(.processingFailed(error.localizedDescription))
+        }
     }
 
     private static func describe(_ reason: ARCamera.TrackingState.Reason) -> String {
