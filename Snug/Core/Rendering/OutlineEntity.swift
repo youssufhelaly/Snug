@@ -5,15 +5,15 @@ import simd
 /// Builds the chunky dark "toy" outlines for the PLAY-mode diorama.
 ///
 /// ## Technique (and its one runtime assumption)
-/// RealityKit on iOS 17 exposes **no** `faceCulling` material property and no
-/// reliable per-entity render-order knob, so the classic SceneKit outline tricks
-/// don't translate. The production-safe approach the Phase-3 prompt points at is
-/// the **inverted hull**: a slightly inflated companion mesh whose triangles are
-/// wound *inward*. RealityKit's standard materials cull back faces (they are
-/// single-sided, which is exactly why `faceCulling` isn't settable), so an
-/// inward-wound inflated shell renders only its far faces — appearing as a dark
-/// rim around the silhouette while the real, smaller, lit mesh shows through in
-/// the middle.
+/// RealityKit's standard materials are single-sided — back faces are culled and
+/// there is no public face-culling toggle we depend on (verify against the iOS 26
+/// SDK before assuming one now exists; the technique below doesn't need it). The
+/// production-safe approach the Phase-3 prompt points at is the **inverted hull**:
+/// a slightly inflated companion mesh whose triangles are wound *inward*. Because
+/// standard materials cull back faces, an inward-wound inflated shell renders only
+/// its far faces — appearing as a dark rim around the silhouette while the real,
+/// smaller, lit mesh shows through in the middle. This is also the look we want, so
+/// even if a culling API turns out to exist on iOS 26 the hull stays.
 ///
 /// **The assumption to verify on device:** that standard-material back-face
 /// culling is on by default. If a shell ever renders as a *solid* dark blob

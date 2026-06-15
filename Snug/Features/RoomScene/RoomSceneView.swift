@@ -195,11 +195,14 @@ final class RoomSceneController: NSObject {
     }
 
     private func buildLights() {
-        // Warm key from top-right, cooler fill from the left, warm back fill as an
-        // ambient stand-in (RealityKit has no AmbientLight on iOS 17). Directional
-        // lights use only their direction, so aiming at the origin is correct even
-        // when the room isn't centered there. Tints/intensities are set per mode
-        // in `applyPalette`.
+        // Warm key from top-right, cooler fill from the left, warm back fill. The
+        // soft ambient wrap comes from image-based lighting (`StudioEnvironment`);
+        // RealityKit has no dedicated ambient-light entity (still true on iOS 26),
+        // so this back/fill pair supplements the IBL and stands in for it on the
+        // first frames before the async environment loads. Directional lights use
+        // only their direction, so aiming at the origin is correct even when the
+        // room isn't centered there. Tints/intensities are set per mode in
+        // `applyPalette`.
         keyLight.look(at: .zero, from: [2.5, 4.0, 2.5], relativeTo: nil)
         fillA.look(at: .zero, from: [-3.0, 2.0, -1.0], relativeTo: nil)
         fillB.look(at: .zero, from: [0.4, 1.4, -2.2], relativeTo: nil)

@@ -7,12 +7,13 @@ import UIKit
 /// a hex value.
 ///
 /// We use `PhysicallyBasedMaterial` at high roughness rather than `SimpleMaterial`
-/// or a `CustomMaterial` surface shader: a matte PBM under the warm 3-point rig
-/// reads as a cozy toy surface at casual viewing distance, and avoids the Metal
-/// shader-library compilation that `CustomMaterial` would require (see the
-/// RealityKit constraints note in the Phase-3 prompt). Toon stepping is therefore
-/// *approximated by warm lighting on matte surfaces*, not by intercepting the
-/// lighting pipeline — which iOS 17 RealityKit does not permit.
+/// or a custom surface shader: a matte PBM under the warm 3-point rig reads as a
+/// cozy toy surface at casual viewing distance, and avoids the Metal shader-library
+/// authoring a custom material would require. Toon stepping is therefore
+/// *approximated by warm lighting on matte surfaces*. A true lighting-quantized
+/// toon shader is now feasible on iOS 26 via `ShaderGraphMaterial` (authored in
+/// Reality Composer Pro), but it needs an asset pipeline we don't have yet, so the
+/// matte-PBM approximation stays for now (see `ToonRampGenerator`).
 enum PlayModeMaterials {
 
     /// Walls: large flat surfaces. Plain matte PBM — no outline-prone detail.

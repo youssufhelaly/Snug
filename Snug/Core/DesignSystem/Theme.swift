@@ -109,10 +109,12 @@ struct RoomPalette {
 
     // MARK: Lighting (warm 3-point in PLAY, neutral in BUY)
     //
-    // NOTE: RealityKit has no `AmbientLight` type on iOS 17 — ambient "fill" is
-    // approximated by a soft back/fill directional pair. Intensities are in lux
-    // (RealityKit's unit), tuned against the device-validated Phase-1 values, NOT
-    // the lumen figures in the prompt, which don't map to RealityKit's scale.
+    // NOTE: RealityKit has no dedicated ambient-light entity (still true on iOS 26).
+    // The soft ambient wrap is carried by image-based lighting (StudioEnvironment);
+    // this back/fill directional pair supplements it and stands in before the async
+    // IBL loads. Intensities are in lux (RealityKit's unit), tuned against the
+    // device-validated Phase-1 values, NOT the lumen figures in the prompt, which
+    // don't map to RealityKit's scale.
     let keyTint: UIColor
     let keyIntensity: Float
     /// Cooler side fill, contrasts the warm key.

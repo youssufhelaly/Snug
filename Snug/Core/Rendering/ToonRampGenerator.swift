@@ -6,16 +6,15 @@ import Foundation
 /// toon shader.
 ///
 /// ## Why this isn't wired into the walls/floor
-/// True toon shading needs to quantize the *lighting* response, which iOS 17
-/// RealityKit will not let us do (the surface shader runs after the lighting
-/// pass; there is no lighting hook). The documented approximation is to feed this
-/// ramp as a base-color texture — but on a large flat wall a 4-pixel ramp sampled
-/// across the UVs reads as visible banding stripes, not stepped lighting, so per
-/// the Phase-3 prompt's own Step 2 the walls/floor/furniture use solid-color matte
-/// PBM under warm light instead. This generator is provided as a ready utility for
-/// a future furniture `CustomMaterial` surface shader (where a ramp lookup *can*
-/// be sampled by surface luminance) and is intentionally not force-fit where it
-/// would look wrong.
+/// True toon shading needs to quantize the *lighting* response. Feeding this ramp
+/// as a plain base-color texture is the cheap approximation — but on a large flat
+/// wall a 4-pixel ramp sampled across the UVs reads as visible banding stripes, not
+/// stepped lighting, so per the Phase-3 prompt's own Step 2 the walls/floor/
+/// furniture use solid-color matte PBM under warm light instead. This generator is
+/// kept as a ready utility for a future toon material: on iOS 26 a
+/// `ShaderGraphMaterial` (authored in Reality Composer Pro) can sample a luminance
+/// ramp inside the surface shader — the proper path — once that asset pipeline
+/// exists. It's intentionally not force-fit where it would look wrong.
 enum ToonRampGenerator {
 
     /// The four steps, left → right, as 8-bit RGB.
