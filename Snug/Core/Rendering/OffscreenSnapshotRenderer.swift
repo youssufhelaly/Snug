@@ -18,7 +18,8 @@ import CoreGraphics
 ///
 /// ## Fail loud, never fake (deliberate — mirrors `StudioEnvironment`)
 /// If any step fails (no Metal device, renderer / texture / camera-output creation,
-/// or the render pass itself) this returns `nil` *after* surfacing the failure:
+/// the render pass itself, or the completion handler never firing within a generous
+/// timeout) this returns `nil` *after* surfacing the failure:
 /// `assertionFailure` in debug, a console warning always. Callers must NOT invent a
 /// substitute frame — a missing snapshot degrades to an instant, un-animated
 /// material swap, and the failure is reported rather than masked. This matches the
@@ -40,6 +41,7 @@ enum OffscreenSnapshotRenderer {
         case textureAllocationFailed
         case cameraOutputFailed(any Error)
         case renderFailed(any Error)
+        case renderTimedOut
         case textureReadbackFailed
 
         var description: String {
@@ -49,6 +51,7 @@ enum OffscreenSnapshotRenderer {
             case .textureAllocationFailed: return "MTLDevice.makeTexture returned nil"
             case .cameraOutputFailed(let e): return "RealityRenderer.CameraOutput init threw: \(e)"
             case .renderFailed(let e): return "updateAndRender threw: \(e)"
+            case .renderTimedOut: return "updateAndRender's onComplete never fired within the timeout"
             case .textureReadbackFailed: return "could not build a CGImage from the rendered texture"
             }
         }
@@ -95,6 +98,23 @@ enum OffscreenSnapshotRenderer {
         }
 
         return await withCheckedContinuation { continuation in
+            // `onComplete` is the only success path that resumes the continuation, and
+            // it relies on the RealityRenderer contract that the handler always fires
+            // once `updateAndRender` returns without throwing (it mirrors a Metal
+            // command-buffer completion handler). If that contract were ever violated
+            // the awaiting task would hang forever and the documented "degrade to an
+            // un-animated swap, report the failure" behaviour would silently break —
+            // so a generous timeout resumes `nil` and surfaces `.renderTimedOut`
+            // instead. The completion handler can fire off the main thread, so
+            // `ResumeGuard` keeps the single-resume check thread-safe.
+            let resumeGuard = ResumeGuard()
+            let timeout = Task { @MainActor in
+                try? await Task.sleep(for: .seconds(5))
+                if resumeGuard.claim() {
+                    Self.surface(.renderTimedOut)
+                    continuation.resume(returning: nil)
+                }
+            }
             do {
                 try renderer.updateAndRender(
                     deltaTime: 0,
@@ -106,6 +126,8 @@ enum OffscreenSnapshotRenderer {
                         // deallocate the instant `updateAndRender` returns.
                         _ = renderer
                         _ = output
+                        timeout.cancel()
+                        guard resumeGuard.claim() else { return }
                         let image = Self.makeImage(from: texture)
                         if image == nil { Self.surface(.textureReadbackFailed) }
                         continuation.resume(returning: image)
@@ -114,8 +136,11 @@ enum OffscreenSnapshotRenderer {
                     actionsAfterRender: []
                 )
             } catch {
-                Self.surface(.renderFailed(error))
-                continuation.resume(returning: nil)
+                timeout.cancel()
+                if resumeGuard.claim() {
+                    Self.surface(.renderFailed(error))
+                    continuation.resume(returning: nil)
+                }
             }
         }
     }
@@ -155,5 +180,23 @@ enum OffscreenSnapshotRenderer {
     nonisolated private static func surface(_ error: SnapshotError) {
         assertionFailure("Snug offscreen snapshot failed: \(error)")
         print("⚠️ Snug: offscreen snapshot unavailable — \(error)")
+    }
+}
+
+/// One-shot resume guard for the snapshot continuation. `updateAndRender`'s
+/// completion handler may fire on a background thread while the timeout fallback
+/// fires on the main actor, so "have we resumed yet?" must be checked under a lock.
+/// `claim()` returns `true` to exactly one caller; everyone else gets `false` and
+/// must not touch the continuation.
+private final class ResumeGuard: @unchecked Sendable {
+    private let lock = NSLock()
+    private var claimed = false
+
+    func claim() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        if claimed { return false }
+        claimed = true
+        return true
     }
 }

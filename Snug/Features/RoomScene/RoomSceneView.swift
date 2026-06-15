@@ -75,7 +75,17 @@ struct RoomSceneView: View {
             .onChange(of: geo.size) { syncPixelSize(geo.size) }
             .onChange(of: displayScale) { syncPixelSize(geo.size) }
             .onAppear {
-                controller.crossfade = { image in crossfadeImage = image }
+                // Snap the freeze to full opacity in the SAME state mutation that
+                // introduces the image, so the overlay's first committed frame is
+                // already opaque. If opacity stayed at 0 until `.onChange` →
+                // `startCrossfade` ran, SwiftUI could commit one frame of the
+                // just-swapped materials showing through the transparent overlay —
+                // the inverse of the intended freeze. `startCrossfade` still drives
+                // the fade-OUT.
+                controller.crossfade = { image in
+                    if image != nil { fadeOpacity = 1 }
+                    crossfadeImage = image
+                }
                 syncPixelSize(geo.size)
             }
         }
