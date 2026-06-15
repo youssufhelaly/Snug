@@ -33,6 +33,8 @@ deposit-safe.
 - SwiftData for local persistence (rooms, designs, saved items),
   using SwiftData's native VersionedSchema + SchemaMigrationPlan
   for model evolution. Do NOT add custom version fields to models.
+  Concrete shape is in "Data model & persistence" below (current
+  schema: `SnugSchemaV1`).
 - No third-party dependencies in the core app. One exception is
   pre-approved: the V1.1 video-export module may use a vetted
   Swift Package if offscreen RealityKit→AVFoundation composition
@@ -44,16 +46,45 @@ deposit-safe.
 ## Architecture rules
 - MVVM. Views are dumb. ViewModels are @Observable classes.
   Business logic lives in plain services (RoomCaptureService,
-  FitService, CatalogService, DesignStore), injected via
-  environment.
-- One feature = one folder under /Features
-  (Capture, Editor, Catalog, Saved, Share, Onboarding).
-- /Core holds shared services, models, and the design system.
+  FitService, CatalogService, RoomStore, DesignStore), injected
+  via environment. `RoomStore` (Phase 1) owns saved-room
+  persistence; `DesignStore` (Phase 4) will own saved layouts.
+- One feature = one folder under /Features. Present: Capture, Fit,
+  RoomScene (the 3D diorama), Rooms (the "My rooms" home). Planned:
+  Editor, Catalog, Saved, Share, Onboarding.
+- /Core holds shared services, models, and the design system
+  (`Core/DesignSystem/Theme.swift` is the single source of truth
+  for colors, the spring, and the per-mode `RoomPalette`).
 - All RoomPlan / RealityKit work happens off the main thread
   except final scene mutations.
 - Write code as if a second engineer joins next month: clear
   naming, no clever tricks, doc comments on every service's
   public API.
+
+## Data model & persistence
+- `RoomModel` is the app's ONE canonical room representation: a
+  plain `Codable`/`Equatable` value type (floor-corner polygon,
+  ceiling height, openings; walls/area/diagonal are derived). Every
+  capture method produces it; `FitService`, the diorama, the
+  accuracy logger, and the test fixtures all read it. It is NOT a
+  SwiftData `@Model` — keep it a value type.
+- Persistence wraps it, never replaces it. `StoredRoom` (a SwiftData
+  `@Model` inside `SnugSchemaV1`) stores the whole `RoomModel` as a
+  JSON `Data` blob plus a few DENORMALIZED columns for listing
+  without decoding (`id`, `name`, `capturedAt`, `thumbnailData`).
+  This deliberately avoids a second source of geometry truth. The
+  blob's evolution rides on `RoomModel`'s own `Codable`; SwiftData
+  migrations (`SnugMigrationPlan`) handle the surrounding columns.
+- `RoomStore` is the only writer of saved rooms (save / update /
+  rename / setThumbnail / delete + encode-decode). Views list rooms
+  reactively with `@Query`; mutations go through `RoomStore`. It is
+  a plain `@Observable` (not `@MainActor`) holding the container's
+  **main** `ModelContext`, so it must be used on the main thread.
+- Adding a new persisted field to a room (e.g. Phase 2's detected
+  objects) = add it to `RoomModel` (with a Codable default so old
+  blobs still decode) and, if `StoredRoom`'s columns change, bump to
+  `SnugSchemaV2` with a migration stage. Never add a manual version
+  field.
 
 ## Manual AR capture (ManualARCaptureMethod)
 `ManualARCaptureMethod` is a stateless factory; all per-session AR
@@ -196,6 +227,16 @@ control is more honest than fake precision.
   or attempt photorealism in V1 — accuracy of size and color is
   the promise, and stylization must never alter either in this
   mode. One-tap toggle, always visible, cross-fade < 400ms.
+- Implementation (Phase 1, `Features/RoomScene`): the diorama is one
+  RealityKit scene built once from `RoomModel`; PLAY↔BUY swaps ONLY
+  materials + lighting (and toggles BUY dimension labels) — never a
+  vertex. Render-mode colors come from `RoomPalette` in Theme.swift.
+  It's an open-top "dollhouse": no ceiling, and walls between the
+  camera and the interior are culled each frame so you can see in.
+  The < 400ms cross-fade is an `ARView.snapshot` overlay faded out
+  (NOT offscreen rendering); the same snapshot becomes the room's
+  list thumbnail. If you touch this, the identical-geometry invariant
+  is the acceptance gate — verify with a wireframe overlay.
 
 ## The fit system (the trust layer — highest-stakes code in the app)
 - FitService computes placement results against REAL scanned
