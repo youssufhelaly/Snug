@@ -36,6 +36,13 @@ struct RoomDioramaScreen: View {
                 )
                 .ignoresSafeArea()
 
+                if RoomPalette.palette(for: mode).showsVignette {
+                    vignette
+                        .ignoresSafeArea()
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
+                }
+
                 controls
             } else {
                 unreadableRoom
@@ -74,6 +81,26 @@ struct RoomDioramaScreen: View {
             TextField("Room name", text: $nameDraft)
             Button("Save") { store.rename(stored, to: nameDraft) }
             Button("Cancel", role: .cancel) {}
+        }
+    }
+
+    // MARK: - Vignette (PLAY only)
+
+    /// A soft corner vignette in the diorama's terracotta, deepening the cozy
+    /// "looking into a box" feel. Pure SwiftUI — no RealityKit involvement. The
+    /// tint comes from the PLAY palette background so the brand stays centralized.
+    private var vignette: some View {
+        GeometryReader { geo in
+            let maxDim = max(geo.size.width, geo.size.height)
+            RadialGradient(
+                gradient: Gradient(colors: [
+                    .clear,
+                    Color(RoomPalette.palette(for: .play).background).opacity(0.12),
+                ]),
+                center: .center,
+                startRadius: maxDim * 0.30,
+                endRadius: maxDim * 0.82
+            )
         }
     }
 

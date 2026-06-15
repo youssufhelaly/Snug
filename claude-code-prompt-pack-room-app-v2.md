@@ -115,7 +115,7 @@ deposit-safe.
 
 ## Tech stack — do not deviate without asking
 - Swift 5.10+, SwiftUI for all UI
-- iOS 17.0 minimum deployment target
+- iOS 26.0 minimum deployment target
 - RoomPlan for room capture (LiDAR devices only — detect capability
   at launch and show a graceful unsupported-device screen)
 - RealityKit for the 3D room view and furniture placement
@@ -447,7 +447,7 @@ FitService:
    recommend."
 ```
 
-**Acceptance criteria:**
+**Acceptance xcriteria:**
 - [ ] The exported image pair makes YOU want to post it
 - [ ] Share sheet works to Photos, Messages, Instagram
 
