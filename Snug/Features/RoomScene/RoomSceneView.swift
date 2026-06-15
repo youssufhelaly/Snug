@@ -98,6 +98,9 @@ final class RoomSceneController: NSObject {
 
     // MARK: Misc
     private(set) var mode: RoomRenderMode = .play
+    /// Bumped on every `setMode`; a snapshot callback applies its palette only if
+    /// it's still the latest generation, so rapid toggles can't flash a stale one.
+    private var modeGeneration = 0
     var lastResetToken = 0
     var onThumbnail: ((Data) -> Void)?
     private var didSnapshot = false
@@ -369,6 +372,8 @@ final class RoomSceneController: NSObject {
     func setMode(_ newMode: RoomRenderMode, animated: Bool) {
         guard newMode != mode else { return }
         mode = newMode
+        modeGeneration += 1
+        let generation = modeGeneration
         guard animated, let view = arView else {
             applyPalette(for: newMode)
             return
@@ -376,6 +381,10 @@ final class RoomSceneController: NSObject {
         view.snapshot(saveToHDR: false) { [weak self] image in
             DispatchQueue.main.async {
                 guard let self, let view = self.arView else { return }
+                // A newer toggle has superseded this one; let its callback apply
+                // the correct palette and cross-fade rather than flashing a stale
+                // frame on top of it.
+                guard self.modeGeneration == generation else { return }
                 guard let image else {
                     self.applyPalette(for: newMode)
                     return

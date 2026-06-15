@@ -13,6 +13,10 @@ struct MyRoomsView: View {
     @State private var openRoom: StoredRoom?
     @State private var showMethodDialog = false
     @State private var roomPendingDelete: StoredRoom?
+    @State private var roomPendingRename: StoredRoom?
+    @State private var renameDraft = ""
+    @State private var failedSave: FailedSave?
+    @State private var deleteErrorMessage: String?
 
     private var methods: [any RoomCaptureMethod] { CaptureMethodRegistry.supported }
 
@@ -61,12 +65,52 @@ struct MyRoomsView: View {
             titleVisibility: .visible
         ) {
             Button("Delete", role: .destructive) {
-                if let room = roomPendingDelete { store.delete(room) }
+                if let room = roomPendingDelete {
+                    do {
+                        try store.delete(room)
+                    } catch {
+                        deleteErrorMessage = "We couldn't delete this room. Please try again."
+                    }
+                }
                 roomPendingDelete = nil
             }
             Button("Cancel", role: .cancel) { roomPendingDelete = nil }
         } message: {
             Text("This removes the saved room from your device. It can't be undone.")
+        }
+        .alert(
+            "Rename room",
+            isPresented: Binding(get: { roomPendingRename != nil }, set: { if !$0 { roomPendingRename = nil } })
+        ) {
+            TextField("Room name", text: $renameDraft)
+            Button("Save") {
+                if let room = roomPendingRename { store.rename(room, to: renameDraft) }
+                roomPendingRename = nil
+            }
+            Button("Cancel", role: .cancel) { roomPendingRename = nil }
+        }
+        .alert(
+            "Couldn't save room",
+            isPresented: Binding(get: { failedSave != nil }, set: { if !$0 { failedSave = nil } })
+        ) {
+            Button("Try Again") {
+                guard let room = failedSave?.room else { return }
+                failedSave = nil
+                // Re-attempt on the next runloop tick so the alert fully
+                // dismisses before a failure can re-present it.
+                DispatchQueue.main.async { handleCaptured(room) }
+            }
+            Button("Discard", role: .destructive) { failedSave = nil }
+        } message: {
+            Text("We couldn't save this scan to your device. Try again, or discard it and rescan.")
+        }
+        .alert(
+            "Couldn't delete room",
+            isPresented: Binding(get: { deleteErrorMessage != nil }, set: { if !$0 { deleteErrorMessage = nil } })
+        ) {
+            Button("OK", role: .cancel) { deleteErrorMessage = nil }
+        } message: {
+            Text(deleteErrorMessage ?? "")
         }
     }
 
@@ -104,6 +148,12 @@ struct MyRoomsView: View {
                     }
                     .buttonStyle(.plain)
                     .contextMenu {
+                        Button {
+                            renameDraft = stored.name
+                            roomPendingRename = stored
+                        } label: {
+                            Label("Rename", systemImage: "pencil")
+                        }
                         Button(role: .destructive) {
                             roomPendingDelete = stored
                         } label: {
@@ -172,9 +222,13 @@ struct MyRoomsView: View {
             activeCapture = nil
             openRoom = stored
         } catch {
-            // Saving a freshly captured room shouldn't fail; if it does, close
-            // the flow rather than trapping the user in it.
+            // Don't silently drop a freshly scanned room. Dismiss the capture
+            // flow and surface a retry path so the scan isn't lost without the
+            // user's consent (honest > convenient — see CLAUDE.md hard rules).
+            // Present the alert on the next tick so the full-screen cover has
+            // finished dismissing first (otherwise SwiftUI can drop the alert).
             activeCapture = nil
+            DispatchQueue.main.async { failedSave = FailedSave(room: room) }
         }
     }
 }
@@ -206,4 +260,11 @@ private struct RoomCard: View {
 private struct ActiveCapture: Identifiable {
     let id = UUID()
     let method: any RoomCaptureMethod
+}
+
+/// Holds a freshly captured room whose save failed, so the user can retry or
+/// discard instead of losing the scan silently.
+private struct FailedSave: Identifiable {
+    let id = UUID()
+    let room: RoomModel
 }

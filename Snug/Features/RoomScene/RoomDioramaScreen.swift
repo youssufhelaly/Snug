@@ -14,8 +14,16 @@ struct RoomDioramaScreen: View {
     @State private var showingRename = false
     @State private var nameDraft = ""
 
-    /// Decoded once; the diorama doesn't mutate geometry.
-    private var room: RoomModel? { stored.roomModel }
+    /// The decoded geometry, cached for this view's lifetime. `stored.roomModel`
+    /// decodes the JSON blob on every access, so we decode it once at init rather
+    /// than on every `body` re-eval (mode toggle, reset, rename alert). The
+    /// diorama never mutates geometry, so a one-time decode is correct.
+    @State private var room: RoomModel?
+
+    init(stored: StoredRoom) {
+        self.stored = stored
+        _room = State(initialValue: stored.roomModel)
+    }
 
     var body: some View {
         ZStack {

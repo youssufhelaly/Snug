@@ -67,9 +67,12 @@ final class RoomStore {
         try? context.save()
     }
 
-    func delete(_ stored: StoredRoom) {
+    /// Deletes a saved room. Propagates the save error (like `save`/`update`) so
+    /// a failed disk write can't silently leave the in-memory store ahead of disk
+    /// — which would resurrect the "deleted" room on the next launch.
+    func delete(_ stored: StoredRoom) throws {
         context.delete(stored)
-        try? context.save()
+        try context.save()
     }
 
     // MARK: - Reads (non-reactive; views prefer @Query)
