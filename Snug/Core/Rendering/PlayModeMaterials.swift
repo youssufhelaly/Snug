@@ -31,6 +31,14 @@ enum PlayModeMaterials {
         matte(palette.opening, roughness: 0.85)
     }
 
+    /// The trim frame (perimeter bars + mullions/rails) around an opening. Soft
+    /// foam in PLAY for the diorama read; the neutral `openingTrim` color carries
+    /// it to a plain frame in BUY — the color, not the surface style, is what the
+    /// BUY invariant constrains.
+    static func openingTrim(_ palette: RoomPalette) -> PhysicallyBasedMaterial {
+        furniture(color: palette.openingTrim, roughness: 0.7)
+    }
+
     /// The soft grounding platform beneath the room.
     static func base(_ palette: RoomPalette) -> PhysicallyBasedMaterial {
         matte(palette.base, roughness: 0.95)

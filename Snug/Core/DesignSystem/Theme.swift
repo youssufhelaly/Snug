@@ -69,6 +69,10 @@ struct RoomPalette {
     let floor: UIColor
     let wall: UIColor
     let opening: UIColor
+    /// The trim frame around an opening (perimeter bars + mullions/rails). Warm in
+    /// PLAY; neutral in BUY so the frame never carries stylized color into the
+    /// true-color measuring view (the pane is `opening`/`voidWindow`).
+    let openingTrim: UIColor
     /// The soft grounding platform under the room.
     let base: UIColor
     /// Scene background behind the diorama.
@@ -135,6 +139,7 @@ struct RoomPalette {
                 floor: UIColor(rgb: 0xC17F5A),        // terracotta-brown ground
                 wall: UIColor(rgb: 0xF3E9DA),         // warm cream
                 opening: UIColor(rgb: 0xDCE6E1),      // soft pale glass (doors)
+                openingTrim: UIColor(rgb: 0xEDE4D4),  // warm cream frame trim
                 base: UIColor(rgb: 0x9A5E3C),         // darker terracotta platform
                 background: UIColor(rgb: 0xE8764A),   // solid terracotta "void" backdrop
                 wallCap: UIColor(rgb: 0xFBF6EE),      // chunky warm-white wall rim
@@ -164,6 +169,7 @@ struct RoomPalette {
                 floor: UIColor(rgb: 0xB7B3AD),
                 wall: UIColor(rgb: 0xC8C4BE),
                 opening: UIColor(rgb: 0xA9A39A),
+                openingTrim: UIColor(rgb: 0xBFBBB4),  // neutral frame trim
                 base: UIColor(rgb: 0xA29C93),
                 background: UIColor(rgb: 0x1F1F1F),   // dark neutral
                 wallCap: UIColor(rgb: 0xC8C4BE),      // unused (caps off in BUY)

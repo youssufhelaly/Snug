@@ -59,7 +59,7 @@ final class RoomSceneController: NSObject {
     // MARK: Scene
     private weak var arView: ARView?
     private let root = AnchorEntity(world: .zero)
-    private let camera = PerspectiveCamera()
+    private let camera = Entity()
     private let keyLight = DirectionalLight()
     private let fillA = DirectionalLight()
     private let fillB = DirectionalLight()
@@ -91,20 +91,23 @@ final class RoomSceneController: NSObject {
     private var walls: [WallNode] = []
     /// Styled openings: a container holding a trim frame + an inner pane (glass /
     /// door panel / blown-out void) + mullions/rails. `entity` is the container
-    /// (toggled by culling); `pane` is the palette-driven inner surface; `wallIndex`
-    /// ties it to its wall so culling stays in sync; `kind` selects the PLAY pane
-    /// material (windows/openings become white voids, doors stay paneled).
-    private var openings: [(entity: Entity, pane: ModelEntity, wallIndex: Int, kind: RoomOpening.Kind)] = []
+    /// (toggled by culling); `pane` is the palette-driven inner surface; `trims`
+    /// are the frame/mullion bars, also palette-driven so they go neutral in BUY;
+    /// `wallIndex` ties it to its wall so culling stays in sync; `kind` selects the
+    /// PLAY pane material (windows/openings become white voids, doors stay paneled).
+    private var openings: [(entity: Entity, pane: ModelEntity, trims: [ModelEntity], wallIndex: Int, kind: RoomOpening.Kind)] = []
     /// BUY-mode dimension labels (lie flat on the floor like a blueprint).
     private var labels: [ModelEntity] = []
 
     // MARK: Camera state
 
-    /// Near-orthographic field of view. A narrow telephoto FOV compresses
-    /// perspective until parallel lines read as parallel — the "isometric
-    /// diorama" projection — without committing to `OrthographicCameraComponent`,
-    /// whose behavior inside an `ARView` (vs. `RealityView`) we haven't verified on
-    /// device. Tunable: smaller = flatter/more orthographic. Applies to both modes.
+    /// Calibration for the orthographic view-volume. The diorama now uses a TRUE
+    /// orthographic camera (`OrthographicCameraComponent`), so parallel lines stay
+    /// parallel by projection, not by faking a narrow FOV. This constant is no
+    /// longer a real field of view: it sets how far the camera sits (`radius`, for
+    /// orbit + clipping) and, through the same value, calibrates `orthoScale(forRadius:)`
+    /// so the framing matches the values the team already tuned. Smaller = camera
+    /// sits farther back; apparent size is governed by the ortho scale. Both modes.
     static let isoFOVDegrees: Float = 14
     /// True isometric viewing angle above the horizon: `atan(1/√2) ≈ 35.26°`.
     /// Paired with a 45° azimuth this is the canonical diorama orientation.
@@ -168,10 +171,20 @@ final class RoomSceneController: NSObject {
         buildGeometry(room: room)
         view.scene.addAnchor(root)
 
-        // Near-orthographic projection: a narrow telephoto FOV is what gives the
-        // diorama its "isometric model" read. `frameCamera` pulls the orbit radius
-        // back to match, so the room still fills the frame at this tight FOV.
-        camera.camera.fieldOfViewInDegrees = Self.isoFOVDegrees
+        // True orthographic projection — the canonical isometric-diorama camera.
+        // The ortho `scale` (view-volume height) is set every frame in `updateCamera`,
+        // derived from `radius`, so the existing orbit / pinch-zoom / reset machinery
+        // keeps driving a single value and needs no other change.
+        //
+        // VERIFY ON DEVICE: that `OrthographicCameraComponent` is honored as the
+        // active camera in a `.nonAR ARView`. RealityKit's perspective camera works
+        // here; the ortho component is the one piece we can't compile-check off-device
+        // (no Xcode on this Mac). If the scene renders black/empty, RealityKit isn't
+        // picking up the ortho camera in ARView and this view should migrate to
+        // `RealityView` (iOS 18+), which supports it cleanly — a larger change to
+        // weigh separately. To fall back fast meanwhile: restore `PerspectiveCamera()`
+        // above and `camera.camera.fieldOfViewInDegrees = Self.isoFOVDegrees` here.
+        camera.components.set(OrthographicCameraComponent())
 
         let cameraAnchor = AnchorEntity(world: .zero)
         cameraAnchor.addChild(camera)
@@ -304,7 +317,7 @@ final class RoomSceneController: NSObject {
         for opening in room.openings {
             guard let panel = makeOpening(opening, walls: room.walls, ceiling: height) else { continue }
             root.addChild(panel.entity)
-            openings.append((panel.entity, panel.pane, panel.wallIndex, opening.kind))
+            openings.append((panel.entity, panel.pane, panel.trims, panel.wallIndex, opening.kind))
         }
 
         // Dimension labels (shown only in BUY): wall length, laid flat near each
@@ -409,7 +422,7 @@ final class RoomSceneController: NSObject {
         return shadow
     }
 
-    private func makeOpening(_ opening: RoomOpening, walls roomWalls: [WallSegment], ceiling: Float) -> (entity: Entity, pane: ModelEntity, wallIndex: Int)? {
+    private func makeOpening(_ opening: RoomOpening, walls roomWalls: [WallSegment], ceiling: Float) -> (entity: Entity, pane: ModelEntity, trims: [ModelEntity], wallIndex: Int)? {
         let a = opening.start.simd2, b = opening.end.simd2
         let mid = (a + b) / 2
         let dir = b - a
@@ -443,12 +456,12 @@ final class RoomSceneController: NSObject {
 
         // Build the styled unit (frame + pane + dividers), then place + orient the
         // whole container, sitting proud on the inner face (nudged into the room).
-        let (container, pane) = Self.buildOpening(kind: opening.kind, width: width, height: panelHeight)
+        let (container, pane, trims) = Self.buildOpening(kind: opening.kind, width: width, height: panelHeight)
         let inward = walls.indices.contains(wallIndex) ? -walls[wallIndex].outwardXZ : SIMD2<Float>(0, 0)
         let offset = inward * 0.05
         container.position = SIMD3(mid.x + offset.x, sill + panelHeight / 2, mid.y + offset.y)
         container.orientation = simd_quatf(angle: yaw, axis: [0, 1, 0])
-        return (container, pane, wallIndex)
+        return (container, pane, trims, wallIndex)
     }
 
     /// Builds a styled opening in local space so a captured door/window reads as
@@ -459,7 +472,7 @@ final class RoomSceneController: NSObject {
     /// z = wall thickness; the frame stands proud of both faces so it reads from
     /// inside the open-top dollhouse regardless of which face points inward.
     private static func buildOpening(kind: RoomOpening.Kind, width: Float, height: Float)
-        -> (container: Entity, pane: ModelEntity) {
+        -> (container: Entity, pane: ModelEntity, trims: [ModelEntity]) {
         let container = Entity()
         container.name = "opening_\(kind.rawValue)"
 
@@ -467,12 +480,17 @@ final class RoomSceneController: NSObject {
         let frameW = min(0.08, width * 0.18, height * 0.18)
         let frameD: Float = 0.09   // proud of the 0.06-deep wall box, both faces
         let barD: Float = 0.05     // dividers sit just behind the frame face
-        let trimMat = PlayModeMaterials.furniture(color: UIColor(rgb: 0xEDE4D4), roughness: 0.7)
 
+        // Frame bars carry a placeholder material; `applyPalette` re-materialises
+        // them per mode (warm trim in PLAY, neutral in BUY) via the returned list,
+        // so the frames never keep PLAY-warm color in the true-color BUY view.
+        var trims: [ModelEntity] = []
         func bar(_ size: SIMD3<Float>, at p: SIMD3<Float>) {
-            let e = ModelEntity(mesh: .generateBox(size: size, cornerRadius: 0.015), materials: [trimMat])
+            let e = ModelEntity(mesh: .generateBox(size: size, cornerRadius: 0.015),
+                                materials: [SimpleMaterial(color: .gray, isMetallic: false)])
             e.position = p
             container.addChild(e)
+            trims.append(e)
         }
 
         // Recessed inner pane (palette-driven; placeholder material until applied).
@@ -503,7 +521,7 @@ final class RoomSceneController: NSObject {
             break   // archway: frame only
         }
 
-        return (container, pane)
+        return (container, pane, trims)
     }
 
     private func makeDimensionLabel(for wall: WallSegment) -> ModelEntity? {
@@ -563,6 +581,7 @@ final class RoomSceneController: NSObject {
         let floorMat = PlayModeMaterials.floor(palette)
         let wallMat = PlayModeMaterials.wall(palette)
         let openingMat = PlayModeMaterials.opening(palette)
+        let trimMat = PlayModeMaterials.openingTrim(palette)
         let voidMat = PlayModeMaterials.voidWindow(palette)
         let baseMat = PlayModeMaterials.base(palette)
         let capMat = PlayModeMaterials.wallCap(palette)
@@ -580,6 +599,7 @@ final class RoomSceneController: NSObject {
         for opening in openings {
             let usesVoid = palette.usesVoidWindows && opening.kind != .door
             setMaterial(usesVoid ? voidMat : openingMat, on: opening.pane)
+            for trim in opening.trims { setMaterial(trimMat, on: trim) }
         }
 
         // Outlines / caps / cornice (PLAY only). These also obey culling —
@@ -715,9 +735,12 @@ final class RoomSceneController: NSObject {
 
         let span = simd_length(SIMD2(maxX - minX, maxZ - minZ))
         let extent = max(span, room.ceilingHeight)
-        // At a narrow (near-orthographic) FOV the camera must sit much farther back
-        // to keep the room filling the frame: distance ≈ halfExtent / tan(fov/2).
-        // The 1.2 margin leaves a little breathing room around the cube.
+        // Seed the orbit distance. With an orthographic camera the distance no
+        // longer sets apparent size (the ortho `scale` does, derived from `radius`
+        // in `updateCamera`), but `radius` still positions the camera for orbit and
+        // must clear the geometry. We keep the original distance formula so the
+        // initial ortho scale (≈ 1.2 × room extent) frames the room exactly as the
+        // tuned perspective camera did. The 1.2 margin leaves breathing room.
         let halfFOV = (Self.isoFOVDegrees * .pi / 180) / 2
         let fitDistance = (extent * 0.5) / tan(halfFOV)
         radius = max(fitDistance * 1.2, 3)
@@ -736,6 +759,22 @@ final class RoomSceneController: NSObject {
             radius * cosf(elevation) * cosf(azimuth)
         )
         camera.look(at: target, from: position, relativeTo: nil)
+
+        // Drive the orthographic view-volume from `radius` so orbit/zoom/reset (all
+        // of which already mutate `radius`) keep working unchanged. Re-setting the
+        // value-type component is cheap and only happens on camera moves.
+        var ortho = OrthographicCameraComponent()
+        ortho.scale = Self.orthoScale(forRadius: radius)
+        camera.components.set(ortho)
+    }
+
+    /// The orthographic `scale` (vertical world extent the view spans) that matches
+    /// what a perspective camera at `radius` with the iso calibration FOV would have
+    /// framed — so switching to true ortho keeps the tuned framing at every zoom
+    /// level, only removing the perspective foreshortening (which is the point).
+    private static func orthoScale(forRadius radius: Float) -> Float {
+        let halfFOV = (isoFOVDegrees * .pi / 180) / 2
+        return 2 * radius * tan(halfFOV)
     }
 
     func resetCamera(animated: Bool) {
