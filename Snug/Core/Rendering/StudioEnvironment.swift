@@ -12,8 +12,10 @@ import UIKit
 /// The rest of `Core/Rendering` was written defensively against iOS 17, where
 /// RealityKit exposed no image-based lighting hook. The app's real deployment
 /// target is iOS 26, where `EnvironmentResource` can be built from a procedural
-/// image and fed to `ARView.environment.lighting`. We therefore generate the IBL
-/// at runtime instead of shipping an HDR asset.
+/// image. Since the `RealityView` migration the diorama consumes this resource via
+/// an `ImageBasedLightComponent` (see `RoomSceneController.applyEnvironmentLighting`)
+/// rather than the old `ARView.environment.lighting`. We generate the IBL at runtime
+/// instead of shipping an HDR asset.
 ///
 /// ## No graceful fallback (deliberate)
 /// `makeResource()` does not invent a fallback if the runtime API differs from the

@@ -28,8 +28,11 @@ deposit-safe.
     offered only on LiDAR-capable Pro devices and never the default.
   Detect capability at launch; show the graceful unsupported screen
   only when neither method is available.
-- RealityKit for the live AR capture overlay and the 3D room view;
-  the post-capture floor-plan review is plain SwiftUI Canvas (2D).
+- RealityKit for the live AR capture overlay and the 3D room view.
+  The Phase 1 diorama (`Features/RoomScene`) is a SwiftUI `RealityView`
+  driving a true `OrthographicCameraComponent` — migrated off the legacy
+  `.nonAR ARView` (`UIViewRepresentable`). The post-capture floor-plan
+  review is plain SwiftUI Canvas (2D).
 - SwiftData for local persistence (rooms, designs, saved items),
   using SwiftData's native VersionedSchema + SchemaMigrationPlan
   for model evolution. Do NOT add custom version fields to models.
@@ -233,10 +236,18 @@ control is more honest than fake precision.
   vertex. Render-mode colors come from `RoomPalette` in Theme.swift.
   It's an open-top "dollhouse": no ceiling, and walls between the
   camera and the interior are culled each frame so you can see in.
-  The < 400ms cross-fade is an `ARView.snapshot` overlay faded out
-  (NOT offscreen rendering); the same snapshot becomes the room's
-  list thumbnail. If you touch this, the identical-geometry invariant
-  is the acceptance gate — verify with a wireframe overlay.
+  The < 400ms cross-fade freezes the current frame, swaps materials
+  beneath it, and fades the freeze out (a SwiftUI image overlay); the
+  same frame is the room's list thumbnail. Since `RealityView` has no
+  `ARView.snapshot`, both are produced offscreen by
+  `OffscreenSnapshotRenderer` (RealityKit `RealityRenderer`), which clones
+  the live scene and FAILS LOUDLY rather than faking a frame — on failure
+  the mode swaps with no fade. PLAY image-based lighting is an
+  `ImageBasedLightComponent` (+ receiver on the root, PLAY only), and the
+  warm "void" backdrop is a SwiftUI `Color` behind the `RealityView`
+  (it renders transparent), not a skybox. If you touch this, the
+  identical-geometry invariant is the acceptance gate — verify with a
+  wireframe overlay.
 
 ## The fit system (the trust layer — highest-stakes code in the app)
 - FitService computes placement results against REAL scanned
