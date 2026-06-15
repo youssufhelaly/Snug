@@ -18,7 +18,7 @@ deposit-safe.
 
 ## Tech stack — do not deviate without asking
 - Swift 5.10+, SwiftUI for all UI
-- iOS 17.0 minimum deployment target
+- iOS 26.0 minimum deployment target
 - Room capture is abstracted behind a `RoomCaptureMethod` protocol that
   always produces our own `RoomModel`. Two conformers exist:
   - `ManualARCaptureMethod` (DEFAULT) — AR-assisted corner tapping on

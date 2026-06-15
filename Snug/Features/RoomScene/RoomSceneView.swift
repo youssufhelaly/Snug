@@ -63,21 +63,56 @@ final class RoomSceneController: NSObject {
     private let keyLight = DirectionalLight()
     private let fillA = DirectionalLight()
     private let fillB = DirectionalLight()
+    /// The warm studio environment for PLAY image-based lighting + skybox. Built
+    /// asynchronously (GPU work) after the scene attaches; nil until ready and in
+    /// BUY, where lighting stays neutral.
+    private var environment: EnvironmentResource?
 
     private var floorEntity: ModelEntity?
+    /// The floor's chunky outline under-sheet (PLAY only).
+    private var floorOutline: ModelEntity?
     private var baseEntity: ModelEntity?
-    /// Walls plus the data needed to cull the ones between the camera and the
-    /// room interior (the open-dollhouse look).
-    private var walls: [(entity: ModelEntity, midXZ: SIMD2<Float>, outwardXZ: SIMD2<Float>)] = []
-    /// Opening panels, each tied to the wall it sits on so culling stays in sync.
-    private var openings: [(entity: ModelEntity, wallIndex: Int)] = []
+    /// Soft drop shadow grounding the floating room cube against the solid void
+    /// backdrop (PLAY only). A baked contact-shadow plane tucked under the base.
+    private var dropShadow: ModelEntity?
+
+    /// One wall edge and all of its PLAY-mode companions that must hide together
+    /// when the wall is culled (the open-dollhouse look): the inverted-hull
+    /// `outline`, the chunky white `cap` rim, and the emissive `cornice` strip.
+    /// `midXZ`/`outwardXZ` drive culling. The companions cull with `entity`.
+    private struct WallNode {
+        let entity: ModelEntity
+        let outline: ModelEntity?
+        let cap: ModelEntity?
+        let cornice: ModelEntity?
+        let midXZ: SIMD2<Float>
+        let outwardXZ: SIMD2<Float>
+    }
+    private var walls: [WallNode] = []
+    /// Styled openings: a container holding a trim frame + an inner pane (glass /
+    /// door panel / blown-out void) + mullions/rails. `entity` is the container
+    /// (toggled by culling); `pane` is the palette-driven inner surface; `wallIndex`
+    /// ties it to its wall so culling stays in sync; `kind` selects the PLAY pane
+    /// material (windows/openings become white voids, doors stay paneled).
+    private var openings: [(entity: Entity, pane: ModelEntity, wallIndex: Int, kind: RoomOpening.Kind)] = []
     /// BUY-mode dimension labels (lie flat on the floor like a blueprint).
     private var labels: [ModelEntity] = []
 
     // MARK: Camera state
+
+    /// Near-orthographic field of view. A narrow telephoto FOV compresses
+    /// perspective until parallel lines read as parallel — the "isometric
+    /// diorama" projection — without committing to `OrthographicCameraComponent`,
+    /// whose behavior inside an `ARView` (vs. `RealityView`) we haven't verified on
+    /// device. Tunable: smaller = flatter/more orthographic. Applies to both modes.
+    static let isoFOVDegrees: Float = 14
+    /// True isometric viewing angle above the horizon: `atan(1/√2) ≈ 35.26°`.
+    /// Paired with a 45° azimuth this is the canonical diorama orientation.
+    static let isoElevation: Float = atan(1 / Float(2).squareRoot())
+
     private var target = SIMD3<Float>.zero
-    private var azimuth: Float = .pi / 4
-    private var elevation: Float = .pi / 5
+    private var azimuth: Float = .pi / 4          // 45° — canonical diorama azimuth
+    private var elevation: Float = RoomSceneController.isoElevation
     private var radius: Float = 5
     private var radiusRange: ClosedRange<Float> = 1...20
     private var centroidXZ = SIMD2<Float>.zero
@@ -98,6 +133,19 @@ final class RoomSceneController: NSObject {
 
     // MARK: Misc
     private(set) var mode: RoomRenderMode = .play
+    /// Whether PLAY-mode outlines are currently shown; read by `cullWalls` so a
+    /// culled wall's outline hides with it.
+    private var showsOutlines = true
+    /// Whether PLAY-mode wall caps / cornice strips are shown; read by `cullWalls`
+    /// so a culled wall's cap and glow strip hide with it.
+    private var showsWallCaps = true
+    private var showsCornice = true
+
+    /// TEMPORARY: drop preview furniture into the diorama so the Phase-3 look can
+    /// be eyeballed on device. This is NOT real placement — flip to `false` (or
+    /// delete this flag, `placeDemoFurniture`, and its call) before shipping.
+    /// The preview pieces are not mode-aware: they keep their PLAY styling in BUY.
+    static let demoFurniture = true
     /// Bumped on every `setMode`; a snapshot callback applies its palette only if
     /// it's still the latest generation, so rapid toggles can't flash a stale one.
     private var modeGeneration = 0
@@ -120,6 +168,11 @@ final class RoomSceneController: NSObject {
         buildGeometry(room: room)
         view.scene.addAnchor(root)
 
+        // Near-orthographic projection: a narrow telephoto FOV is what gives the
+        // diorama its "isometric model" read. `frameCamera` pulls the orbit radius
+        // back to match, so the room still fills the frame at this tight FOV.
+        camera.camera.fieldOfViewInDegrees = Self.isoFOVDegrees
+
         let cameraAnchor = AnchorEntity(world: .zero)
         cameraAnchor.addChild(camera)
         view.scene.addAnchor(cameraAnchor)
@@ -128,6 +181,7 @@ final class RoomSceneController: NSObject {
         applyPalette(for: mode)
         updateCamera()
         addGestures(to: view)
+        loadEnvironment()
 
         // Drive culling, label facing, the reset spring, and the one-time
         // thumbnail off the render loop.
@@ -141,8 +195,13 @@ final class RoomSceneController: NSObject {
     }
 
     private func buildLights() {
-        keyLight.look(at: .zero, from: [1.6, 3.0, 2.0], relativeTo: nil)
-        fillA.look(at: .zero, from: [-2.0, 2.2, -1.4], relativeTo: nil)
+        // Warm key from top-right, cooler fill from the left, warm back fill as an
+        // ambient stand-in (RealityKit has no AmbientLight on iOS 17). Directional
+        // lights use only their direction, so aiming at the origin is correct even
+        // when the room isn't centered there. Tints/intensities are set per mode
+        // in `applyPalette`.
+        keyLight.look(at: .zero, from: [2.5, 4.0, 2.5], relativeTo: nil)
+        fillA.look(at: .zero, from: [-3.0, 2.0, -1.0], relativeTo: nil)
         fillB.look(at: .zero, from: [0.4, 1.4, -2.2], relativeTo: nil)
     }
 
@@ -154,12 +213,17 @@ final class RoomSceneController: NSObject {
         centroidXZ = corners.reduce(.zero, +) / Float(corners.count)
         let height = room.ceilingHeight
 
-        // Grounding base: a soft platform under the room so the diorama reads as
-        // sitting on a surface. This is the Phase-1 "simplified contact shadow";
-        // real per-item contact shadows arrive with furniture in Phase 3.
+        // Grounding base: a chunky rounded platform under the room so the diorama
+        // reads as a solid floating model. Its soft drop shadow (PLAY) lands on the
+        // void backdrop just below it; real per-item contact shadows arrive with
+        // furniture in Phase 3.
         if let base = makeBase(corners: corners) {
             baseEntity = base
             root.addChild(base)
+        }
+        if let shadow = makeDropShadow(corners: corners) {
+            dropShadow = shadow
+            root.addChild(shadow)
         }
 
         // Floor: a thin double-sided sheet triangulated from the polygon, so any
@@ -169,9 +233,19 @@ final class RoomSceneController: NSObject {
             let floor = ModelEntity(mesh: floorMesh, materials: [placeholderMaterial()])
             floorEntity = floor
             root.addChild(floor)
+            // Floor outline: a slightly larger dark sheet tucked just below, so
+            // its border reads as a chunky rim (culling-independent).
+            if let outline = OutlineEntity.floorShell(corners: corners, pivot: centroidXZ,
+                                                      y: -0.004, color: outlineColor) {
+                floorOutline = outline
+                root.addChild(outline)
+            }
         }
 
-        // Walls: thin full-height boxes, one per polygon edge.
+        // Walls: chunky full-height slabs, one per polygon edge, each topped by a
+        // white cap rim and lined with a warm emissive cornice strip (PLAY).
+        let wallDepth: Float = 0.08   // thicker than a sheet → reads as a model slab
+        let capHeight: Float = 0.06
         for wall in room.walls {
             let a = wall.start.simd2, b = wall.end.simd2
             let mid = (a + b) / 2
@@ -179,24 +253,55 @@ final class RoomSceneController: NSObject {
             let length = simd_length(dir)
             guard length > 0.01 else { continue }
             let yaw = atan2(-dir.y, dir.x)
+            let orientation = simd_quatf(angle: yaw, axis: [0, 1, 0])
 
-            let mesh = MeshResource.generateBox(width: length, height: height, depth: 0.06)
-            let entity = ModelEntity(mesh: mesh, materials: [placeholderMaterial()])
-            entity.position = SIMD3(mid.x, height / 2, mid.y)
-            entity.orientation = simd_quatf(angle: yaw, axis: [0, 1, 0])
-            root.addChild(entity)
-
+            // Outward XZ normal (away from the room centroid) — needed now so the
+            // cornice can be nudged onto the *inner* face.
             var outward = SIMD2<Float>(dir.y, -dir.x)
             if simd_dot(outward, mid - centroidXZ) < 0 { outward = -outward }
             outward = simd_normalize(outward)
-            walls.append((entity, mid, outward))
+
+            let mesh = MeshResource.generateBox(width: length, height: height, depth: wallDepth)
+            let entity = ModelEntity(mesh: mesh, materials: [placeholderMaterial()])
+            entity.position = SIMD3(mid.x, height / 2, mid.y)
+            entity.orientation = orientation
+            root.addChild(entity)
+
+            // Inverted-hull outline sibling, matching the wall's transform.
+            let outline = OutlineEntity.boxShell(size: [length, height, wallDepth], color: outlineColor)
+            if let outline {
+                outline.position = entity.position
+                outline.orientation = orientation
+                root.addChild(outline)
+            }
+
+            // Chunky white cap rim, proud of the wall on every edge so the slab
+            // reads as a molded model piece. Material set in `applyPalette`.
+            let capMesh = MeshResource.generateBox(size: [length + 0.04, capHeight, wallDepth + 0.05],
+                                                   cornerRadius: 0.02)
+            let cap = ModelEntity(mesh: capMesh, materials: [placeholderMaterial()])
+            cap.position = SIMD3(mid.x, height + capHeight / 2 - 0.005, mid.y)
+            cap.orientation = orientation
+            root.addChild(cap)
+
+            // Warm emissive cornice strip tucked just inside the top inner edge —
+            // the hidden light-cove glow. Material set in `applyPalette`.
+            let corniceMesh = MeshResource.generateBox(size: [length * 0.94, 0.03, 0.03], cornerRadius: 0.012)
+            let cornice = ModelEntity(mesh: corniceMesh, materials: [placeholderMaterial()])
+            let innerNudge = -outward * (wallDepth / 2 + 0.02)
+            cornice.position = SIMD3(mid.x + innerNudge.x, height - 0.05, mid.y + innerNudge.y)
+            cornice.orientation = orientation
+            root.addChild(cornice)
+
+            walls.append(WallNode(entity: entity, outline: outline, cap: cap,
+                                  cornice: cornice, midXZ: mid, outwardXZ: outward))
         }
 
         // Openings: proud panels on the inner face of their nearest wall.
         for opening in room.openings {
             guard let panel = makeOpening(opening, walls: room.walls, ceiling: height) else { continue }
             root.addChild(panel.entity)
-            openings.append(panel)
+            openings.append((panel.entity, panel.pane, panel.wallIndex, opening.kind))
         }
 
         // Dimension labels (shown only in BUY): wall length, laid flat near each
@@ -207,6 +312,36 @@ final class RoomSceneController: NSObject {
             labels.append(label)
             root.addChild(label)
         }
+
+        // TEMPORARY furniture preview — delete with `placeDemoFurniture`.
+        if Self.demoFurniture { placeDemoFurniture(at: centroidXZ) }
+    }
+
+    /// TEMPORARY visual preview of the Phase-3 furniture — NOT real placement.
+    /// Drops a compact living-room cluster at the room center so the stylized
+    /// materials, outlines, and contact shadows can be judged on device across
+    /// box, cylinder, and sphere forms. Offsets are modest (~2.4 × 1.6 m) to fit
+    /// most rooms; in a very small room some pieces may clip the walls. Delete
+    /// this method and the `demoFurniture` flag when catalog placement lands.
+    private func placeDemoFurniture(at center: SIMD2<Float>) {
+        let origin = SIMD3<Float>(center.x, 0, center.y)
+        func add(_ kind: PlayModeFurniture.Kind, dx: Float, dz: Float, yaw: Float = 0) {
+            let piece = PlayModeFurniture.make(kind)
+            piece.position = origin + SIMD3(dx, 0, dz)
+            if yaw != 0 { piece.orientation = simd_quatf(angle: yaw, axis: [0, 1, 0]) }
+            root.addChild(piece)
+        }
+        // Cozy reference-style arrangement with real negative space: sofa centered
+        // on the back wall, an angled armchair in a front corner, table on the rug,
+        // plant + lamp flanking the sofa in the back corners. Offsets are kept
+        // within ~±1.15 m so they don't clip the walls of a ~3 m room; a very small
+        // or non-square room may still need the (forthcoming) real placement system.
+        add(.rug,         dx: 0,     dz: 0.05)
+        add(.sofa,        dx: 0,     dz: -0.85)
+        add(.coffeeTable, dx: 0,     dz: 0.0)
+        add(.armchair,    dx: -0.95, dz: 0.7,  yaw: .pi / 5)
+        add(.plantTall,   dx: 1.1,   dz: -0.85)
+        add(.floorLamp,   dx: -1.1,  dz: -0.85)
     }
 
     /// A thin, double-sided floor sheet. Two triangle sets at ±epsilon Y with
@@ -246,13 +381,32 @@ final class RoomSceneController: NSObject {
         let margin: Float = 0.5
         let w = (maxX - minX) + margin * 2
         let dz = (maxZ - minZ) + margin * 2
-        let mesh = MeshResource.generateBox(size: [w, 0.04, dz], cornerRadius: 0.06)
+        // A deep, rounded platform — the chunky base of the floating model. Its top
+        // sits at floor level (y == 0); it extrudes downward.
+        let baseHeight: Float = 0.14
+        let mesh = MeshResource.generateBox(size: [w, baseHeight, dz], cornerRadius: 0.10)
         let entity = ModelEntity(mesh: mesh, materials: [placeholderMaterial()])
-        entity.position = SIMD3((minX + maxX) / 2, -0.04, (minZ + maxZ) / 2)
+        entity.position = SIMD3((minX + maxX) / 2, -baseHeight / 2, (minZ + maxZ) / 2)
         return entity
     }
 
-    private func makeOpening(_ opening: RoomOpening, walls roomWalls: [WallSegment], ceiling: Float) -> (entity: ModelEntity, wallIndex: Int)? {
+    /// A soft baked drop shadow grounding the floating cube on the void backdrop
+    /// (PLAY only). A horizontal contact-shadow plane, larger than the base and
+    /// tucked just beneath it, so from the isometric angle it reads as a soft blob
+    /// under the model rather than a hard cast shadow.
+    private func makeDropShadow(corners: [SIMD2<Float>]) -> ModelEntity? {
+        let xs = corners.map(\.x), zs = corners.map(\.y)
+        guard let minX = xs.min(), let maxX = xs.max(),
+              let minZ = zs.min(), let maxZ = zs.max() else { return nil }
+        let margin: Float = 0.5
+        let w = (maxX - minX) + margin * 2
+        let dz = (maxZ - minZ) + margin * 2
+        guard let shadow = ContactShadow.plane(footprint: [w * 1.5, dz * 1.5]) else { return nil }
+        shadow.position = SIMD3((minX + maxX) / 2, -0.155, (minZ + maxZ) / 2)
+        return shadow
+    }
+
+    private func makeOpening(_ opening: RoomOpening, walls roomWalls: [WallSegment], ceiling: Float) -> (entity: Entity, pane: ModelEntity, wallIndex: Int)? {
         let a = opening.start.simd2, b = opening.end.simd2
         let mid = (a + b) / 2
         let dir = b - a
@@ -284,14 +438,69 @@ final class RoomSceneController: NSObject {
             if dist < bestDist { bestDist = dist; wallIndex = i }
         }
 
-        let mesh = MeshResource.generateBox(size: [width, panelHeight, 0.04], cornerRadius: 0.02)
-        let entity = ModelEntity(mesh: mesh, materials: [placeholderMaterial()])
-        // Sit proud on the inner face: nudge toward the room interior.
+        // Build the styled unit (frame + pane + dividers), then place + orient the
+        // whole container, sitting proud on the inner face (nudged into the room).
+        let (container, pane) = Self.buildOpening(kind: opening.kind, width: width, height: panelHeight)
         let inward = walls.indices.contains(wallIndex) ? -walls[wallIndex].outwardXZ : SIMD2<Float>(0, 0)
         let offset = inward * 0.05
-        entity.position = SIMD3(mid.x + offset.x, sill + panelHeight / 2, mid.y + offset.y)
-        entity.orientation = simd_quatf(angle: yaw, axis: [0, 1, 0])
-        return (entity, wallIndex)
+        container.position = SIMD3(mid.x + offset.x, sill + panelHeight / 2, mid.y + offset.y)
+        container.orientation = simd_quatf(angle: yaw, axis: [0, 1, 0])
+        return (container, pane, wallIndex)
+    }
+
+    /// Builds a styled opening in local space so a captured door/window reads as
+    /// one rather than a flat colored slab: a warm trim frame around the perimeter,
+    /// a recessed inner pane (returned so the palette can drive it — pale glass in
+    /// PLAY, neutral in BUY), and kind-specific dividers (a cross mullion for
+    /// windows, two rails for a paneled door). Local axes: x along the wall, y up,
+    /// z = wall thickness; the frame stands proud of both faces so it reads from
+    /// inside the open-top dollhouse regardless of which face points inward.
+    private static func buildOpening(kind: RoomOpening.Kind, width: Float, height: Float)
+        -> (container: Entity, pane: ModelEntity) {
+        let container = Entity()
+        container.name = "opening_\(kind.rawValue)"
+
+        // Adaptive trim width so a small opening isn't all-frame.
+        let frameW = min(0.08, width * 0.18, height * 0.18)
+        let frameD: Float = 0.09   // proud of the 0.06-deep wall box, both faces
+        let barD: Float = 0.05     // dividers sit just behind the frame face
+        let trimMat = PlayModeMaterials.furniture(color: UIColor(rgb: 0xEDE4D4), roughness: 0.7)
+
+        func bar(_ size: SIMD3<Float>, at p: SIMD3<Float>) {
+            let e = ModelEntity(mesh: .generateBox(size: size, cornerRadius: 0.015), materials: [trimMat])
+            e.position = p
+            container.addChild(e)
+        }
+
+        // Recessed inner pane (palette-driven; placeholder material until applied).
+        let paneW = max(width - frameW * 2, 0.04)
+        let paneH = max(height - frameW * 2, 0.04)
+        let pane = ModelEntity(mesh: .generateBox(size: [paneW, paneH, 0.03], cornerRadius: 0.01),
+                               materials: [SimpleMaterial(color: .gray, isMetallic: false)])
+        container.addChild(pane)
+
+        // Perimeter frame.
+        let halfH = (height - frameW) / 2
+        let halfW = (width - frameW) / 2
+        bar([width, frameW, frameD], at: [0,  halfH, 0])    // top
+        bar([width, frameW, frameD], at: [0, -halfH, 0])    // bottom
+        bar([frameW, height, frameD], at: [-halfW, 0, 0])   // left
+        bar([frameW, height, frameD], at: [ halfW, 0, 0])   // right
+
+        // Kind-specific dividers (full barD depth → visible from the interior).
+        let divider = frameW * 0.5
+        switch kind {
+        case .window:
+            bar([divider, paneH, barD], at: [0, 0, 0])      // vertical mullion
+            bar([paneW, divider, barD], at: [0, 0, 0])      // horizontal mullion
+        case .door:
+            bar([paneW, divider, barD], at: [0,  paneH * 0.18, 0])   // upper rail
+            bar([paneW, divider, barD], at: [0, -paneH * 0.18, 0])   // lower rail
+        case .opening:
+            break   // archway: frame only
+        }
+
+        return (container, pane)
     }
 
     private func makeDimensionLabel(for wall: WallSegment) -> ModelEntity? {
@@ -330,38 +539,125 @@ final class RoomSceneController: NSObject {
 
     // MARK: - Materials / palette
 
+    /// Throwaway initial material; `applyPalette` overrides it immediately after
+    /// the geometry is built.
     private func placeholderMaterial() -> SimpleMaterial {
         SimpleMaterial(color: .gray, isMetallic: false)
     }
 
-    private func matteMaterial(_ color: UIColor) -> SimpleMaterial {
-        // Matte, non-metallic: the cozy, flat-shaded diorama look.
-        SimpleMaterial(color: color, roughness: 0.95, isMetallic: false)
-    }
+    /// Outline color (identical across modes; pulled from the palette so colors
+    /// stay centralized in Theme).
+    private var outlineColor: UIColor { RoomPalette.palette(for: .play).outline }
 
-    /// Swap only materials + lighting. No geometry is touched.
+    /// Swap only materials + lighting (and outline / label visibility). No
+    /// geometry is touched — the identical-geometry invariant between PLAY and
+    /// BUY holds (outlines are sibling entities toggled with `isEnabled`).
     private func applyPalette(for mode: RoomRenderMode) {
         let palette = RoomPalette.palette(for: mode)
-        arView?.environment.background = .color(palette.background)
 
-        let floorMat = matteMaterial(palette.floor)
-        let wallMat = matteMaterial(palette.wall)
-        let openingMat = matteMaterial(palette.opening)
-        let baseMat = matteMaterial(palette.floor.darkened(by: 0.12))
+        // One shared material instance per surface (Step 9: don't allocate per
+        // entity).
+        let floorMat = PlayModeMaterials.floor(palette)
+        let wallMat = PlayModeMaterials.wall(palette)
+        let openingMat = PlayModeMaterials.opening(palette)
+        let voidMat = PlayModeMaterials.voidWindow(palette)
+        let baseMat = PlayModeMaterials.base(palette)
+        let capMat = PlayModeMaterials.wallCap(palette)
+        let corniceMat = PlayModeMaterials.cornice(palette)
 
         setMaterial(floorMat, on: floorEntity)
         setMaterial(baseMat, on: baseEntity)
-        for wall in walls { setMaterial(wallMat, on: wall.entity) }
-        for opening in openings { setMaterial(openingMat, on: opening.entity) }
+        for wall in walls {
+            setMaterial(wallMat, on: wall.entity)
+            setMaterial(capMat, on: wall.cap)
+            setMaterial(corniceMat, on: wall.cornice)
+        }
+        // Windows / open openings blow out to a white void in PLAY; doors keep a
+        // paneled face. BUY uses the neutral pane everywhere.
+        for opening in openings {
+            let usesVoid = palette.usesVoidWindows && opening.kind != .door
+            setMaterial(usesVoid ? voidMat : openingMat, on: opening.pane)
+        }
+
+        // Outlines / caps / cornice (PLAY only). These also obey culling —
+        // refreshed each frame in `cullWalls`; set the baseline here.
+        showsOutlines = palette.showsOutlines
+        showsWallCaps = palette.showsWallCaps
+        showsCornice = palette.showsCornice
+        floorOutline?.isEnabled = showsOutlines
+        for wall in walls {
+            wall.outline?.isEnabled = showsOutlines && wall.entity.isEnabled
+            wall.cap?.isEnabled = showsWallCaps && wall.entity.isEnabled
+            wall.cornice?.isEnabled = showsCornice && wall.entity.isEnabled
+        }
+
+        // Soft drop shadow grounds the floating cube against the void (PLAY only).
+        dropShadow?.isEnabled = palette.showsDropShadow
+
+        // Dimension labels (BUY only).
         for label in labels { label.isEnabled = palette.showsDimensions }
 
-        keyLight.light.color = palette.keyLightTint
-        keyLight.light.intensity = palette.keyLightIntensity
-        fillA.light.intensity = palette.fillLightIntensity
-        fillB.light.intensity = palette.fillLightIntensity * 0.7
+        // Lighting: warm 3-point in PLAY, neutral in BUY. In PLAY the directional
+        // rig is dialed down (Theme) because the image-based light carries the
+        // ambient wrap — the key light's main job here is the soft cast shadow.
+        keyLight.light.color = palette.keyTint
+        keyLight.light.intensity = palette.keyIntensity
+        fillA.light.color = palette.fillTint
+        fillA.light.intensity = palette.fillIntensity
+        fillB.light.color = palette.backTint
+        fillB.light.intensity = palette.backIntensity
+
+        // Soft cast shadow from the key light — PLAY only, so BUY's neutral
+        // measuring look is unchanged. A large maximumDistance + depth bias keeps
+        // it gentle rather than hard-edged.
+        keyLight.shadow = (mode == .play)
+            ? DirectionalLightComponent.Shadow(maximumDistance: 8, depthBias: 2.0)
+            : nil
+
+        // Warm skybox + image-based lighting in PLAY (once `environment` is built);
+        // flat neutral color in BUY. Kept last so the directional rig is in place
+        // regardless of whether the async environment has loaded yet.
+        applyEnvironmentLighting()
     }
 
-    private func setMaterial(_ material: SimpleMaterial, on entity: ModelEntity?) {
+    /// Apply the warm studio environment as PLAY image-based lighting over a solid
+    /// "void" backdrop, or a flat neutral color in BUY. Called from `applyPalette`
+    /// on every mode change and again from `loadEnvironment` once the async
+    /// resource is ready. Uses `self.mode`, which callers set before invoking.
+    private func applyEnvironmentLighting() {
+        guard let arView else { return }
+        if mode == .play, let environment {
+            // Keep the warm IBL wrap for soft global illumination, but show a flat
+            // solid backdrop instead of the skybox gradient, so the room reads as a
+            // model floating in a clean void — the defining diorama composition.
+            arView.environment.lighting.resource = environment
+            arView.environment.background = .color(RoomPalette.palette(for: .play).background)
+        } else {
+            arView.environment.lighting.resource = nil
+            arView.environment.background = .color(RoomPalette.palette(for: mode).background)
+        }
+    }
+
+    /// Build the warm studio environment off the main actor, then apply it. There
+    /// is NO graceful fallback for the IBL API: a runtime failure is surfaced
+    /// loudly (assertionFailure in debug, a console warning otherwise) instead of
+    /// being masked. The directional rig still lights the scene either way, but the
+    /// soft GI wrap is the intended look and its absence should be obvious.
+    private func loadEnvironment() {
+        Task { @MainActor [weak self] in
+            do {
+                let resource = try await StudioEnvironment.makeResource()
+                guard let self else { return }
+                self.environment = resource
+                self.applyEnvironmentLighting()
+            } catch {
+                assertionFailure("Snug StudioEnvironment IBL failed to build: \(error)")
+                print("⚠️ Snug: image-based lighting unavailable — \(error)")
+            }
+        }
+    }
+
+    private func setMaterial(_ material: any RealityKit.Material, on entity: ModelEntity?) {
         guard let entity, var model = entity.model else { return }
         model.materials = [material]
         entity.model = model
@@ -416,8 +712,13 @@ final class RoomSceneController: NSObject {
 
         let span = simd_length(SIMD2(maxX - minX, maxZ - minZ))
         let extent = max(span, room.ceilingHeight)
-        radius = max(extent * 1.5, 3)
-        radiusRange = max(extent * 0.45, 1.2)...max(extent * 4, 10)
+        // At a narrow (near-orthographic) FOV the camera must sit much farther back
+        // to keep the room filling the frame: distance ≈ halfExtent / tan(fov/2).
+        // The 1.2 margin leaves a little breathing room around the cube.
+        let halfFOV = (Self.isoFOVDegrees * .pi / 180) / 2
+        let fitDistance = (extent * 0.5) / tan(halfFOV)
+        radius = max(fitDistance * 1.2, 3)
+        radiusRange = max(fitDistance * 0.6, 1.5)...max(fitDistance * 2.6, 12)
 
         defaultAzimuth = azimuth
         defaultElevation = elevation
@@ -484,6 +785,9 @@ final class RoomSceneController: NSObject {
             let isHidden = simd_dot(wall.outwardXZ, toCam) > 0.05
             hidden[i] = isHidden
             wall.entity.isEnabled = !isHidden
+            wall.outline?.isEnabled = !isHidden && showsOutlines
+            wall.cap?.isEnabled = !isHidden && showsWallCaps
+            wall.cornice?.isEnabled = !isHidden && showsCornice
         }
         for opening in openings where hidden.indices.contains(opening.wallIndex) {
             opening.entity.isEnabled = !hidden[opening.wallIndex]
@@ -564,11 +868,3 @@ final class RoomSceneController: NSObject {
     }
 }
 
-private extension UIColor {
-    /// A slightly darker shade, for the grounding base.
-    func darkened(by fraction: CGFloat) -> UIColor {
-        var h: CGFloat = 0, s: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
-        guard getHue(&h, saturation: &s, brightness: &b, alpha: &a) else { return self }
-        return UIColor(hue: h, saturation: s, brightness: max(0, b * (1 - fraction)), alpha: a)
-    }
-}
