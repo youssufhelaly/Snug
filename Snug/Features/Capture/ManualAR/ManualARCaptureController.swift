@@ -447,6 +447,9 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
             break
         case .review:
             break
+        case .furnitureDetection:
+            break
+            
         }
     }
 
