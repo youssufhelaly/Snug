@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import simd
 
 /// The room as a place: a full-screen RealityKit diorama with the always-visible
 /// PLAY/BUY toggle and a spring "Reset view". This is the Phase 1 centerpiece —
@@ -24,8 +25,13 @@ struct RoomDioramaScreen: View {
     @State private var footprints: [FurnitureFootprint] = []
     @State private var selectedFurnitureID: UUID?
     @State private var showFineTune = false
+    @State private var showCarousel = false
+    @State private var showLimitToast = false
 
     private static let pillSpring = Animation.spring(response: 0.3, dampingFraction: 0.85)
+    private static let maxFurniture = 8
+
+    private var activeFurnitureCount: Int { footprints.filter { !$0.isCleared }.count }
 
     private var selectedFootprint: FurnitureFootprint? {
         footprints.first { $0.id == selectedFurnitureID && !$0.isCleared }
@@ -96,7 +102,12 @@ struct RoomDioramaScreen: View {
             }
         }
         .overlay(alignment: .bottom) { microPill }
+        .overlay(alignment: .bottomTrailing) { addButton }
+        .overlay(alignment: .bottom) { carousel }
+        .overlay(alignment: .top) { limitToast }
         .animation(Self.pillSpring, value: selectedFurnitureID)
+        .animation(Self.pillSpring, value: showCarousel)
+        .animation(Self.pillSpring, value: showLimitToast)
         .sheet(isPresented: $showFineTune) {
             if let id = selectedFurnitureID {
                 FineTuneSheet(footprints: $footprints, footprintID: id, onCommit: persistFurniture)
@@ -141,7 +152,7 @@ struct RoomDioramaScreen: View {
     // MARK: - Micro-pill (selected furniture)
 
     @ViewBuilder private var microPill: some View {
-        if !showFineTune, let footprint = selectedFootprint {
+        if !showFineTune, !showCarousel, let footprint = selectedFootprint {
             FurnitureMicroPill(
                 category: footprint.category,
                 onFineTune: { showFineTune = true },
@@ -159,6 +170,86 @@ struct RoomDioramaScreen: View {
         selectedFurnitureID = nil
         persistFurniture()
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    // MARK: - Add furniture (+ button + carousel)
+
+    /// Always present in the diorama; hidden (not removed) while the carousel or
+    /// Fine Tune sheet is open, so adding furniture is possible at any time.
+    private var addButton: some View {
+        let hidden = showCarousel || showFineTune
+        return Button(action: addTapped) {
+            Label("Add", systemImage: "plus")
+                .font(.system(size: 15, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white)
+                .padding(.horizontal, 20)
+                .frame(height: 56)
+                .background(SnugTheme.clay, in: Capsule())
+        }
+        .padding(.trailing, 20)
+        .padding(.bottom, 88)   // above the reset button
+        .opacity(hidden ? 0 : 1)
+        .allowsHitTesting(!hidden)
+        .accessibilityLabel("Add furniture")
+    }
+
+    @ViewBuilder private var carousel: some View {
+        if showCarousel {
+            FurnitureCarouselOverlay(
+                onSelect: { category in
+                    addFurniture(category)
+                    showCarousel = false
+                },
+                onClose: { showCarousel = false }
+            )
+            .transition(.move(edge: .bottom))
+        }
+    }
+
+    @ViewBuilder private var limitToast: some View {
+        if showLimitToast {
+            Text("Remove an item to add another")
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .foregroundStyle(SnugTheme.ink)
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .background(.regularMaterial, in: Capsule())
+                .padding(.top, 12)
+                .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    private func addTapped() {
+        guard activeFurnitureCount < Self.maxFurniture else {
+            showLimitToast = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 1.8) { showLimitToast = false }
+            return
+        }
+        selectedFurnitureID = nil   // hide the pill while the carousel is up
+        showCarousel = true
+    }
+
+    /// Create a piece at the room centroid, clamped inside, select it, persist.
+    private func addFurniture(_ category: FurnitureCategory) {
+        guard let room else { return }
+        let dims = category.defaultDimensions
+        let corners = room.floorCorners.map(\.simd2)
+        let centroid = FurniturePlacementService.centroid(of: corners)
+        let xz = FurniturePlacementService().clampToBoundary(
+            position: centroid, dimensions: SIMD2(dims.x, dims.y), rotation: 0,
+            room: RoomFootprint(corners: corners))
+        let footprint = FurnitureFootprint(
+            category: category,
+            worldPosition: SIMD3(xz.x, dims.z / 2, xz.y),
+            dimensions: dims,
+            yRotation: 0,
+            appearance: FurnitureAppearance(colorCategory: .other, materialClass: .inferred(for: category)),
+            detectionConfidence: .manual,
+            isKept: true
+        )
+        footprints.append(footprint)
+        selectedFurnitureID = footprint.id
+        persistFurniture()
+        UIImpactFeedbackGenerator(style: .medium).impactOccurred()
     }
 
     // MARK: - Vignette (PLAY only)
