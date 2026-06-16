@@ -156,44 +156,34 @@ struct RoomSceneView: View {
     /// entity (correct unprojection for the ortho camera), so no manual ray.
     private var furnitureTapGesture: some Gesture {
         SpatialTapGesture().targetedToAnyEntity().onEnded { value in
-            print("🔥 TAP FIRED:", value.entity.name)
-            if let (root, id) = taggedFurnitureRoot(for: value.entity) {
+            if let (_, id) = taggedFurnitureRoot(for: value.entity) {
                 onSelectFurniture?(id)
             }
         }
     }
+
+    /// Walk up from a hit entity to the box that carries the furniture tag — taps
+    /// can land on a child (label / outline shell), which has no tag of its own.
     private func taggedFurnitureRoot(for entity: Entity) -> (entity: Entity, id: UUID)? {
         var current: Entity? = entity
-
         while let e = current {
             if let tag = e.components[FurnitureTagComponent.self] {
                 return (e, tag.footprintID)
             }
             current = e.parent
         }
-
         return nil
     }
+
     /// Drag a furniture entity. On the selected piece → move it on the floor using
-    /// RealityKit's native unproject (`convert(location3D)`); on a different piece →
-    /// select it (no move — a second drag moves it, per the interaction spec).
-    /// First drag on an unselected piece selects it.
-    /// Dragging an already-selected piece moves it.
+    /// RealityKit's native `unproject(…ontoPlane:)` (camera-correct, no manual ray);
+    /// dragging an UNselected piece selects it without moving (a second drag moves).
     private var furnitureDragGesture: some Gesture {
         DragGesture()
             .targetedToAnyEntity()
             .onChanged { value in
-                print("🔥 DRAG FIRED:", value.entity.name)
-                guard let (root, id) = taggedFurnitureRoot(for: value.entity) else {
-                    print("❌ No FurnitureTagComponent found for entity:", value.entity.name)
-                    return
-                }
-
-                guard let parent = root.parent else {
-                    print("❌ Furniture root has no parent:", root.name)
-                    return
-                }
-
+                guard let (root, id) = taggedFurnitureRoot(for: value.entity),
+                      let parent = root.parent else { return }
                 let floorPlane = Self.horizontalPlane(atHeight: root.position.y)
 
                 if furnitureDragID != id {
@@ -202,40 +192,20 @@ struct RoomSceneView: View {
                     if id == selectedFurnitureID {
                         furnitureDragIsMove = true
 
-                        if let start = value.unproject(
-                            value.startLocation,
-                            from: .local,
-                            to: parent,
-                            ontoPlane: floorPlane
-                        ) {
-                            controller.beginFurnitureDrag(
-                                id,
-                                grabWorldXZ: SIMD2(start.x, start.z)
-                            )
-                        } else {
-                            print("❌ Failed to unproject drag start")
+                        if let start = value.unproject(value.startLocation, from: .local,
+                                                       to: parent, ontoPlane: floorPlane) {
+                            controller.beginFurnitureDrag(id, grabWorldXZ: SIMD2(start.x, start.z))
                         }
-
                     } else {
                         furnitureDragIsMove = false
                         onSelectFurniture?(id)
                     }
                 }
 
-                if furnitureDragIsMove {
-                    guard let world = value.unproject(
-                        value.location,
-                        from: .local,
-                        to: parent,
-                        ontoPlane: floorPlane
-                    ) else {
-                        print("❌ Failed to unproject drag location")
-                        return
-                    }
-
-                    controller.dragFurniture(
-                        toWorldXZ: SIMD2(world.x, world.z)
-                    )
+                if furnitureDragIsMove,
+                   let world = value.unproject(value.location, from: .local,
+                                               to: parent, ontoPlane: floorPlane) {
+                    controller.dragFurniture(toWorldXZ: SIMD2(world.x, world.z))
                 }
             }
             .onEnded { _ in
@@ -252,7 +222,7 @@ struct RoomSceneView: View {
     private var furnitureMagnifyGesture: some Gesture {
         MagnifyGesture().targetedToAnyEntity()
             .onChanged { value in
-                guard let id = value.entity.components[FurnitureTagComponent.self]?.footprintID,
+                guard let (_, id) = taggedFurnitureRoot(for: value.entity),
                       id == selectedFurnitureID else { return }
                 if !furnitureResizeActive { controller.beginFurnitureResize(id); furnitureResizeActive = true }
                 controller.resizeFurniture(scale: Float(value.magnification))
@@ -498,10 +468,10 @@ final class RoomSceneController {
         // True orthographic projection — the canonical isometric-diorama camera. The
         // ortho `scale` (view-volume height) is set every frame in `updateCamera`,
         // derived from `radius`, so the existing orbit / pinch-zoom / reset machinery
-        // keeps driving a single value and needs no other change.
-        var cam = PerspectiveCameraComponent()
-        cam.fieldOfViewInDegrees = 18
-        camera.components.set(cam)
+        // keeps driving a single value and needs no other change. (Native gesture
+        // unprojection via `value.unproject(…ontoPlane:)` works against this ortho
+        // camera, so there's no need for a perspective camera.)
+        camera.components.set(OrthographicCameraComponent())
         cameraAnchor.addChild(camera)
 
         frameCamera(room: room)
