@@ -265,6 +265,66 @@ control is more honest than fake precision.
   serialized real-scan fixtures. No UI code inside it. Treat any
   change to it as high-risk and test-first.
 
+## Furniture detection philosophy
+- Preserve room identity, not photorealistic furniture reconstruction
+- Users need to recognize their room, not own a digital twin
+- Detection produces: category, floor position, estimated dimensions, perceptual color, material class
+- No texture projection, no custom shaders, no baked shadows
+- All detections are honest about their confidence level
+
+## Furniture detection (Phase 2)
+- Model: YOLO26n CoreML (YOLO26nFurniture.mlpackage), bundled, offline
+- Timing: post-scan dedicated pan step, NOT during corner capture
+- Consensus gate: Rolling IoU tracking tracker, >= 3 consecutive frames or >= 1.5s lifetime
+- Floor snapping: always snap Y to sessionFloorY from ManualARCaptureController
+- Dimensions: category priors scaled by pixel-width estimate, clamped ±40%
+- Color: Lab-space perceptual mapping to 15 named categories constrained inside instance alpha mask
+- Material: category heuristic in V2, classifier in V3
+- Fallback: manual category picker — treat as first-class, not error state
+- FitService confidence: .detected = standard margin, .estimated/.manual = 1.5× margin
+
+## Out of scope for furniture detection (do not build)
+- Texture projection or projective shaders
+- Photogrammetry or mesh reconstruction
+- NeRFs, Gaussian splats
+- Baked lighting or shadows on furniture assets
+- Per-item custom 3D model generation
+- Any network calls for furniture processing
+
+## Furniture detection — implementation status (for the next engineer)
+Phase 2 is landing in layers. What exists and is unit-tested today:
+- The value types (`Core/Models/FurnitureModels.swift`): `FurnitureObservation`,
+  `FurnitureCategory` (priors + display + SF Symbols), `FurnitureFootprint`,
+  `FurnitureAppearance`, `FurnitureColorCategory`, `FurnitureMaterialClass`.
+- `RoomModel.detectedFurniture` — persisted in the existing JSON blob. RoomModel
+  now has a CUSTOM `Codable` (`decodeIfPresent ?? []`) because Swift's synthesized
+  decoder does NOT honor property defaults for missing keys; the custom decoder is
+  what lets pre-Phase-2 blobs still decode. No `SnugSchema` version bump needed
+  (the `StoredRoom` columns are unchanged).
+- `FurniturePlacementService` — PURE (no ARKit). The AR layer resolves the
+  bottom-center raycast and hands it `Input`; this service snaps Y to the floor,
+  clamps XZ into the room polygon, and back-projects/clamps width (±40%).
+- `FurnitureColorClassifier` — PURE sRGB→Lab nearest-category mapping; the pixel
+  sampling (mask-intersected 5×5 grid, ~1000-lux frame) is the detection layer's job.
+- `FurnitureFootprint.fitObstacle` / `[…].keptObstacles` — the kept→obstacle bridge.
+- `FitService` — per-obstacle margin widening via `FitObstacle.Confidence`
+  (`.estimated` ⇒ 1.5×). Implemented by NORMALIZING each constraint's clearance by
+  its multiplier and classifying against the base margin (the four-state thresholds
+  scale linearly with the margin, so this is exact and leaves the all-`.measured`
+  path byte-identical). It never blocks placement — only shifts toward "too close".
+Still DEVICE-ONLY work (needs Xcode + a LiDAR/AR iPhone, not buildable on Linux CI):
+- `FurnitureDetectionService` (Vision/CoreML, CVPixelBuffer retain handling, the
+  serial detection queue, all `@Observable` mutations hopped to `@MainActor`).
+- Wiring the post-scan pan step into `ManualARCaptureController`. NOTE: the real
+  controller is an `ObservableObject`/`NSObject` with steps
+  `findingFloor → markingCorners → markingOpenings → review`; ceiling look-up is a
+  sub-state of the `review` close sequence, not a `Step`. Inserting a furniture
+  step means extending that enum + the close sequence — a deliberate decision to
+  make with the team, not a drop-in.
+- The SwiftUI/RealityKit surfaces: `FurnitureDetectionView`, `ManualFurniturePickerView`,
+  `DeclutterView`, and `FurnitureEntityBuilder`.
+- Bundling `YOLO26nFurniture.mlpackage` (the asset does not exist in the repo yet).
+
 ## Hard rules
 - NEVER fake the scan. If RoomPlan fails or confidence is low,
   say so and offer a rescan. No silently invented geometry.

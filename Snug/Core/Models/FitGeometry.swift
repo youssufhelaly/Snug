@@ -108,14 +108,37 @@ struct FitObstacle: Identifiable, Equatable {
         case doorway
     }
 
+    /// How well we trust this obstacle's geometry. Kept-furniture footprints
+    /// sized from category priors (Phase 2's `.estimated` / `.manual` detections)
+    /// are far less certain than measured walls, so the fit math widens its
+    /// uncertainty band for them (`marginMultiplier`). This lives in the fit
+    /// layer — not as a furniture type — so `FitService` stays free of Vision /
+    /// furniture imports; the de-clutter bridge maps detection confidence onto it.
+    enum Confidence: Equatable {
+        /// Real measured geometry (or a high-confidence detection). Standard band.
+        case measured
+        /// Estimated from priors or manually placed — widen the band 1.5×.
+        case estimated
+
+        /// Factor applied to the global error margin for this obstacle.
+        var marginMultiplier: Float {
+            switch self {
+            case .measured:  return 1.0
+            case .estimated: return 1.5
+            }
+        }
+    }
+
     let id: UUID
     var footprint: OrientedFootprint
     var kind: Kind
+    var confidence: Confidence
 
-    init(id: UUID = UUID(), footprint: OrientedFootprint, kind: Kind) {
+    init(id: UUID = UUID(), footprint: OrientedFootprint, kind: Kind, confidence: Confidence = .measured) {
         self.id = id
         self.footprint = footprint
         self.kind = kind
+        self.confidence = confidence
     }
 }
 

@@ -37,30 +37,38 @@ struct FitService {
             )
         }
 
-        // Containment: smallest signed clearance to any wall.
+        // Containment: smallest signed clearance to any wall. Walls are measured
+        // geometry, so they always use the base error margin (multiplier 1).
         let wall = roomClearance(item: item, room: geometry.room)
 
-        // Obstacles: smallest signed clearance to any occupied footprint.
+        // Obstacles: track the smallest *raw* clearance (for honest reporting)
+        // and, separately, the binding constraint chosen by margin-NORMALIZED
+        // clearance. An obstacle with `.estimated` confidence widens its
+        // uncertainty band 1.5×; dividing its clearance by that multiplier and
+        // classifying against the base margin is exactly equivalent to widening
+        // the band, because every four-state threshold scales linearly with the
+        // margin. So a less-trusted obstacle binds the result sooner — pushing
+        // toward "too close to call" where a measured one would still "fit" —
+        // without ever blocking placement (CLAUDE.md: honesty, not a hard no).
         var obstacleClearance: Float?
-        var limitingObstacle: FitObstacle?
+        var bindingNormalized = wall.clearance      // wall multiplier == 1
+        var clearance = wall.clearance              // raw clearance of the binding constraint
+        var limit: FitResult.Limit = .wall(index: wall.wallIndex)
         for obstacle in geometry.obstacles {
-            let c = rectangleClearance(item, obstacle.footprint)
-            if obstacleClearance == nil || c < obstacleClearance! {
-                obstacleClearance = c
-                limitingObstacle = obstacle
+            let raw = rectangleClearance(item, obstacle.footprint)
+            if obstacleClearance == nil || raw < obstacleClearance! {
+                obstacleClearance = raw
+            }
+            let normalized = raw / obstacle.confidence.marginMultiplier
+            if normalized < bindingNormalized {
+                bindingNormalized = normalized
+                clearance = raw
+                limit = .obstacle(id: obstacle.id, kind: obstacle.kind)
             }
         }
 
-        // The binding constraint is whichever clearance is smallest.
-        var clearance = wall.clearance
-        var limit: FitResult.Limit = .wall(index: wall.wallIndex)
-        if let oc = obstacleClearance, oc < clearance, let obstacle = limitingObstacle {
-            clearance = oc
-            limit = .obstacle(id: obstacle.id, kind: obstacle.kind)
-        }
-
         return FitResult(
-            state: Self.classify(clearance: clearance, errorMargin: errorMargin),
+            state: Self.classify(clearance: bindingNormalized, errorMargin: errorMargin),
             clearance: clearance,
             wallClearance: wall.clearance,
             obstacleClearance: obstacleClearance,

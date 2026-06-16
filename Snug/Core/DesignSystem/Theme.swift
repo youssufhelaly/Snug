@@ -216,3 +216,19 @@ extension UIColor {
         }
     }
 }
+
+extension Color {
+    /// Builds a color from a `#RRGGBB` (or bare `RRGGBB`) hex string, full
+    /// opacity. Used by the Phase 2 furniture color categories so their PLAY
+    /// tints can be authored as hex literals. An unparseable string falls back
+    /// to the subtle grey rather than crashing — colors must never take the app
+    /// down (CLAUDE.md: fail gracefully, never blank/technical).
+    init(hex: String) {
+        let cleaned = hex.hasPrefix("#") ? String(hex.dropFirst()) : hex
+        guard cleaned.count == 6, let value = UInt32(cleaned, radix: 16) else {
+            self = Color(UIColor(rgb: 0x8A847C))
+            return
+        }
+        self = Color(UIColor(rgb: value))
+    }
+}
