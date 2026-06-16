@@ -262,9 +262,40 @@ private struct SceneGestureOverlay: UIViewRepresentable {
             gesture.setTranslation(.zero, in: view)
         }
 
+        /// What the in-flight pinch is doing, decided at `.began`.
+        private enum PinchMode { case zoom, resizeFurniture }
+        private var pinchMode: PinchMode = .zoom
+
         @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-            controller?.pinch(scale: Float(gesture.scale))
-            gesture.scale = 1
+            guard let controller, let view = gesture.view else { return }
+            switch gesture.state {
+            case .began:
+                // Pinch centered on the selected entity resizes it; otherwise zoom.
+                if controller.hasFurniture,
+                   let id = controller.furnitureID(atScreenPoint: gesture.location(in: view), viewSize: view.bounds.size),
+                   id == controller.selectedFurnitureID {
+                    controller.beginFurnitureResize(id)
+                    pinchMode = .resizeFurniture
+                } else {
+                    pinchMode = .zoom
+                }
+            case .changed:
+                switch pinchMode {
+                case .resizeFurniture:
+                    // Cumulative scale since gesture start — do NOT reset to 1.
+                    controller.resizeFurniture(scale: Float(gesture.scale))
+                case .zoom:
+                    controller.pinch(scale: Float(gesture.scale))
+                    gesture.scale = 1
+                }
+            case .ended, .cancelled, .failed:
+                if pinchMode == .resizeFurniture {
+                    onFurnitureChanged?(controller.endFurnitureResize())
+                }
+                pinchMode = .zoom
+            default:
+                break
+            }
         }
 
         @objc func handleTap(_ gesture: UITapGestureRecognizer) {
@@ -1241,6 +1272,66 @@ final class RoomSceneController {
     /// End the drag and return the updated footprints for persistence.
     func endFurnitureDrag() -> [FurnitureFootprint] {
         draggingFurnitureID = nil
+        lastDragState = nil
+        return currentFootprints
+    }
+
+    // MARK: - Live pinch-to-resize (width/depth only)
+
+    private var resizingFurnitureID: UUID?
+    /// Dimensions captured at pinch start, so the cumulative gesture scale applies
+    /// to a stable base rather than compounding each callback.
+    private var resizeBaseDimensions: SIMD3<Float> = .one
+
+    static let minFurnitureWidth: Float = 0.30
+    static let maxFurnitureWidth: Float = 3.50
+    static let minFurnitureDepth: Float = 0.30
+    static let maxFurnitureDepth: Float = 2.50
+
+    func beginFurnitureResize(_ id: UUID) {
+        guard let footprint = currentFootprints.first(where: { $0.id == id }) else { return }
+        resizingFurnitureID = id
+        resizeBaseDimensions = footprint.dimensions
+        lastDragState = nil
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    /// Scale width (X) and depth (Y) by the cumulative gesture `scale`, clamped.
+    /// Height (Z) is NEVER changed. The footprint center is unchanged and height is
+    /// fixed, so the box grows/shrinks around its center and stays floor-anchored.
+    /// The mesh + collision shape are replaced in place (no remove/re-add → no pop).
+    func resizeFurniture(scale: Float) {
+        guard let id = resizingFurnitureID,
+              let room = editingRoom,
+              let index = currentFootprints.firstIndex(where: { $0.id == id }) else { return }
+
+        let width = min(max(resizeBaseDimensions.x * scale, Self.minFurnitureWidth), Self.maxFurnitureWidth)
+        let depth = min(max(resizeBaseDimensions.y * scale, Self.minFurnitureDepth), Self.maxFurnitureDepth)
+        let height = resizeBaseDimensions.z   // unchanged
+        currentFootprints[index].dimensions = SIMD3(width, depth, height)
+        let footprint = currentFootprints[index]
+
+        let state = FurniturePlacementValidator.validate(
+            footprint: footprint, against: room, existingFootprints: currentFootprints)
+
+        if let entity = furnitureEntities[id] as? ModelEntity, var model = entity.model {
+            // generateBox uses (width: x, height: z, depth: y) — the convention in
+            // FurnitureEntityBuilder. Replace mesh + collision in place.
+            model.mesh = .generateBox(width: width, height: height, depth: depth, cornerRadius: 0.04)
+            entity.model = model
+            entity.collision = CollisionComponent(shapes: [.generateBox(size: SIMD3(width, height, depth))])
+            FurnitureEntityBuilder.applyPlacementState(state, selected: true, to: entity)
+            furnitureSnapshots[id] = footprint
+        }
+
+        if state == .invalid && lastDragState != .invalid {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+        lastDragState = state
+    }
+
+    func endFurnitureResize() -> [FurnitureFootprint] {
+        resizingFurnitureID = nil
         lastDragState = nil
         return currentFootprints
     }
