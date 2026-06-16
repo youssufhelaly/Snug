@@ -113,7 +113,11 @@ struct RoomSceneView: View {
     // MARK: - Overlays
 
     private var gestureLayer: some View {
-        SceneGestureOverlay(controller: controller, onSelectFurniture: onSelectFurniture)
+        SceneGestureOverlay(
+            controller: controller,
+            onSelectFurniture: onSelectFurniture,
+            onFurnitureChanged: onFurnitureChanged
+        )
     }
 
     /// The cross-fade freeze: shown instantly at full opacity (covering the material
@@ -153,15 +157,17 @@ struct RoomSceneView: View {
 /// controller's camera intents. `RealityView` needs no touches of its own here.
 private struct SceneGestureOverlay: UIViewRepresentable {
     let controller: RoomSceneController
-    /// Tap selection callback (nil = deselect). Furniture drag/pinch is added in
-    /// later items; this item wires tap-to-select only.
+    /// Tap selection callback (nil = deselect).
     var onSelectFurniture: ((UUID?) -> Void)? = nil
+    /// Called with the mutated footprints when a furniture drag/pinch ends.
+    var onFurnitureChanged: (([FurnitureFootprint]) -> Void)? = nil
 
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.backgroundColor = .clear
         context.coordinator.controller = controller
         context.coordinator.onSelectFurniture = onSelectFurniture
+        context.coordinator.onFurnitureChanged = onFurnitureChanged
 
         let orbit = UIPanGestureRecognizer(target: context.coordinator,
                                             action: #selector(Coordinator.handleOrbit(_:)))
@@ -189,6 +195,7 @@ private struct SceneGestureOverlay: UIViewRepresentable {
     func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.controller = controller
         context.coordinator.onSelectFurniture = onSelectFurniture
+        context.coordinator.onFurnitureChanged = onFurnitureChanged
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -199,12 +206,53 @@ private struct SceneGestureOverlay: UIViewRepresentable {
     final class Coordinator: NSObject {
         weak var controller: RoomSceneController?
         var onSelectFurniture: ((UUID?) -> Void)?
+        var onFurnitureChanged: (([FurnitureFootprint]) -> Void)?
+
+        /// What the in-flight single-finger drag is doing, decided at `.began`.
+        private enum DragMode { case orbit, moveFurniture, consumed }
+        private var dragMode: DragMode = .orbit
 
         @objc func handleOrbit(_ gesture: UIPanGestureRecognizer) {
-            guard let view = gesture.view else { return }
-            let t = gesture.translation(in: view)
-            controller?.orbit(dx: Float(t.x), dy: Float(t.y))
-            gesture.setTranslation(.zero, in: view)
+            guard let controller, let view = gesture.view else { return }
+            switch gesture.state {
+            case .began:
+                dragMode = decideDragMode(start: gesture.location(in: view), view: view, controller: controller)
+            case .changed:
+                switch dragMode {
+                case .moveFurniture:
+                    controller.dragFurniture(toScreenPoint: gesture.location(in: view), viewSize: view.bounds.size)
+                case .orbit:
+                    let t = gesture.translation(in: view)
+                    controller.orbit(dx: Float(t.x), dy: Float(t.y))
+                    gesture.setTranslation(.zero, in: view)
+                case .consumed:
+                    break   // the drag only selected a piece; don't move or orbit
+                }
+            case .ended, .cancelled, .failed:
+                if dragMode == .moveFurniture {
+                    onFurnitureChanged?(controller.endFurnitureDrag())
+                }
+                dragMode = .orbit
+            default:
+                break
+            }
+        }
+
+        /// Decide whether a single-finger drag moves furniture, orbits, or just
+        /// selects. Skips the hit-test entirely when there's no furniture.
+        private func decideDragMode(start: CGPoint, view: UIView, controller: RoomSceneController) -> DragMode {
+            guard controller.hasFurniture else { return .orbit }
+            guard let id = controller.furnitureID(atScreenPoint: start, viewSize: view.bounds.size) else {
+                return .orbit   // empty space → camera
+            }
+            if id == controller.selectedFurnitureID {
+                controller.beginFurnitureDrag(id)
+                return .moveFurniture
+            }
+            // Dragging an UNselected piece selects it but doesn't move it (a second
+            // drag, now that it's selected, moves it).
+            onSelectFurniture?(id)
+            return .consumed
         }
 
         @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
@@ -305,7 +353,16 @@ final class RoomSceneController {
     /// hit-test a screen tap against the floor rectangles without a SwiftUI round-trip.
     private(set) var currentFootprints: [FurnitureFootprint] = []
     /// The currently selected piece (drives the Clay highlight + gesture gating).
-    private var selectedFurnitureID: UUID?
+    /// Readable by the gesture overlay to decide move-vs-select on drag start.
+    private(set) var selectedFurnitureID: UUID?
+    /// The room being edited — stored so live drag/pinch can validate without a
+    /// SwiftUI round-trip. Set in `makeEntities`.
+    private var editingRoom: RoomModel?
+    /// The piece a single-finger drag is currently moving (nil when not dragging).
+    private var draggingFurnitureID: UUID?
+    /// Previous placement state during a drag, so the "became invalid" warning
+    /// haptic fires once on transition rather than every move.
+    private var lastDragState: PlacementState?
 
     /// Whether any furniture exists — the overlay skips all hit-testing when false.
     var hasFurniture: Bool { !currentFootprints.isEmpty }
@@ -382,6 +439,7 @@ final class RoomSceneController {
     func makeEntities(room: RoomModel, mode: RoomRenderMode, editingFurniture: Bool = false, onThumbnail: ((Data) -> Void)?) {
         self.mode = mode
         self.editingFurniture = editingFurniture
+        self.editingRoom = room
         self.onThumbnail = onThumbnail
 
         buildLights()
@@ -1140,6 +1198,51 @@ final class RoomSceneController {
             if Geometry2D.isPoint(floor, insidePolygon: rect.corners) { return footprint.id }
         }
         return nil
+    }
+
+    // MARK: - Live drag-to-move (driven by the gesture overlay)
+
+    /// Begin moving `id`. A light tap confirms the grab.
+    func beginFurnitureDrag(_ id: UUID) {
+        draggingFurnitureID = id
+        lastDragState = nil
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    /// Move the dragging piece so its center sits under `screenPoint` on the floor.
+    /// Mutates the entity transform + tint directly (no SwiftUI round-trip, for
+    /// immediacy); the final footprints are pushed up in `endFurnitureDrag`. The
+    /// floor-anchor invariant holds: only X/Z change, never Y.
+    func dragFurniture(toScreenPoint screenPoint: CGPoint, viewSize: CGSize) {
+        guard let id = draggingFurnitureID,
+              let room = editingRoom,
+              let floor = floorPoint(forScreenPoint: screenPoint, viewSize: viewSize),
+              let index = currentFootprints.firstIndex(where: { $0.id == id }) else { return }
+
+        currentFootprints[index].worldPosition.x = floor.x
+        currentFootprints[index].worldPosition.z = floor.y   // SIMD2.y carries world Z; .y altitude untouched
+        let footprint = currentFootprints[index]
+
+        let state = FurniturePlacementValidator.validate(
+            footprint: footprint, against: room, existingFootprints: currentFootprints)
+
+        if let entity = furnitureEntities[id] {
+            entity.position = footprint.worldPosition
+            FurnitureEntityBuilder.applyPlacementState(state, selected: true, to: entity)
+            furnitureSnapshots[id] = footprint   // keep snapshot in sync so the post-drag re-sync won't rebuild
+        }
+
+        if state == .invalid && lastDragState != .invalid {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+        lastDragState = state
+    }
+
+    /// End the drag and return the updated footprints for persistence.
+    func endFurnitureDrag() -> [FurnitureFootprint] {
+        draggingFurnitureID = nil
+        lastDragState = nil
+        return currentFootprints
     }
 
     // MARK: - Per-frame loop

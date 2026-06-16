@@ -31,6 +31,15 @@ struct RoomDioramaScreen: View {
         _footprints = State(initialValue: decoded?.detectedFurniture ?? [])
     }
 
+    /// Auto-save: write the current furniture into the stored room. Called on
+    /// gesture end (drag/pinch/slider) — there is no "Done" step.
+    private func persistFurniture() {
+        guard var updated = room else { return }
+        updated.detectedFurniture = footprints
+        room = updated
+        try? store.update(stored, with: updated)
+    }
+
     /// Live fit classification per footprint (recomputed on edits, not per frame).
     private func placementStates(for room: RoomModel) -> [UUID: PlacementState] {
         var states: [UUID: PlacementState] = [:]
@@ -59,7 +68,11 @@ struct RoomDioramaScreen: View {
                     editableFurniture: footprints,
                     placementStates: placementStates(for: room),
                     selectedFurnitureID: selectedFurnitureID,
-                    onSelectFurniture: { selectedFurnitureID = $0 }
+                    onSelectFurniture: { selectedFurnitureID = $0 },
+                    onFurnitureChanged: { updated in
+                        footprints = updated
+                        persistFurniture()
+                    }
                 )
                 .ignoresSafeArea()
 
