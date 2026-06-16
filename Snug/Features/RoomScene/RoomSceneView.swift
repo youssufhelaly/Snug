@@ -58,11 +58,9 @@ struct RoomSceneView: View {
     /// toggle already replaced it with.
     @State private var crossfadeToken = 0
 
-    // Native-gesture state. Camera gestures are cumulative in SwiftUI, so we track
-    // the last value to feed the controller incremental deltas (its orbit/pinch
-    // math is unchanged). Furniture-drag state decides move-vs-select per gesture.
-    @State private var lastOrbitTranslation: CGSize = .zero
-    @State private var lastZoomMagnification: CGFloat = 1
+    // Native-gesture state. Camera gestures are cumulative in SwiftUI; that cumulative
+    // tracking now lives on `RoomSceneController` (NOT `@State`), so orbit/zoom ticks
+    // never invalidate `body`. Furniture-drag state decides move-vs-select per gesture.
     @State private var furnitureDragID: UUID?
     @State private var furnitureDragIsMove = false
     @State private var furnitureResizeActive = false
@@ -98,12 +96,25 @@ struct RoomSceneView: View {
             // so they win when a touch lands on a piece; camera orbit/zoom are
             // plain gestures that handle empty space. (The old UIKit overlay +
             // manual ortho ray drifted off-axis; this is the fix.)
+            // Gesture composition (this ordering is load-bearing — see below).
+            // Furniture tap/drag/pinch are `.targetedToAnyEntity()`, so they only
+            // fire when the touch lands on a piece. The CAMERA gestures are attached
+            // as `.simultaneousGesture` ON PURPOSE: a plain `.gesture` orbit is LOWER
+            // priority than the targeted gestures and SwiftUI won't deliver to it
+            // until the targeted drag *fails* — but a targeted drag only fails once
+            // the arbiter rules out an entity hit, which starves orbit to ~1 event/s
+            // (the "laggy, non-responsive" bug). Simultaneous gestures never wait on
+            // arbitration, so orbit/zoom stay smooth; they're GATED below so they no-op
+            // while a furniture drag/resize is in flight (the targeted gesture sets the
+            // flag), giving clean move-vs-orbit separation without the priority stall.
+            // The tap pair keeps the priority relationship (furniture tap must beat the
+            // empty-space deselect), and taps are discrete so they don't stall.
             .highPriorityGesture(furnitureTapGesture)
-            .highPriorityGesture(furnitureDragGesture)
-            .highPriorityGesture(furnitureMagnifyGesture)
-            .gesture(cameraOrbitGesture)
-            .gesture(cameraZoomGesture)
+            .gesture(furnitureDragGesture)
+            .gesture(furnitureMagnifyGesture)
             .gesture(deselectTapGesture)
+            .simultaneousGesture(cameraOrbitGesture)
+            .simultaneousGesture(cameraZoomGesture)
             .overlay { crossfadeOverlay }
             .onChange(of: crossfadeImage) { _, image in startCrossfade(image) }
             .onChange(of: geo.size) { syncPixelSize(geo.size) }
@@ -132,42 +143,106 @@ struct RoomSceneView: View {
 
     // MARK: - Gestures (native RealityKit, entity-targeted)
 
+    /// A horizontal plane (normal = +Y) at world height `y`, expressed as a 4×4
+    /// transform for `unproject(…ontoPlane:)`. Used to drop the 2D drag point onto
+    /// the floor during a furniture move.
+    private static func horizontalPlane(atHeight y: Float) -> float4x4 {
+        var m = matrix_identity_float4x4
+        m.columns.3.y = y
+        return m
+    }
+
     /// Tap on a furniture entity → select it. RealityKit returns the exact tapped
     /// entity (correct unprojection for the ortho camera), so no manual ray.
     private var furnitureTapGesture: some Gesture {
         SpatialTapGesture().targetedToAnyEntity().onEnded { value in
-            if let id = value.entity.components[FurnitureTagComponent.self]?.footprintID {
+            print("🔥 TAP FIRED:", value.entity.name)
+            if let (root, id) = taggedFurnitureRoot(for: value.entity) {
                 onSelectFurniture?(id)
             }
         }
     }
+    private func taggedFurnitureRoot(for entity: Entity) -> (entity: Entity, id: UUID)? {
+        var current: Entity? = entity
 
+        while let e = current {
+            if let tag = e.components[FurnitureTagComponent.self] {
+                return (e, tag.footprintID)
+            }
+            current = e.parent
+        }
+
+        return nil
+    }
     /// Drag a furniture entity. On the selected piece → move it on the floor using
     /// RealityKit's native unproject (`convert(location3D)`); on a different piece →
     /// select it (no move — a second drag moves it, per the interaction spec).
+    /// First drag on an unselected piece selects it.
+    /// Dragging an already-selected piece moves it.
     private var furnitureDragGesture: some Gesture {
-        DragGesture().targetedToAnyEntity()
+        DragGesture()
+            .targetedToAnyEntity()
             .onChanged { value in
-                guard let id = value.entity.components[FurnitureTagComponent.self]?.footprintID,
-                      let parent = value.entity.parent else { return }
+                print("🔥 DRAG FIRED:", value.entity.name)
+                guard let (root, id) = taggedFurnitureRoot(for: value.entity) else {
+                    print("❌ No FurnitureTagComponent found for entity:", value.entity.name)
+                    return
+                }
+
+                guard let parent = root.parent else {
+                    print("❌ Furniture root has no parent:", root.name)
+                    return
+                }
+
+                let floorPlane = Self.horizontalPlane(atHeight: root.position.y)
+
                 if furnitureDragID != id {
                     furnitureDragID = id
+
                     if id == selectedFurnitureID {
                         furnitureDragIsMove = true
-                        let start = value.convert(value.startLocation3D, from: .local, to: parent)
-                        controller.beginFurnitureDrag(id, grabWorldXZ: SIMD2(start.x, start.z))
+
+                        if let start = value.unproject(
+                            value.startLocation,
+                            from: .local,
+                            to: parent,
+                            ontoPlane: floorPlane
+                        ) {
+                            controller.beginFurnitureDrag(
+                                id,
+                                grabWorldXZ: SIMD2(start.x, start.z)
+                            )
+                        } else {
+                            print("❌ Failed to unproject drag start")
+                        }
+
                     } else {
                         furnitureDragIsMove = false
                         onSelectFurniture?(id)
                     }
                 }
+
                 if furnitureDragIsMove {
-                    let world = value.convert(value.location3D, from: .local, to: parent)
-                    controller.dragFurniture(toWorldXZ: SIMD2(world.x, world.z))
+                    guard let world = value.unproject(
+                        value.location,
+                        from: .local,
+                        to: parent,
+                        ontoPlane: floorPlane
+                    ) else {
+                        print("❌ Failed to unproject drag location")
+                        return
+                    }
+
+                    controller.dragFurniture(
+                        toWorldXZ: SIMD2(world.x, world.z)
+                    )
                 }
             }
             .onEnded { _ in
-                if furnitureDragIsMove { onFurnitureChanged?(controller.endFurnitureDrag()) }
+                if furnitureDragIsMove {
+                    onFurnitureChanged?(controller.endFurnitureDrag())
+                }
+
                 furnitureDragID = nil
                 furnitureDragIsMove = false
             }
@@ -195,29 +270,33 @@ struct RoomSceneView: View {
         TapGesture().onEnded { onSelectFurniture?(nil) }
     }
 
-    /// One-finger drag on empty space → orbit. SwiftUI translation is cumulative;
-    /// feed the controller incremental deltas (its orbit math is unchanged).
+    /// One-finger drag on empty space → orbit. The controller tracks the cumulative
+    /// translation and feeds itself incremental deltas, so this closure never writes
+    /// `@State` (which would invalidate `body` every frame and stall the gesture).
     private var cameraOrbitGesture: some Gesture {
         DragGesture()
             .onChanged { value in
-                let dx = Float(value.translation.width - lastOrbitTranslation.width)
-                let dy = Float(value.translation.height - lastOrbitTranslation.height)
-                controller.orbit(dx: dx, dy: dy)
-                lastOrbitTranslation = value.translation
+                // Gate: a furniture drag (targeted gesture) sets `furnitureDragID` on
+                // its first tick; once set, this simultaneous orbit no-ops so dragging
+                // a piece doesn't also spin the camera. Empty-space drags never set it.
+                guard furnitureDragID == nil else { return }
+                controller.orbitContinuous(translation: value.translation)
             }
-            .onEnded { _ in lastOrbitTranslation = .zero }
+            .onEnded { _ in controller.endOrbit() }
     }
 
-    /// Pinch on empty space → zoom. Magnification is cumulative; convert to the
-    /// incremental factor the controller's `pinch` expects.
+    /// Pinch on empty space → zoom. Cumulative magnification is converted to the
+    /// incremental factor inside the controller — again, no `@State` written per tick.
     private var cameraZoomGesture: some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                guard lastZoomMagnification > 0 else { return }
-                controller.pinch(scale: Float(value.magnification / lastZoomMagnification))
-                lastZoomMagnification = value.magnification
+                // Gate: a pinch on the selected piece sets `furnitureResizeActive`;
+                // while it's active this simultaneous zoom no-ops so resizing furniture
+                // doesn't also zoom the camera.
+                guard !furnitureResizeActive else { return }
+                controller.zoomContinuous(magnification: value.magnification)
             }
-            .onEnded { _ in lastZoomMagnification = 1 }
+            .onEnded { _ in controller.endZoom() }
     }
 
     /// The cross-fade freeze: shown instantly at full opacity (covering the material
@@ -420,7 +499,9 @@ final class RoomSceneController {
         // ortho `scale` (view-volume height) is set every frame in `updateCamera`,
         // derived from `radius`, so the existing orbit / pinch-zoom / reset machinery
         // keeps driving a single value and needs no other change.
-        camera.components.set(OrthographicCameraComponent())
+        var cam = PerspectiveCameraComponent()
+        cam.fieldOfViewInDegrees = 18
+        camera.components.set(cam)
         cameraAnchor.addChild(camera)
 
         frameCamera(room: room)
@@ -1331,6 +1412,35 @@ final class RoomSceneController {
         elevation = min(max(elevation - dy * 0.008, 0.06), .pi / 2 - 0.05)
         updateCamera()
     }
+
+    // MARK: Continuous camera gestures (cumulative → incremental)
+    //
+    // SwiftUI hands the gesture's CUMULATIVE value each tick. We track the previous
+    // value HERE — on this plain (non-observed) controller — and feed `orbit`/`pinch`
+    // the per-tick delta, so the SwiftUI view's gesture closures never mutate `@State`.
+    // Writing `@State` per tick would invalidate `body` ~60×/sec, re-running the
+    // `RealityView` `update:` closure and rebuilding the gestures mid-touch — the
+    // stall that drops camera movement to ~1 FPS.
+    private var lastOrbitTranslation: CGSize = .zero
+    private var lastZoomMagnification: CGFloat = 1
+
+    /// Orbit from the drag gesture's cumulative translation.
+    func orbitContinuous(translation: CGSize) {
+        orbit(dx: Float(translation.width - lastOrbitTranslation.width),
+              dy: Float(translation.height - lastOrbitTranslation.height))
+        lastOrbitTranslation = translation
+    }
+
+    /// Zoom from the magnify gesture's cumulative magnification.
+    func zoomContinuous(magnification: CGFloat) {
+        guard lastZoomMagnification > 0 else { return }
+        pinch(scale: Float(magnification / lastZoomMagnification))
+        lastZoomMagnification = magnification
+    }
+
+    /// Reset the cumulative baselines when a camera gesture ends.
+    func endOrbit() { lastOrbitTranslation = .zero }
+    func endZoom() { lastZoomMagnification = 1 }
 
     /// Two-finger drag → pan the look-at target across the floor, in the camera's
     /// screen plane (right/forward derived from the current azimuth).
