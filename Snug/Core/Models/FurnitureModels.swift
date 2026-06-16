@@ -197,7 +197,28 @@ enum FurnitureColorCategory: String, Codable, CaseIterable, Sendable {
     case warmBrown, coolBrown, tan, navy, teal
     case warmRed, warmGreen, warmYellow, warmOrange, other
 
-    var displayName: String { rawValue.capitalized }
+    /// User-facing label. Spelled out explicitly (not `rawValue.capitalized`,
+    /// which would render the camelCase cases as single mashed words like
+    /// "Lightgrey") so the picker and de-clutter labels read naturally.
+    var displayName: String {
+        switch self {
+        case .white:       return "White"
+        case .cream:       return "Cream"
+        case .lightGrey:   return "Light Grey"
+        case .darkGrey:    return "Dark Grey"
+        case .black:       return "Black"
+        case .warmBrown:   return "Warm Brown"
+        case .coolBrown:   return "Cool Brown"
+        case .tan:         return "Tan"
+        case .navy:        return "Navy"
+        case .teal:        return "Teal"
+        case .warmRed:     return "Warm Red"
+        case .warmGreen:   return "Warm Green"
+        case .warmYellow:  return "Warm Yellow"
+        case .warmOrange:  return "Warm Orange"
+        case .other:       return "Other"
+        }
+    }
 
     /// The stylized PLAY-mode tint for this color category, pulled into the same
     /// warm Snug palette so detected furniture reads on-brand in the diorama.

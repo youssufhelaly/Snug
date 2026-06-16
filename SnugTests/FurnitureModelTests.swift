@@ -67,6 +67,20 @@ struct FurnitureModelTests {
         #expect(decoded.detectedFurniture.count == 2)
     }
 
+    // MARK: - Display labels
+
+    /// Regression guard: the camelCase color categories must render as spaced
+    /// Title Case ("Light Grey"), not the mashed `rawValue.capitalized` form
+    /// ("Lightgrey") that the original spec produced.
+    @Test func multiWordColorDisplayNamesAreSpacedTitleCase() {
+        #expect(FurnitureColorCategory.lightGrey.displayName == "Light Grey")
+        #expect(FurnitureColorCategory.darkGrey.displayName == "Dark Grey")
+        #expect(FurnitureColorCategory.warmOrange.displayName == "Warm Orange")
+        #expect(FurnitureColorCategory.coolBrown.displayName == "Cool Brown")
+        // Single-word cases stay clean too.
+        #expect(FurnitureColorCategory.navy.displayName == "Navy")
+    }
+
     // MARK: - Category priors
 
     @Test func everyCategoryHasPositivePriorDimensions() {

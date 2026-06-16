@@ -221,7 +221,15 @@ struct FitResult: Equatable {
         case none
     }
 
-    /// The binding (smallest) signed clearance in meters.
+    /// The signed clearance in meters of the **binding constraint** — the wall
+    /// or obstacle that drove `state` and is named by `limit`. This is the gap
+    /// to scrutinize / measure, not necessarily the smallest *raw* gap in the
+    /// room: a low-confidence (`.estimated`) obstacle widens its uncertainty
+    /// band, so it can bind the result (and be reported here) ahead of a
+    /// physically tighter but fully-trusted gap. When every obstacle is
+    /// `.measured`, the multipliers are all 1 and this is exactly the smallest
+    /// raw clearance, matching the pre-confidence behavior. For the smallest raw
+    /// gap to any obstacle regardless of confidence, read `obstacleClearance`.
     let state: State
     let clearance: Float
     /// Smallest signed clearance to any wall.
