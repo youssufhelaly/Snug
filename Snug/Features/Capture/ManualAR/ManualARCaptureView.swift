@@ -101,10 +101,7 @@ struct ManualARCaptureView: View {
             }
         }
         .sheet(isPresented: $showManualPicker) {
-            ManualFurniturePickerView(
-                roomCorners: controller.corners,
-                floorY: controller.furniturePlacementFloorY
-            ) { footprints in
+            ManualFurniturePickerView(roomCorners: controller.corners) { footprints in
                 controller.completeFurniture(with: footprints)
             }
             // Force an explicit Skip/Done so a swipe-to-dismiss can't strand the

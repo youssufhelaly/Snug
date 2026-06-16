@@ -49,8 +49,6 @@ struct FurniturePlacementService {
     }
 
     func place(_ input: Input) -> FurnitureFootprint {
-        let prior = input.observation.category.defaultDimensions
-
         // 1–4. Resolve floor XZ. Prefer the raycast; otherwise project forward
         //       from the camera by a category-height heuristic and mark estimated.
         var usedFallbackPosition = false
@@ -85,10 +83,15 @@ struct FurniturePlacementService {
         return FurnitureFootprint(
             id: input.observation.id,
             category: input.observation.category,
-            // Snap Y to the floor baseline ALWAYS (never trust raw raycast Y
-            // drift on non-LiDAR devices). `dimensions.z` is height; the box's
-            // base sits on the floor, so its center is half a height up.
-            worldPosition: SIMD3(clampedXZ.x, input.sessionFloorY + prior.z / 2, clampedXZ.y),
+            // Y is FLOOR-RELATIVE: `RoomModel`'s floor is the y=0 plane (the
+            // diorama and FitService both treat it as the reference; RoomModel
+            // stores no absolute altitude). The box's base sits on that floor, so
+            // its center is half its height up. We deliberately do NOT bake in the
+            // AR session's `sessionFloorY` (an arbitrary world altitude, usually
+            // ~-1.2 m) — doing so sank furniture below the diorama floor. The raw
+            // raycast Y is likewise ignored (drifts on non-LiDAR devices); only
+            // its XZ is trusted.
+            worldPosition: SIMD3(clampedXZ.x, dimensions.z / 2, clampedXZ.y),
             dimensions: dimensions,
             yRotation: 0,
             appearance: input.appearance,

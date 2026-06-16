@@ -11,8 +11,6 @@ import simd
 struct ManualFurniturePickerView: View {
     /// The room outline so manual pieces can be placed inside it.
     let roomCorners: [PlanePoint]
-    /// Floor baseline to snap pieces onto.
-    let floorY: Float
     /// Called with the built footprints (empty if the user adds nothing).
     let onComplete: ([FurnitureFootprint]) -> Void
 
@@ -152,7 +150,8 @@ struct ManualFurniturePickerView: View {
             let xz = FurniturePlacementService.clamped(centroid + offset, toRoom: cornersXZ)
             return FurnitureFootprint(
                 category: selection.category,
-                worldPosition: SIMD3(xz.x, floorY + dims.z / 2, xz.y),
+                // Floor-relative Y (RoomModel floor = y=0); see FurniturePlacementService.
+                worldPosition: SIMD3(xz.x, dims.z / 2, xz.y),
                 dimensions: dims,
                 yRotation: 0,
                 appearance: FurnitureAppearance(colorCategory: .other,

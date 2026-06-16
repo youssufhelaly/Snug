@@ -471,8 +471,24 @@ final class RoomSceneController {
             root.addChild(label)
         }
 
-        // TEMPORARY furniture preview — delete with `placeDemoFurniture`.
-        if Self.demoFurniture { placeDemoFurniture(at: centroidXZ) }
+        // Phase 2: detected existing furniture, rendered as stylized identity
+        // boxes (collision + tap-target tagged) so it appears in the diorama and
+        // the de-clutter scene. Cleared pieces are omitted. Y is floor-relative
+        // (the box center is half its height above this y=0 floor), so it sits ON
+        // the floor regardless of the AR session's altitude at capture time.
+        for footprint in room.detectedFurniture where !footprint.isCleared {
+            root.addChild(FurnitureEntityBuilder.entity(for: footprint))
+        }
+        #if DEBUG
+        if !room.detectedFurniture.isEmpty {
+            print("🛋️ Snug diorama: rendering \(room.detectedFurniture.filter { !$0.isCleared }.count) furniture ent\(room.detectedFurniture.count == 1 ? "ity" : "ities").")
+        }
+        #endif
+
+        // TEMPORARY furniture preview — only when there's no real detected
+        // furniture, so detection testing isn't cluttered by the demo cluster.
+        // Delete with `placeDemoFurniture`.
+        if Self.demoFurniture && room.detectedFurniture.isEmpty { placeDemoFurniture(at: centroidXZ) }
     }
 
     /// TEMPORARY visual preview of the Phase-3 furniture — NOT real placement.

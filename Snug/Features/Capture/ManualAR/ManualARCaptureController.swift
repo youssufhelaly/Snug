@@ -278,11 +278,6 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     var canClosePolygon: Bool { corners.count >= 3 }
 
-    /// Floor baseline for placing furniture (weighted `sessionFloorY`, falling back
-    /// to the render baseline or 0). Exposed so the manual picker can snap pieces
-    /// to the floor without reaching into private capture state.
-    var furniturePlacementFloorY: Float { sessionFloorY ?? floorY ?? 0 }
-
     // MARK: - Session lifecycle
 
     func attach(to arView: ARView) {
@@ -838,14 +833,24 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     private func runFurniturePan() async {
         for _ in 0..<FurnitureDetectionService.totalDetectionFrames {
             if Task.isCancelled { return }
-            if let frame = arView?.session.currentFrame {
-                await furnitureService.processFrame(
-                    frame.capturedImage,
-                    ambientIntensity: frame.lightEstimate.map { Double($0.ambientIntensity) }
-                )
-            }
+            await processOneDetectionFrame()
             try? await Task.sleep(nanoseconds: 500_000_000)
         }
+    }
+
+    /// Grab the current frame, hand it to the detector, and let it go. Scoped to
+    /// its own function on purpose: the `ARFrame` (and the camera `CVPixelBuffer`
+    /// it owns) is released when this returns — BEFORE the inter-frame sleep in
+    /// `runFurniturePan`. Holding ARKit's capture buffers across the sleep starves
+    /// the camera's buffer pool and drops the capture pipeline (the
+    /// `FigCaptureSourceRemote err=-17281` hiccup), which then breaks tracking and
+    /// every raycast. We hold the buffer only for the (short) Vision request.
+    @MainActor
+    private func processOneDetectionFrame() async {
+        guard let frame = arView?.session.currentFrame else { return }
+        let pixelBuffer = frame.capturedImage
+        let lux = frame.lightEstimate.map { Double($0.ambientIntensity) }
+        await furnitureService.processFrame(pixelBuffer, ambientIntensity: lux)
     }
 
     /// Convert confirmed observations into floor-placed footprints. Raycasts each

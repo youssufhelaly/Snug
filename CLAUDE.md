@@ -333,10 +333,13 @@ Still TODO:
 - Bundling `YOLO26nFurniture.mlpackage` — ON HOLD pending confirmation of a stable
   YOLO26n CoreML export (asset not in the repo yet). Until then DEBUG synthetic mode
   / the manual picker carry the flow.
-- Rendering `FurnitureEntityBuilder` boxes INSIDE the live diorama with 3D
-  tap-to-clear (RealityView targeted gestures, extending `RoomSceneController`'s
-  hit-testing). `DeclutterView` currently drives keep/clear over the diorama backdrop;
-  the model contract (`isKept`/`isCleared`) is identical either way.
+- 3D tap-to-clear: the diorama now RENDERS `detectedFurniture` (RoomSceneController
+  loops it through `FurnitureEntityBuilder`; Y is floor-relative = height/2 above the
+  y=0 floor — never the AR `sessionFloorY`, which sank boxes below the base). Still
+  TODO is the interactive part: tapping a box in-scene to clear/keep (RealityView
+  targeted gestures over the already-attached collision + input-target). `DeclutterView`
+  drives keep/clear from its card list for now; the `isKept`/`isCleared` contract is
+  identical either way.
 - Device color sampling: the mask-intersected pixel grid that feeds the (pure,
   tested) `FurnitureColorClassifier`; footprints default to `.other` color until then.
 
