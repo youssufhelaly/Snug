@@ -100,6 +100,11 @@ struct RoomModel: Identifiable, Codable, Equatable {
     var floorCorners: [PlanePoint]
     var ceilingHeight: Float
     var openings: [RoomOpening]
+    /// Existing furniture detected in the room (Phase 2). Empty until the
+    /// post-scan detection / de-clutter step runs. Persisted inside this room's
+    /// JSON blob; see the custom `Codable` below for why old blobs that predate
+    /// this field still decode.
+    var detectedFurniture: [FurnitureFootprint]
 
     init(
         id: UUID = UUID(),
@@ -107,7 +112,8 @@ struct RoomModel: Identifiable, Codable, Equatable {
         provenance: RoomCaptureProvenance,
         floorCorners: [PlanePoint],
         ceilingHeight: Float,
-        openings: [RoomOpening] = []
+        openings: [RoomOpening] = [],
+        detectedFurniture: [FurnitureFootprint] = []
     ) {
         self.id = id
         self.capturedAt = capturedAt
@@ -115,6 +121,42 @@ struct RoomModel: Identifiable, Codable, Equatable {
         self.floorCorners = floorCorners
         self.ceilingHeight = ceilingHeight
         self.openings = openings
+        self.detectedFurniture = detectedFurniture
+    }
+
+    // MARK: - Codable (backward-compatible)
+
+    private enum CodingKeys: String, CodingKey {
+        case id, capturedAt, provenance, floorCorners, ceilingHeight, openings, detectedFurniture
+    }
+
+    /// Custom decoder so that room blobs written before `detectedFurniture`
+    /// existed still decode. Swift's *synthesized* decoder throws `keyNotFound`
+    /// for a missing key even when the property has a default — the default is
+    /// not consulted during decoding — so we decode the new field with
+    /// `decodeIfPresent` and fall back to `[]` explicitly. This is the
+    /// "add a new persisted room field" path from CLAUDE.md: the surrounding
+    /// `StoredRoom` columns are unchanged, so no schema-version bump is needed.
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decode(UUID.self, forKey: .id)
+        capturedAt = try c.decode(Date.self, forKey: .capturedAt)
+        provenance = try c.decode(RoomCaptureProvenance.self, forKey: .provenance)
+        floorCorners = try c.decode([PlanePoint].self, forKey: .floorCorners)
+        ceilingHeight = try c.decode(Float.self, forKey: .ceilingHeight)
+        openings = try c.decodeIfPresent([RoomOpening].self, forKey: .openings) ?? []
+        detectedFurniture = try c.decodeIfPresent([FurnitureFootprint].self, forKey: .detectedFurniture) ?? []
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(id, forKey: .id)
+        try c.encode(capturedAt, forKey: .capturedAt)
+        try c.encode(provenance, forKey: .provenance)
+        try c.encode(floorCorners, forKey: .floorCorners)
+        try c.encode(ceilingHeight, forKey: .ceilingHeight)
+        try c.encode(openings, forKey: .openings)
+        try c.encode(detectedFurniture, forKey: .detectedFurniture)
     }
 
     // MARK: - Derived geometry

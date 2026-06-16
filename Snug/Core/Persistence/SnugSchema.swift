@@ -34,8 +34,11 @@ enum SnugSchemaV1: VersionedSchema {
         /// The full `RoomModel`, JSON-encoded. The single source of geometry.
         var roomData: Data
         /// A RealityKit snapshot of the diorama, captured the first time the
-        /// room is viewed. Stored outside the main store to keep it lean.
-        @Attribute(.externalStorage) var thumbnailData: Data?
+        /// room is viewed. Stored inline (not `.externalStorage`): the thumbnail
+        /// is a small downscaled snapshot, and `.externalStorage` traps when
+        /// written to an in-memory store — which both the unit tests and SwiftUI
+        /// previews rely on.
+        var thumbnailData: Data?
 
         init(id: UUID, name: String, capturedAt: Date, roomData: Data, thumbnailData: Data? = nil) {
             self.id = id

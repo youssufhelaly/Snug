@@ -87,7 +87,8 @@ struct RoomPersistenceTests {
     @Test func deleteRemovesRoom() throws {
         let store = try makeStore()
         let stored = try store.save(FitFixtures.rectangularBedroom)
-        store.delete(stored)
+        
+        try store.delete(stored)
         #expect(try store.allRooms().isEmpty)
     }
 
