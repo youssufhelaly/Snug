@@ -91,7 +91,7 @@ struct ManualARCaptureView: View {
                     finished: controller.furnitureDetectionFinished,
                     foundCount: controller.detectedFurniture.count,
                     // Skip just closes the detection step — manual furniture is now
-                    // added in the post-capture placement tray (DeclutterView).
+                    // added later in the room diorama (the persistent `+` button).
                     onSkip: { controller.completeFurniture(with: []) }
                 )
                 .transition(.opacity)

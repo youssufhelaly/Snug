@@ -23,6 +23,13 @@ struct RoomDioramaScreen: View {
     /// from the saved room; the room view is now a persistent furniture canvas.
     @State private var footprints: [FurnitureFootprint] = []
     @State private var selectedFurnitureID: UUID?
+    @State private var showFineTune = false
+
+    private static let pillSpring = Animation.spring(response: 0.3, dampingFraction: 0.85)
+
+    private var selectedFootprint: FurnitureFootprint? {
+        footprints.first { $0.id == selectedFurnitureID && !$0.isCleared }
+    }
 
     init(stored: StoredRoom) {
         self.stored = stored
@@ -88,6 +95,13 @@ struct RoomDioramaScreen: View {
                 unreadableRoom
             }
         }
+        .overlay(alignment: .bottom) { microPill }
+        .animation(Self.pillSpring, value: selectedFurnitureID)
+        .sheet(isPresented: $showFineTune) {
+            if let id = selectedFurnitureID {
+                FineTuneSheet(footprints: $footprints, footprintID: id, onCommit: persistFurniture)
+            }
+        }
         .navigationTitle(stored.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
@@ -122,6 +136,29 @@ struct RoomDioramaScreen: View {
             Button("Save") { store.rename(stored, to: nameDraft) }
             Button("Cancel", role: .cancel) {}
         }
+    }
+
+    // MARK: - Micro-pill (selected furniture)
+
+    @ViewBuilder private var microPill: some View {
+        if !showFineTune, let footprint = selectedFootprint {
+            FurnitureMicroPill(
+                category: footprint.category,
+                onFineTune: { showFineTune = true },
+                onTrash: { trashSelected() }
+            )
+            .padding(.bottom, 120)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    private func trashSelected() {
+        guard let id = selectedFurnitureID,
+              let index = footprints.firstIndex(where: { $0.id == id }) else { return }
+        footprints[index].isCleared = true
+        selectedFurnitureID = nil
+        persistFurniture()
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
     // MARK: - Vignette (PLAY only)
