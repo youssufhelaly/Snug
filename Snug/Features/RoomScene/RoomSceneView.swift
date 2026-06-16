@@ -384,13 +384,14 @@ final class RoomSceneController {
 
     // MARK: Camera state
 
-    /// Calibration for the orthographic view-volume. The diorama uses a TRUE
-    /// orthographic camera (`OrthographicCameraComponent`), so parallel lines stay
-    /// parallel by projection, not by faking a narrow FOV. This constant is no
-    /// longer a real field of view: it sets how far the camera sits (`radius`, for
-    /// orbit + clipping) and, through the same value, calibrates `orthoScale(forRadius:)`
-    /// so the framing matches the values the team already tuned. Smaller = camera
-    /// sits farther back; apparent size is governed by the ortho scale. Both modes.
+    /// Camera field of view (degrees). We use a PERSPECTIVE camera with a NARROW
+    /// FOV, which reads as near-isometric (little foreshortening) while keeping the
+    /// thing orthographic broke: RealityKit's native entity gesture hit-testing
+    /// (`targetedToAnyEntity` / `unproject`) does NOT work against an
+    /// `OrthographicCameraComponent` on iOS — taps/drags simply don't register.
+    /// A long-lens perspective is the smallest change that restores reliable native
+    /// gestures; BUY-mode scale is only mildly affected at this FOV (labels still
+    /// show true measurements). Also drives initial framing in `frameCamera`.
     static let isoFOVDegrees: Float = 14
     /// True isometric viewing angle above the horizon: `atan(1/√2) ≈ 35.26°`.
     /// Paired with a 45° azimuth this is the canonical diorama orientation.
@@ -465,13 +466,15 @@ final class RoomSceneController {
         root.addChild(iblEntity)
         buildGeometry(room: room)
 
-        // True orthographic projection — the canonical isometric-diorama camera. The
-        // ortho `scale` (view-volume height) is set every frame in `updateCamera`,
-        // derived from `radius`, so the existing orbit / pinch-zoom / reset machinery
-        // keeps driving a single value and needs no other change. (Native gesture
-        // unprojection via `value.unproject(…ontoPlane:)` works against this ortho
-        // camera, so there's no need for a perspective camera.)
-        camera.components.set(OrthographicCameraComponent())
+        // Narrow-FOV PERSPECTIVE camera (NOT orthographic): native entity gesture
+        // hit-testing (`targetedToAnyEntity`/`unproject`) is broken against an
+        // ortho camera on iOS, so taps/drags don't register. A long lens keeps the
+        // near-isometric look. Set ONCE here and never overwritten — `updateCamera`
+        // only moves it (zoom = distance via `radius`), so it stays perspective for
+        // the whole session (orbiting/zooming won't revert it and re-break gestures).
+        var cam = PerspectiveCameraComponent()
+        cam.fieldOfViewInDegrees = Self.isoFOVDegrees
+        camera.components.set(cam)
         cameraAnchor.addChild(camera)
 
         frameCamera(room: room)
@@ -1056,13 +1059,12 @@ final class RoomSceneController {
 
         let span = simd_length(SIMD2(maxX - minX, maxZ - minZ))
         let extent = max(span, room.ceilingHeight)
-        // Tighter framing so the room fills more of the screen. NOTE: this camera is
-        // ORTHOGRAPHIC — `orthoScale(forRadius:)` works out to `multiplier · extent`
-        // (the FOV term cancels), so the multiplier on `fitDistance` IS the fraction
-        // of `extent` the view spans vertically. 0.85 fills more than the old 1.2
-        // without clipping (extent uses the bbox diagonal, an over-estimate of the
-        // visible footprint). The range still lets the user pinch out to ~3× for the
-        // full room.
+        // Tighter framing so the room fills more of the screen. `fitDistance` is the
+        // distance at which the room `extent` exactly fills the narrow camera FOV;
+        // 0.85 sits a bit closer so the room fills more (extent is the bbox diagonal,
+        // an over-estimate of the visible footprint, so this won't clip). The range
+        // lets the user pinch out to ~3× for the full room. With the narrow FOV this
+        // reads near-isometric, but it IS perspective (required for native gestures).
         let halfFOV = (Self.isoFOVDegrees * .pi / 180) / 2
         let fitDistance = (extent * 0.5) / tan(halfFOV)
         radius = max(fitDistance * 0.85, 2.0)
@@ -1083,23 +1085,12 @@ final class RoomSceneController {
             radius * sinf(elevation),
             radius * cosf(elevation) * cosf(azimuth)
         )
+        // Perspective camera: zoom is DISTANCE. `radius` (mutated by orbit/zoom/
+        // reset) sets how far the camera sits, so `look(at:from:)` above is all that's
+        // needed. We deliberately do NOT set a camera component here — the narrow-FOV
+        // `PerspectiveCameraComponent` from `makeEntities` must persist (re-setting an
+        // ortho component each frame is what re-broke native gesture hit-testing).
         camera.look(at: target, from: position, relativeTo: nil)
-
-        // Drive the orthographic view-volume from `radius` so orbit/zoom/reset (all
-        // of which already mutate `radius`) keep working unchanged. Re-setting the
-        // value-type component is cheap and only happens on camera moves.
-        var ortho = OrthographicCameraComponent()
-        ortho.scale = Self.orthoScale(forRadius: radius)
-        camera.components.set(ortho)
-    }
-
-    /// The orthographic `scale` (vertical world extent the view spans) that matches
-    /// what a perspective camera at `radius` with the iso calibration FOV would have
-    /// framed — so switching to true ortho keeps the tuned framing at every zoom
-    /// level, only removing the perspective foreshortening (which is the point).
-    private static func orthoScale(forRadius radius: Float) -> Float {
-        let halfFOV = (isoFOVDegrees * .pi / 180) / 2
-        return 2 * radius * tan(halfFOV)
     }
 
     func resetCamera(animated: Bool) {

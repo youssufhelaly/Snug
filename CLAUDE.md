@@ -351,8 +351,14 @@ on Linux — validate the AR/Vision/RealityKit specifics on an AR iPhone):
   the footprints are pushed up and persisted on gesture end.
 - `FurniturePlacementValidator` (pure): boundary + SAT-overlap → red/amber/green;
   `FurnitureEntityBuilder.applyPlacementState(_:selected:to:)` tints per state + selection.
-- Camera framing (`frameCamera`) is tightened (ortho `orthoScale = multiplier·extent`,
-  multiplier 0.85), aimed at the floor centroid, elevation 45° — global to all rooms.
+- Camera is a NARROW-FOV (14°) `PerspectiveCameraComponent`, NOT orthographic:
+  RealityKit's native entity gesture hit-testing (`targetedToAnyEntity`/`unproject`)
+  does not work against an ortho camera on iOS, so taps/drags don't register. The
+  long lens reads near-isometric (minimal foreshortening; BUY labels still show true
+  measurements). `updateCamera` only moves the camera (zoom = distance via `radius`)
+  and never re-sets the component, so it stays perspective for the whole session.
+  `frameCamera` fits the room to that FOV (×0.85 to fill), aims at the floor centroid,
+  elevation 45° — global to all rooms.
 - ARSession lifecycle: `attach` runs with `[.resetTracking,.removeExistingAnchors]`,
   `deinit` releases the session, a `didBecomeActive` observer resumes the feed WITHOUT
   reset (preserving placed corners) — fixes the black-camera-on-second-scan.
