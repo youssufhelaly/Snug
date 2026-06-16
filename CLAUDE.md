@@ -336,10 +336,15 @@ on Linux — validate the AR/Vision/RealityKit specifics on an AR iPhone):
   an UNselected piece selects it without moving. Selected → a micro-pill (label /
   Fine Tune / trash); Fine Tune opens a ≤40% `FineTuneSheet` (W/D/H + rotation, no
   X/Z). A persistent `+ Add` opens `FurnitureCarouselOverlay` (≤8 items).
-- Gesture↔camera disambiguation lives in the UIKit overlay (the camera gestures are
-  UIKit recognizers, so SwiftUI `.targetedToAnyEntity()` would be blocked by the
-  overlay). Hit-test = orthographic `floorPoint` (screen→floor via the ortho basis,
-  no matrices/ARSession) + point-in-footprint; skipped entirely when no furniture.
+- Gesture↔camera disambiguation: furniture tap/drag/pinch are NATIVE RealityKit
+  SwiftUI gestures (`.targetedToAnyEntity()`) at `.highPriorityGesture`, so
+  RealityKit unprojects to the correct entity for the orthographic camera (no
+  manual ray math — the old UIKit-overlay + hand-rolled ortho ray drifted
+  off-axis). Camera orbit + pinch-zoom are plain SwiftUI gestures handling empty
+  space, feeding the unchanged `RoomSceneController` orbit/pinch math. Drag-move
+  uses `value.convert(value.location3D, …)` to the floor; TWO-FINGER CAMERA PAN
+  was dropped (SwiftUI has no clean 2-finger pan; `RoomSceneController.pan`
+  remains, unbound, for a future recognizer).
 - `RoomSceneController.syncFurniture` keeps furniture entities in a store SEPARATE
   from wall/floor building (PLAY/BUY geometry invariant untouched). Live drag/pinch
   mutate the entity (transform / in-place mesh + collision) directly for immediacy;
