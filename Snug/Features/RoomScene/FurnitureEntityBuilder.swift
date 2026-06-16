@@ -88,15 +88,19 @@ enum FurnitureEntityBuilder {
         }
     }
 
+    /// Name of the persistent selection border child (an inverted-hull Clay shell).
+    static let selectionOutlineName = "selection_outline"
+    static let selectionColor = UIColor(rgb: 0xE8714A)   // Clay
+
     /// Tint a furniture entity by its placement state — the red/amber/green fit
-    /// feedback — plus an optional Clay selection emissive layered on top.
+    /// feedback — plus a clear, PERSISTENT selected look layered on top.
     /// - `.valid`    → the piece's base color, translucent 0.85
     /// - `.tooClose` → base color + amber emissive (#BA7517 @ 0.3)
     /// - `.invalid`  → red base (#B85450) + red emissive (@ 0.4)
-    /// When `selected`, a strong Clay emissive (#E8714A @ 0.5) replaces the state
-    /// emissive so the piece reads as "selected" without losing its base-color
-    /// collision cue (red base still signals invalid). The selection scale "pop"
-    /// is applied separately in `RoomSceneController.syncFurniture`.
+    /// When `selected`, the piece becomes fully opaque with a strong Clay emissive
+    /// (@ 0.6) AND gains a Clay border (inverted-hull shell child) — so it stays
+    /// obviously "the one being moved" the whole time it's selected, not just a
+    /// momentary pop. The base color still signals collision (red base = invalid).
     static func applyPlacementState(_ state: PlacementState, selected: Bool = false, to entity: Entity) {
         guard let model = entity as? ModelEntity, var component = model.model,
               let tag = entity.components[FurnitureTagComponent.self] else { return }
@@ -104,7 +108,7 @@ enum FurnitureEntityBuilder {
         var material = PhysicallyBasedMaterial()
         material.roughness = .init(floatLiteral: 0.85)
         material.metallic = .init(floatLiteral: 0)
-        material.blending = .transparent(opacity: .init(floatLiteral: 0.85))
+        material.blending = .transparent(opacity: .init(floatLiteral: selected ? 1.0 : 0.85))
 
         switch state {
         case .valid:
@@ -121,12 +125,28 @@ enum FurnitureEntityBuilder {
         }
 
         if selected {
-            material.emissiveColor = .init(color: UIColor(rgb: 0xE8714A))   // Clay selection
-            material.emissiveIntensity = 0.5
+            material.emissiveColor = .init(color: Self.selectionColor)
+            material.emissiveIntensity = 0.6
         }
 
         component.materials = [material]
         model.model = component
+
+        applySelectionBorder(selected, to: entity, size: component.mesh.bounds.extents)
+    }
+
+    /// Add or remove the persistent Clay selection border. Sized to the box's
+    /// current mesh bounds, so it tracks resizes (the resize path removes it first
+    /// so this rebuilds it at the new size). Idempotent — safe to call every frame.
+    static func applySelectionBorder(_ selected: Bool, to entity: Entity, size: SIMD3<Float>) {
+        if selected {
+            guard entity.findEntity(named: selectionOutlineName) == nil,
+                  let shell = OutlineEntity.boxShell(size: size, color: selectionColor) else { return }
+            shell.name = selectionOutlineName
+            entity.addChild(shell)
+        } else {
+            entity.findEntity(named: selectionOutlineName)?.removeFromParent()
+        }
     }
 
     /// Animate a cleared box out: shrink + fade over 0.35 s, then detach. Runs on

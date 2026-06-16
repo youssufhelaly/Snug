@@ -1233,32 +1233,59 @@ final class RoomSceneController {
         return SIMD2(hit.x, hit.z)
     }
 
-    /// The furniture id under a screen point via a real 3D collision raycast
-    /// (`Scene.raycast`) against the furniture `CollisionComponent`s — NOT a 2D
-    /// floor projection (which mis-selected tall/rotated pieces). Only furniture
-    /// carries collision (walls/floor don't), so the nearest hit is the right piece.
-    /// The ortho ray is the same one the drag handler uses. The overlay skips this
-    /// entirely when there's no furniture (`hasFurniture`).
+    /// The furniture id under a screen point — the nearest piece whose 3D oriented
+    /// box the ortho ray enters. This is an ANALYTIC ray↔OBB test against the
+    /// footprints (not `Scene.raycast`, whose collision participation in a non-AR
+    /// `RealityView` is unreliable, and not a 2D floor projection, which missed
+    /// tall/rotated pieces). It hits the real box the user sees at any camera
+    /// angle. The overlay skips this entirely when there's no furniture.
     func furnitureID(atScreenPoint point: CGPoint, viewSize: CGSize) -> UUID? {
-        guard let ray = orthoRay(forScreenPoint: point, viewSize: viewSize),
-              let scene = root.scene else { return nil }
-        let hits = scene.raycast(origin: ray.origin, direction: ray.direction,
-                                 length: 1000, query: .all, mask: .all)
-        for hit in hits {
-            if let tag = Self.furnitureTag(of: hit.entity) { return tag.footprintID }
+        guard let ray = orthoRay(forScreenPoint: point, viewSize: viewSize) else { return nil }
+        var bestT = Float.greatestFiniteMagnitude
+        var bestID: UUID?
+        for footprint in currentFootprints {
+            if let t = Self.rayEntersBox(origin: ray.origin, direction: ray.direction, footprint: footprint),
+               t < bestT {
+                bestT = t
+                bestID = footprint.id
+            }
         }
-        return nil
+        return bestID
     }
 
-    /// Walk up from a hit entity to find the furniture tag (collision is on the box
-    /// root, but be defensive about hitting a child).
-    private static func furnitureTag(of entity: Entity) -> FurnitureTagComponent? {
-        var node: Entity? = entity
-        while let current = node {
-            if let tag = current.components[FurnitureTagComponent.self] { return tag }
-            node = current.parent
+    /// Entry distance where `ray` enters the footprint's oriented box (rotated
+    /// about Y, sitting on the floor), or nil if it misses. Standard ray–OBB slab
+    /// test done in the box's local frame. Deterministic and independent of
+    /// RealityKit collision state, so it's reliable at every angle.
+    private static func rayEntersBox(origin: SIMD3<Float>, direction: SIMD3<Float>,
+                                     footprint: FurnitureFootprint) -> Float? {
+        let center = footprint.worldPosition   // .y is already half-height above the floor
+        let half = SIMD3(footprint.dimensions.x / 2, footprint.dimensions.z / 2, footprint.dimensions.y / 2)
+        // Express the ray in the box's local frame (inverse yaw about Y).
+        let c = cos(footprint.yRotation), s = sin(footprint.yRotation)
+        func toLocal(_ v: SIMD3<Float>, translate: Bool) -> SIMD3<Float> {
+            let p = translate ? v - center : v
+            return SIMD3(p.x * c + p.z * s, p.y, -p.x * s + p.z * c)   // Ry(-θ)
         }
-        return nil
+        let o = toLocal(origin, translate: true)
+        let d = toLocal(direction, translate: false)
+
+        var tMin = -Float.greatestFiniteMagnitude
+        var tMax = Float.greatestFiniteMagnitude
+        for axis in 0..<3 {
+            let oi = o[axis], di = d[axis], h = half[axis]
+            if abs(di) < 1e-6 {
+                if oi < -h || oi > h { return nil }   // parallel to slab and outside it
+            } else {
+                var t1 = (-h - oi) / di
+                var t2 = (h - oi) / di
+                if t1 > t2 { swap(&t1, &t2) }
+                tMin = max(tMin, t1)
+                tMax = min(tMax, t2)
+                if tMin > tMax { return nil }
+            }
+        }
+        return tMax >= 0 ? max(tMin, 0) : nil
     }
 
     // MARK: - Live drag-to-move (driven by the gesture overlay)
@@ -1350,6 +1377,9 @@ final class RoomSceneController {
             model.mesh = .generateBox(width: width, height: height, depth: depth, cornerRadius: 0.04)
             entity.model = model
             entity.collision = CollisionComponent(shapes: [.generateBox(size: SIMD3(width, height, depth))])
+            // Drop the stale-sized selection border so applyPlacementState rebuilds
+            // it to fit the resized box.
+            entity.findEntity(named: FurnitureEntityBuilder.selectionOutlineName)?.removeFromParent()
             FurnitureEntityBuilder.applyPlacementState(state, selected: true, to: entity)
             furnitureSnapshots[id] = footprint
         }
