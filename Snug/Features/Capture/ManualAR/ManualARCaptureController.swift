@@ -163,6 +163,9 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     // MARK: - AR scene
 
     private weak var arView: ARView?
+    /// Observes app foregrounding so a session paused by backgrounding mid-scan
+    /// resumes its camera feed. Removed in `stop()` / `deinit`.
+    private var foregroundObserver: NSObjectProtocol?
     private var floorY: Float?
     private var cornerMarkers: [AnchorEntity] = []
     private let edgeContainer = AnchorEntity(world: .zero)
@@ -294,7 +297,11 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         // does not block rendering.
         arView.session.delegateQueue = .main
 
-        arView.session.run(makeConfiguration())
+        // Always run with reset options so a fresh scan re-acquires the camera
+        // hardware even if a prior session left it in a bad state — the fix for a
+        // black feed on the second scan. The options are no-ops on first launch
+        // (no prior anchors/tracking to clear).
+        arView.session.run(makeConfiguration(), options: [.resetTracking, .removeExistingAnchors])
 
         arView.scene.addAnchor(edgeContainer)
         arView.scene.addAnchor(previewContainer)
@@ -303,6 +310,19 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
         let tap = UITapGestureRecognizer(target: self, action: #selector(handleTap(_:)))
         arView.addGestureRecognizer(tap)
+
+        // Resume the feed if the app returns from background mid-scan. NOTE: we
+        // re-run WITHOUT `.resetTracking` on purpose — resetting here would discard
+        // the world map and warp corners the user already placed. This mirrors
+        // `sessionInterruptionEnded`'s deliberate corner-preserving recovery.
+        foregroundObserver = NotificationCenter.default.addObserver(
+            forName: UIApplication.didBecomeActiveNotification,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self, let arView = self.arView, self.step != .review else { return }
+            arView.session.run(self.makeConfiguration())
+        }
     }
 
     /// Renders a zero-scale (invisible) marker for a moment at session start so
@@ -347,7 +367,23 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     }
 
     func stop() {
+        if let foregroundObserver {
+            NotificationCenter.default.removeObserver(foregroundObserver)
+            self.foregroundObserver = nil
+        }
         arView?.session.pause()
+    }
+
+    /// SwiftUI doesn't guarantee the view (and this controller) deallocate the
+    /// instant a scan ends, so the ARSession can keep holding the camera and the
+    /// next scan opens to a black feed. Pause and release the session on teardown
+    /// so the hardware is freed immediately.
+    deinit {
+        if let foregroundObserver {
+            NotificationCenter.default.removeObserver(foregroundObserver)
+        }
+        arView?.session.pause()
+        arView = nil
     }
 
     /// Resets all capture state and restarts the session — used by the canvas's
@@ -447,9 +483,6 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
             break
         case .review:
             break
-        case .furnitureDetection:
-            break
-            
         }
     }
 
