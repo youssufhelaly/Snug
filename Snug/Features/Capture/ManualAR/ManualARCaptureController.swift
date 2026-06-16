@@ -166,6 +166,14 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     /// Observes app foregrounding so a session paused by backgrounding mid-scan
     /// resumes its camera feed. Removed in `stop()` / `deinit`.
     private var foregroundObserver: NSObjectProtocol?
+
+    /// Set true the first time the running session delivers a frame. Used by the
+    /// black-feed watchdog to tell "still starting up" from "started but stuck".
+    private var hasReceivedFrame = false
+    /// How many times the watchdog has re-run a black session. Capped so a truly
+    /// dead camera ends in an honest failure instead of an infinite kick loop.
+    private var blackFeedRecoveryAttempts = 0
+    private let maxBlackFeedRecoveryAttempts = 3
     private var floorY: Float?
     private var cornerMarkers: [AnchorEntity] = []
     private let edgeContainer = AnchorEntity(world: .zero)
@@ -303,6 +311,14 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         // (no prior anchors/tracking to clear).
         arView.session.run(makeConfiguration(), options: [.resetTracking, .removeExistingAnchors])
 
+        // Guard the iOS 26 capture-stack hiccup (FigCaptureSource err=-17281):
+        // a fresh session can come up black and, unlike a mid-scan interruption,
+        // fires NO sessionWasInterrupted/Ended callback to recover from — so it
+        // just stays black until the app is killed. Most common when re-entering
+        // capture after a previous scan. Watch for the first frame; if none lands,
+        // re-run the session to kick the camera stack loose.
+        startBlackFeedWatchdog()
+
         arView.scene.addAnchor(edgeContainer)
         arView.scene.addAnchor(previewContainer)
         addCoachingOverlay(to: arView)
@@ -353,6 +369,44 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         // generators used by placement so the first taps feel instant.
         UIImpactFeedbackGenerator(style: .light).prepare()
         UIImpactFeedbackGenerator(style: .medium).prepare()
+    }
+
+    /// Begin watching for the first camera frame after a fresh `session.run`.
+    /// Resets the per-attach counters; the actual check is rescheduled by
+    /// `scheduleBlackFeedCheck` until a frame arrives, the view tears down, or we
+    /// exhaust the retry budget.
+    private func startBlackFeedWatchdog() {
+        hasReceivedFrame = false
+        blackFeedRecoveryAttempts = 0
+        scheduleBlackFeedCheck()
+    }
+
+    /// Re-checks ~1.5s out: a healthy session has delivered a frame by then. If it
+    /// hasn't, re-run the session to jog the iOS 26 capture stack — up to a small
+    /// cap, after which we surface an honest failure rather than a silent black view.
+    private func scheduleBlackFeedCheck() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
+            guard let self, let arView = self.arView else { return }
+            // A real frame arrived: camera is live, nothing to recover.
+            if self.hasReceivedFrame { return }
+            // The scan already finished; the live feed is no longer on screen.
+            if self.step == .review { return }
+
+            if self.blackFeedRecoveryAttempts < self.maxBlackFeedRecoveryAttempts {
+                self.blackFeedRecoveryAttempts += 1
+                print("⚠️ Snug: no camera frame after session.run — re-running session (attempt \(self.blackFeedRecoveryAttempts))")
+                arView.session.run(
+                    self.makeConfiguration(),
+                    options: [.resetTracking, .removeExistingAnchors]
+                )
+                self.scheduleBlackFeedCheck()
+            } else {
+                // Loud, never silent (CLAUDE.md): a camera that never delivers a
+                // frame ends on the failure screen with a rescan, not a frozen view.
+                print("⚠️ Snug: camera never delivered a frame after \(self.maxBlackFeedRecoveryAttempts) restarts")
+                self.onFailure?(.processingFailed("The camera didn't start. Try scanning again."))
+            }
+        }
     }
 
     private func makeConfiguration() -> ARWorldTrackingConfiguration {
@@ -1151,6 +1205,9 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     // MARK: - ARSessionDelegate
 
     func session(_ session: ARSession, didUpdate frame: ARFrame) {
+        // First frame = the camera feed is genuinely live; defuses the black-feed
+        // watchdog. (Callbacks are pinned to the main queue — see `attach`.)
+        hasReceivedFrame = true
         collectPassiveCeiling(frame)
         if isLookingUp { collectActiveCeiling(frame) }
     }

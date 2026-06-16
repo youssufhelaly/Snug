@@ -447,7 +447,7 @@ final class RoomSceneController {
     /// be eyeballed on device. This is NOT real placement — flip to `false` (or
     /// delete this flag, `placeDemoFurniture`, and its call) before shipping.
     /// The preview pieces are not mode-aware: they keep their PLAY styling in BUY.
-    static let demoFurniture = true
+    static let demoFurniture = false
     /// Bumped on every `setMode`; a snapshot callback applies its frame only if it's
     /// still the latest generation, so rapid toggles can't flash a stale one.
     private var modeGeneration = 0
