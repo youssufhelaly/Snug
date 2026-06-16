@@ -246,7 +246,7 @@ private struct SceneGestureOverlay: UIViewRepresentable {
                 return .orbit   // empty space → camera
             }
             if id == controller.selectedFurnitureID {
-                controller.beginFurnitureDrag(id)
+                controller.beginFurnitureDrag(id, atScreenPoint: start, viewSize: view.bounds.size)
                 return .moveFurniture
             }
             // Dragging an UNselected piece selects it but doesn't move it (a second
@@ -1295,10 +1295,23 @@ final class RoomSceneController {
 
     // MARK: - Live drag-to-move (driven by the gesture overlay)
 
-    /// Begin moving `id`. A light tap confirms the grab.
-    func beginFurnitureDrag(_ id: UUID) {
+    /// Offset captured at grab: (box floor-center) − (floor point under the finger).
+    /// Maintained through the drag so the piece keeps its position RELATIVE to the
+    /// finger instead of snapping its center under the finger — which, on a tilted
+    /// camera, made the box float above the fingertip.
+    private var dragGrabOffset = SIMD2<Float>(0, 0)
+
+    /// Begin moving `id`. Captures the grab offset so the piece tracks the finger
+    /// without jumping. A light tap confirms the grab.
+    func beginFurnitureDrag(_ id: UUID, atScreenPoint point: CGPoint, viewSize: CGSize) {
         draggingFurnitureID = id
         lastDragState = nil
+        if let footprint = currentFootprints.first(where: { $0.id == id }),
+           let grab = floorPoint(forScreenPoint: point, viewSize: viewSize) {
+            dragGrabOffset = SIMD2(footprint.worldPosition.x, footprint.worldPosition.z) - grab
+        } else {
+            dragGrabOffset = .zero
+        }
         UIImpactFeedbackGenerator(style: .light).impactOccurred()
     }
 
@@ -1312,8 +1325,8 @@ final class RoomSceneController {
               let floor = floorPoint(forScreenPoint: screenPoint, viewSize: viewSize),
               let index = currentFootprints.firstIndex(where: { $0.id == id }) else { return }
 
-        currentFootprints[index].worldPosition.x = floor.x
-        currentFootprints[index].worldPosition.z = floor.y   // SIMD2.y carries world Z; .y altitude untouched
+        currentFootprints[index].worldPosition.x = floor.x + dragGrabOffset.x
+        currentFootprints[index].worldPosition.z = floor.y + dragGrabOffset.y   // SIMD2.y carries world Z; .y altitude untouched
         let footprint = currentFootprints[index]
 
         let state = FurniturePlacementValidator.validate(
