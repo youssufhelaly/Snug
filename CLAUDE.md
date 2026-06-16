@@ -323,16 +323,31 @@ on Linux — validate the AR/Vision/RealityKit specifics on an AR iPhone):
   `Step` between `markingOpenings` and `review`. `Done` → `furnitureDetection` →
   (auto/skip) → `review`. Skip just CLOSES the step now (no inline picker);
   auto-skipped when no model. Manual add/transform moved to the post-capture tray.
-- Post-capture flow: `RoomCaptureFlow` now has a `.placingFurniture` step after
-  review (`RoomModelReviewScreen` Done → `DeclutterView` → save). `DeclutterView` hosts
-  `FurniturePlacementTray` over the live diorama (no modal sheet — the tray IS the UI).
-- `FurniturePlacementTray`: carousel (State A) + transform sliders W/D/H, X/Z, rotation
-  (State B). Sliders are the single source of truth — they mutate the `[FurnitureFootprint]`
-  binding directly; `DeclutterView` recomputes `PlacementState` and `RoomSceneView.update`
-  drives the live 3D via `RoomSceneController.syncFurniture` (entities keyed by id in a
-  store SEPARATE from wall/floor building; PLAY/BUY geometry invariant untouched).
+- Furniture placement is NOT a wizard. There is no "placement step" / "Done" —
+  `RoomDioramaScreen` is a persistent interactive canvas. After review, `Done`
+  saves and opens the room; furniture is added/edited there anytime and AUTO-SAVES
+  on each gesture end (`RoomStore.update`). (`FurniturePlacementTray`, `DeclutterView`,
+  and the `.placingFurniture` flow step were removed.)
+- Interaction model (all in `RoomDioramaScreen` + `SceneGestureOverlay`, UIKit gestures):
+  tap a piece to select (Clay emissive highlight, additive over the red/green tint),
+  single-finger drag the selected piece to move it on the floor, pinch it to resize
+  width/depth (height fixed, floor-anchored). Drag on empty space orbits; pinch on
+  empty space zooms (camera gestures unchanged — added to, not replaced). A drag on
+  an UNselected piece selects it without moving. Selected → a micro-pill (label /
+  Fine Tune / trash); Fine Tune opens a ≤40% `FineTuneSheet` (W/D/H + rotation, no
+  X/Z). A persistent `+ Add` opens `FurnitureCarouselOverlay` (≤8 items).
+- Gesture↔camera disambiguation lives in the UIKit overlay (the camera gestures are
+  UIKit recognizers, so SwiftUI `.targetedToAnyEntity()` would be blocked by the
+  overlay). Hit-test = orthographic `floorPoint` (screen→floor via the ortho basis,
+  no matrices/ARSession) + point-in-footprint; skipped entirely when no furniture.
+- `RoomSceneController.syncFurniture` keeps furniture entities in a store SEPARATE
+  from wall/floor building (PLAY/BUY geometry invariant untouched). Live drag/pinch
+  mutate the entity (transform / in-place mesh + collision) directly for immediacy;
+  the footprints are pushed up and persisted on gesture end.
 - `FurniturePlacementValidator` (pure): boundary + SAT-overlap → red/amber/green;
-  `FurnitureEntityBuilder.applyPlacementState` tints the box per state.
+  `FurnitureEntityBuilder.applyPlacementState(_:selected:to:)` tints per state + selection.
+- Camera framing (`frameCamera`) is tightened (ortho `orthoScale = multiplier·extent`,
+  multiplier 0.85), aimed at the floor centroid, elevation 45° — global to all rooms.
 - ARSession lifecycle: `attach` runs with `[.resetTracking,.removeExistingAnchors]`,
   `deinit` releases the session, a `didBecomeActive` observer resumes the feed WITHOUT
   reset (preserving placed corners) — fixes the black-camera-on-second-scan.
@@ -342,11 +357,11 @@ on Linux — validate the AR/Vision/RealityKit specifics on an AR iPhone):
 Still TODO:
 - Bundling `YOLO26nFurniture.mlpackage` — ON HOLD pending confirmation of a stable
   YOLO26n CoreML export (asset not in the repo yet). Until then DEBUG synthetic mode
-  / the manual placement tray carry the flow.
-- Direct drag-to-move in the AR/diorama view (sliders are sufficient for V1; snap-to-wall
-  is a logged V2 idea).
+  / the manual `+ Add` carousel carry the flow.
 - Device color sampling: the mask-intersected pixel grid that feeds the (pure,
   tested) `FurnitureColorClassifier`; footprints default to `.other` color until then.
+- The ortho `floorPoint` projection constants and the drag/pinch feel need device
+  tuning (written to spec, not run on hardware here).
 
 ## Hard rules
 - NEVER fake the scan. If RoomPlan fails or confidence is low,
