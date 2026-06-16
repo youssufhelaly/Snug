@@ -321,25 +321,30 @@ on Linux — validate the AR/Vision/RealityKit specifics on an AR iPhone):
   synthetic detections when the model isn't bundled.
 - Pan step wired into `ManualARCaptureController` (Option A): new `.furnitureDetection`
   `Step` between `markingOpenings` and `review`. `Done` → `furnitureDetection` →
-  (auto/skip) → `review`. Skippable to the manual picker; auto-skipped when no model.
-- SwiftUI surfaces: `FurnitureDetectionView` (pan progress + Skip), `ManualFurniturePickerView`
-  (first-class fallback, ≤ 8 items), `DeclutterView` (keep/clear over the diorama).
-- `FurnitureEntityBuilder` — collision + input-target + footprint-id-tagged boxes
-  (unit-tested for bounds/components on device).
+  (auto/skip) → `review`. Skip just CLOSES the step now (no inline picker);
+  auto-skipped when no model. Manual add/transform moved to the post-capture tray.
+- Post-capture flow: `RoomCaptureFlow` now has a `.placingFurniture` step after
+  review (`RoomModelReviewScreen` Done → `DeclutterView` → save). `DeclutterView` hosts
+  `FurniturePlacementTray` over the live diorama (no modal sheet — the tray IS the UI).
+- `FurniturePlacementTray`: carousel (State A) + transform sliders W/D/H, X/Z, rotation
+  (State B). Sliders are the single source of truth — they mutate the `[FurnitureFootprint]`
+  binding directly; `DeclutterView` recomputes `PlacementState` and `RoomSceneView.update`
+  drives the live 3D via `RoomSceneController.syncFurniture` (entities keyed by id in a
+  store SEPARATE from wall/floor building; PLAY/BUY geometry invariant untouched).
+- `FurniturePlacementValidator` (pure): boundary + SAT-overlap → red/amber/green;
+  `FurnitureEntityBuilder.applyPlacementState` tints the box per state.
+- ARSession lifecycle: `attach` runs with `[.resetTracking,.removeExistingAnchors]`,
+  `deinit` releases the session, a `didBecomeActive` observer resumes the feed WITHOUT
+  reset (preserving placed corners) — fixes the black-camera-on-second-scan.
 - The Vision→ARView bbox mapping (`displayTransform`) in `floorHit` is the part most
   likely to need a device tweak (orientation/viewport).
 
 Still TODO:
 - Bundling `YOLO26nFurniture.mlpackage` — ON HOLD pending confirmation of a stable
   YOLO26n CoreML export (asset not in the repo yet). Until then DEBUG synthetic mode
-  / the manual picker carry the flow.
-- 3D tap-to-clear: the diorama now RENDERS `detectedFurniture` (RoomSceneController
-  loops it through `FurnitureEntityBuilder`; Y is floor-relative = height/2 above the
-  y=0 floor — never the AR `sessionFloorY`, which sank boxes below the base). Still
-  TODO is the interactive part: tapping a box in-scene to clear/keep (RealityView
-  targeted gestures over the already-attached collision + input-target). `DeclutterView`
-  drives keep/clear from its card list for now; the `isKept`/`isCleared` contract is
-  identical either way.
+  / the manual placement tray carry the flow.
+- Direct drag-to-move in the AR/diorama view (sliders are sufficient for V1; snap-to-wall
+  is a logged V2 idea).
 - Device color sampling: the mask-intersected pixel grid that feeds the (pure,
   tested) `FurnitureColorClassifier`; footprints default to `.other` color until then.
 

@@ -8,6 +8,9 @@ import simd
 struct FurnitureTagComponent: Component {
     let footprintID: UUID
     let category: FurnitureCategory
+    /// Stored so `applyPlacementState` can restore the piece's base color when
+    /// returning to the `.valid` tint (the entity carries no other color source).
+    let colorCategory: FurnitureColorCategory
 }
 
 /// Builds collision-ready, tap-routable RealityKit entities for detected
@@ -57,7 +60,11 @@ enum FurnitureEntityBuilder {
         // Collision + input target so the de-clutter scene can hit-test taps.
         root.collision = CollisionComponent(shapes: [.generateBox(size: size)])
         root.components.set(InputTargetComponent())
-        root.components.set(FurnitureTagComponent(footprintID: footprint.id, category: footprint.category))
+        root.components.set(FurnitureTagComponent(
+            footprintID: footprint.id,
+            category: footprint.category,
+            colorCategory: footprint.appearance.colorCategory
+        ))
 
         root.addChild(label(footprint.category, atHeight: size.y / 2 + 0.12))
         return root
@@ -79,6 +86,42 @@ enum FurnitureEntityBuilder {
                 entity.addChild(shell)
             }
         }
+    }
+
+    /// Tint a furniture entity by its placement state — the red/amber/green fit
+    /// feedback. Swaps the box's material:
+    /// - `.valid`    → the piece's base color, translucent 0.85, no emissive
+    /// - `.tooClose` → base color + amber emissive (#BA7517 @ 0.3)
+    /// - `.invalid`  → red base (#B85450) + red emissive (@ 0.4)
+    ///
+    /// The swap is instantaneous (one frame) — which is the responsiveness the
+    /// tray needs. (RealityKit material assignment isn't driven by SwiftUI's
+    /// `withAnimation`, so we don't wrap it; an instant swap reads as immediate.)
+    static func applyPlacementState(_ state: PlacementState, to entity: Entity) {
+        guard let model = entity as? ModelEntity, var component = model.model,
+              let tag = entity.components[FurnitureTagComponent.self] else { return }
+
+        var material = PhysicallyBasedMaterial()
+        material.roughness = .init(floatLiteral: 0.85)
+        material.metallic = .init(floatLiteral: 0)
+        material.blending = .transparent(opacity: .init(floatLiteral: 0.85))
+
+        switch state {
+        case .valid:
+            material.baseColor = .init(tint: UIColor(tag.colorCategory.playModeColor))
+        case .tooClose:
+            material.baseColor = .init(tint: UIColor(tag.colorCategory.playModeColor))
+            material.emissiveColor = .init(color: keptOutlineColor)        // amber #BA7517
+            material.emissiveIntensity = 0.3
+        case .invalid:
+            let red = UIColor(rgb: 0xB85450)
+            material.baseColor = .init(tint: red)
+            material.emissiveColor = .init(color: red)
+            material.emissiveIntensity = 0.4
+        }
+
+        component.materials = [material]
+        model.model = component
     }
 
     /// Animate a cleared box out: shrink + fade over 0.35 s, then detach. Runs on

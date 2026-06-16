@@ -18,8 +18,6 @@ struct ManualARCaptureView: View {
 
     @StateObject private var controller = ManualARCaptureController()
     @State private var hasCameraAccess = false
-    /// Manual fallback picker sheet, opened from the detection step's Skip button.
-    @State private var showManualPicker = false
 
     /// Local post-capture phase. Capture stays in `.capturing` until the room is
     /// resolved; a low-confidence capture detours through `.correcting`.
@@ -92,21 +90,12 @@ struct ManualARCaptureView: View {
                     service: controller.furnitureService,
                     finished: controller.furnitureDetectionFinished,
                     foundCount: controller.detectedFurniture.count,
-                    onSkip: {
-                        controller.cancelFurniturePan()
-                        showManualPicker = true
-                    }
+                    // Skip just closes the detection step — manual furniture is now
+                    // added in the post-capture placement tray (DeclutterView).
+                    onSkip: { controller.completeFurniture(with: []) }
                 )
                 .transition(.opacity)
             }
-        }
-        .sheet(isPresented: $showManualPicker) {
-            ManualFurniturePickerView(roomCorners: controller.corners) { footprints in
-                controller.completeFurniture(with: footprints)
-            }
-            // Force an explicit Skip/Done so a swipe-to-dismiss can't strand the
-            // flow on the detection step with a cancelled sweep.
-            .interactiveDismissDisabled()
         }
     }
 

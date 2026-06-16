@@ -20,6 +20,8 @@ struct RoomCaptureFlowView: View {
         /// inside the manual-AR capture view itself).
         case correcting(RoomModel)
         case completed(RoomModel)
+        /// Post-review furniture placement / de-clutter over the diorama.
+        case placingFurniture(RoomModel)
     }
 
     @State private var state: FlowState = .capturing
@@ -46,9 +48,8 @@ struct RoomCaptureFlowView: View {
         case .completed(let room):
             RoomModelReviewScreen(
                 room: room,
-                // "Done" finalizes the capture: hand the room up to be saved
-                // and shown as a diorama.
-                onDone: { onComplete(room) },
+                // "Done" moves on to furniture placement / de-clutter, then saves.
+                onDone: { state = .placingFurniture(room) },
                 onRecapture: { state = .capturing },
                 // Manual-AR rooms can always hop back into the drag editor;
                 // confirming the shape is never a one-way door.
@@ -56,6 +57,8 @@ struct RoomCaptureFlowView: View {
                     ? { state = .correcting(room) }
                     : nil
             )
+        case .placingFurniture(let room):
+            DeclutterView(room: room) { arranged in onComplete(arranged) }
         }
     }
 

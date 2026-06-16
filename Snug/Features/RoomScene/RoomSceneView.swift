@@ -33,6 +33,11 @@ struct RoomSceneView: View {
     /// Called once with PNG data after the first frames render, for the room's
     /// list thumbnail. Optional.
     var onThumbnail: ((Data) -> Void)? = nil
+    /// When non-nil, the diorama is in furniture-EDITING mode: these footprints
+    /// (not `room.detectedFurniture`) drive the furniture entities live via
+    /// `syncFurniture`, tinted by `placementStates`. Nil = static viewing mode.
+    var editableFurniture: [FurnitureFootprint]? = nil
+    var placementStates: [UUID: PlacementState] = [:]
 
     /// The scene/camera/culling engine. Held in `@State` so the single instance
     /// survives `body` re-evaluations (mode toggle, reset) — `RealityView`'s `make`
@@ -52,7 +57,7 @@ struct RoomSceneView: View {
     var body: some View {
         GeometryReader { geo in
             RealityView { content in
-                controller.makeEntities(room: room, mode: mode, onThumbnail: onThumbnail)
+                controller.makeEntities(room: room, mode: mode, editingFurniture: editableFurniture != nil, onThumbnail: onThumbnail)
                 content.add(controller.root)
                 content.add(controller.cameraAnchor)
                 // Per-frame loop: reset spring, dollhouse wall culling, one-time
@@ -68,6 +73,9 @@ struct RoomSceneView: View {
                 }
             } update: { _ in
                 controller.applyExternalState(mode: mode, resetToken: resetToken)
+                if let editableFurniture {
+                    controller.syncFurniture(editableFurniture, states: placementStates)
+                }
             }
             .overlay { gestureLayer }
             .overlay { crossfadeOverlay }
@@ -255,6 +263,18 @@ final class RoomSceneController {
     /// BUY-mode dimension labels (lie flat on the floor like a blueprint).
     private var labels: [ModelEntity] = []
 
+    // MARK: Phase 2 furniture (separate keyed store — never mixed into the
+    // wall/floor/opening scene building, so the PLAY/BUY geometry invariant is
+    // untouched). In editing mode these are driven live by the placement tray via
+    // `syncFurniture`; in viewing mode `buildGeometry` adds them once, statically.
+    private var furnitureEntities: [UUID: Entity] = [:]
+    /// Last-synced footprint per id, so `syncFurniture` only rebuilds an entity
+    /// when its geometry actually changed (cheap re-tints otherwise).
+    private var furnitureSnapshots: [UUID: FurnitureFootprint] = [:]
+    /// When true, `buildGeometry` skips the static furniture pass — the tray owns
+    /// furniture entities through `syncFurniture`.
+    private var editingFurniture = false
+
     // MARK: Camera state
 
     /// Calibration for the orthographic view-volume. The diorama uses a TRUE
@@ -324,8 +344,9 @@ final class RoomSceneController {
 
     /// Build all scene entities (geometry, lights, camera). The view adds `root` and
     /// `cameraAnchor` to its `RealityViewContent` and wires the per-frame loop.
-    func makeEntities(room: RoomModel, mode: RoomRenderMode, onThumbnail: ((Data) -> Void)?) {
+    func makeEntities(room: RoomModel, mode: RoomRenderMode, editingFurniture: Bool = false, onThumbnail: ((Data) -> Void)?) {
         self.mode = mode
+        self.editingFurniture = editingFurniture
         self.onThumbnail = onThumbnail
 
         buildLights()
@@ -472,18 +493,16 @@ final class RoomSceneController {
         }
 
         // Phase 2: detected existing furniture, rendered as stylized identity
-        // boxes (collision + tap-target tagged) so it appears in the diorama and
-        // the de-clutter scene. Cleared pieces are omitted. Y is floor-relative
-        // (the box center is half its height above this y=0 floor), so it sits ON
-        // the floor regardless of the AR session's altitude at capture time.
-        for footprint in room.detectedFurniture where !footprint.isCleared {
-            root.addChild(FurnitureEntityBuilder.entity(for: footprint))
+        // boxes (collision + tap-target tagged) so it appears in the diorama. Y is
+        // floor-relative (the box center is half its height above this y=0 floor),
+        // so it sits ON the floor regardless of the AR session's altitude. In
+        // editing mode this static pass is skipped — `syncFurniture` (driven by the
+        // placement tray) owns the entities so they can update live.
+        if !editingFurniture {
+            for footprint in room.detectedFurniture where !footprint.isCleared {
+                root.addChild(FurnitureEntityBuilder.entity(for: footprint))
+            }
         }
-        #if DEBUG
-        if !room.detectedFurniture.isEmpty {
-            print("🛋️ Snug diorama: rendering \(room.detectedFurniture.filter { !$0.isCleared }.count) furniture ent\(room.detectedFurniture.count == 1 ? "ity" : "ities").")
-        }
-        #endif
 
         // TEMPORARY furniture preview — only when there's no real detected
         // furniture, so detection testing isn't cluttered by the demo cluster.
@@ -992,6 +1011,40 @@ final class RoomSceneController {
         if lastResetToken != resetToken {
             lastResetToken = resetToken
             resetCamera(animated: true)
+        }
+    }
+
+    /// Reconcile the live furniture entities with the placement tray's footprints
+    /// (editing mode only). Adds new pieces, removes cleared/deleted ones, rebuilds
+    /// an entity only when its geometry changed (position/size/rotation), and
+    /// re-tints each by its `PlacementState`. Keyed by `footprint.id` in a store
+    /// separate from the wall/floor scene, so it never perturbs the PLAY/BUY
+    /// geometry invariant.
+    func syncFurniture(_ footprints: [FurnitureFootprint], states: [UUID: PlacementState]) {
+        let active = footprints.filter { !$0.isCleared }
+        let activeIDs = Set(active.map(\.id))
+
+        // Remove entities for pieces that were cleared or deleted.
+        for (id, entity) in furnitureEntities where !activeIDs.contains(id) {
+            entity.removeFromParent()
+            furnitureEntities[id] = nil
+            furnitureSnapshots[id] = nil
+        }
+
+        for footprint in active {
+            // (Re)build when new or when its geometry changed; a box mesh is cheap,
+            // and this keeps size/position/rotation edits correct without mutating
+            // meshes in place.
+            if furnitureEntities[footprint.id] == nil || furnitureSnapshots[footprint.id] != footprint {
+                furnitureEntities[footprint.id]?.removeFromParent()
+                let entity = FurnitureEntityBuilder.entity(for: footprint)
+                root.addChild(entity)
+                furnitureEntities[footprint.id] = entity
+                furnitureSnapshots[footprint.id] = footprint
+            }
+            if let entity = furnitureEntities[footprint.id] {
+                FurnitureEntityBuilder.applyPlacementState(states[footprint.id] ?? .valid, to: entity)
+            }
         }
     }
 
