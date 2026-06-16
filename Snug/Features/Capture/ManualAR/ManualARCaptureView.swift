@@ -397,4 +397,13 @@ private struct ARViewContainer: UIViewRepresentable {
     }
 
     func updateUIView(_ uiView: ARView, context: Context) {}
+
+    /// SwiftUI is tearing down the AR view (Cancel, completion, or the detour into
+    /// the correction canvas). Pause the session so the camera is released
+    /// immediately — without this the session lingers and the NEXT capture opens a
+    /// second session that can't acquire the held camera, producing the black
+    /// passthrough that only a full app restart clears.
+    static func dismantleUIView(_ uiView: ARView, coordinator: ()) {
+        uiView.session.pause()
+    }
 }

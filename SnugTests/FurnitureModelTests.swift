@@ -20,8 +20,8 @@ struct FurnitureModelTests {
             yRotation: .pi / 6,
             appearance: FurnitureAppearance(colorCategory: .cream, materialClass: .fabric),
             detectionConfidence: confidence,
+            isCleared: isCleared,
             isKept: isKept,
-            isCleared: isCleared
         )
     }
 

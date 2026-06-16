@@ -129,10 +129,11 @@ struct FitServiceTests {
     /// "un-reachable" in the harness.
     @Test func lShapedRoomReportsNearestWallNotAPhantomFar() {
         let g = FitFixtures.lShapedStudio.fitGeometry()
-        // 0.6×0.6 box at (1,1): nearest wall is the left wall (x=0), gap ≈ 0.4.
+        // 0.6×0.6 box at (1,1): half-extent 0.3, so its left edge sits at x=0.7.
+        // Nearest wall is the left wall (x=0); gap = 0.7 (NOT a phantom far-wall floor).
         let centered = service.evaluate(item: box(1.0, 1.0, 0.6, 0.6), in: g, errorMargin: margin)
         #expect(centered.state == .fitsWithRoom)
-        #expect(abs(centered.clearance - 0.4) < 0.01)
+        #expect(abs(centered.clearance - 0.7) < 0.01)
     }
 
     @Test func lShapedRoomBoxReachesEachArmWall() {

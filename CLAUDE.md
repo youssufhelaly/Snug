@@ -361,8 +361,7 @@ typed-dimensions entry with no AR remains out of scope.
   for my OK if the task touches more than 3 files.
 - After completing a task: summarize what changed, list files
   touched, and give me the on-device test steps.
-- If you're uncertain about an iOS API's behavior, say so and
-  propose the safest approach — do not guess silently. This
+- If you're uncertain about an iOS API's behavior, say so ans study this website https://developer.apple.com/ for more info about everything apple developer  — do not guess silently. This
   matters most for RoomPlan, RealityKit offscreen rendering, and
   AVFoundation, where confident hallucination is a known failure
   mode.
