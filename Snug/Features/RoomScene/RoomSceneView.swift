@@ -1175,29 +1175,41 @@ final class RoomSceneController {
                 furnitureSnapshots[footprint.id] = footprint
             }
             if let entity = furnitureEntities[footprint.id] {
+                let selected = footprint.id == selectedID
                 FurnitureEntityBuilder.applyPlacementState(
                     states[footprint.id] ?? .valid,
-                    selected: footprint.id == selectedID,
+                    selected: selected,
                     to: entity
                 )
+                // Selection "pop": scale to 1.03 when selected, 1.0 otherwise. Only
+                // animate when the scale actually changes, so a re-sync (e.g. after a
+                // drag ends) doesn't re-fire it — and it stays put during a live drag,
+                // which never round-trips through syncFurniture. RealityKit's
+                // transform-animation API has no spring timing; a short easeOut reads
+                // as the snappy pop the spec calls for (~0.2 s).
+                let targetScale: Float = selected ? 1.03 : 1.0
+                if abs(entity.transform.scale.x - targetScale) > 0.001 {
+                    var transform = entity.transform
+                    transform.scale = SIMD3(repeating: targetScale)
+                    entity.move(to: transform, relativeTo: entity.parent, duration: 0.2, timingFunction: .easeOut)
+                }
             }
         }
     }
 
-    // MARK: - Furniture hit-testing (orthographic screen → floor)
+    // MARK: - Furniture hit-testing (orthographic screen → world)
 
-    /// Convert a screen point (UIKit points, origin top-left) to a point on the
-    /// floor plane (Y = 0), for the ORTHOGRAPHIC diorama camera. Every screen point
-    /// casts a ray parallel to the camera forward; its origin is offset in the
-    /// camera's right/up axes by the screen offset × world-units-per-point
-    /// (`orthoScale / viewHeight`). We then intersect that ray with Y = 0. No view/
-    /// projection matrices or live ARSession needed — exact for an ortho camera.
-    /// Returns nil if the ray is parallel to the floor.
-    func floorPoint(forScreenPoint point: CGPoint, viewSize: CGSize) -> SIMD2<Float>? {
+    /// The world-space ray for a screen point under the ORTHOGRAPHIC diorama camera.
+    /// Every screen point casts a ray parallel to the camera forward; its origin is
+    /// offset in the camera's right/up axes by the screen offset × world-units-per-
+    /// point (`orthoScale / viewHeight`). Shared by both the floor intersection
+    /// (drag) and the collision raycast (selection) so they can never disagree.
+    private func orthoRay(forScreenPoint point: CGPoint, viewSize: CGSize)
+        -> (origin: SIMD3<Float>, direction: SIMD3<Float>)? {
         guard viewSize.width > 0, viewSize.height > 0 else { return nil }
         let camPos = camera.position(relativeTo: nil)
         let forward = simd_normalize(target - camPos)
-        guard abs(forward.y) > 1e-5 else { return nil }
+        guard simd_length(forward) > 1e-5 else { return nil }
 
         let worldUp = SIMD3<Float>(0, 1, 0)
         let right = simd_normalize(simd_cross(forward, worldUp))
@@ -1208,25 +1220,43 @@ final class RoomSceneController {
         let offY = Float(point.y - viewSize.height / 2) * worldPerPoint
         // Screen y grows downward → subtract `up`.
         let origin = camPos + right * offX - up * offY
+        return (origin, forward)
+    }
 
-        let t = (0 - origin.y) / forward.y   // intersect floor plane Y = 0
-        let hit = origin + forward * t
+    /// Intersect a screen point's ortho ray with the floor plane (Y = 0). Used by
+    /// drag-to-move. No view/projection matrices or ARSession needed.
+    func floorPoint(forScreenPoint point: CGPoint, viewSize: CGSize) -> SIMD2<Float>? {
+        guard let ray = orthoRay(forScreenPoint: point, viewSize: viewSize),
+              abs(ray.direction.y) > 1e-5 else { return nil }
+        let t = (0 - ray.origin.y) / ray.direction.y
+        let hit = ray.origin + ray.direction * t
         return SIMD2(hit.x, hit.z)
     }
 
-    /// The id of the furniture whose floor footprint contains `point`, if any.
-    /// Tests the most-recently-synced rectangles back-to-front so the topmost
-    /// (last-added) piece wins an overlap. The overlay skips this when there's no
-    /// furniture (`hasFurniture`).
+    /// The furniture id under a screen point via a real 3D collision raycast
+    /// (`Scene.raycast`) against the furniture `CollisionComponent`s — NOT a 2D
+    /// floor projection (which mis-selected tall/rotated pieces). Only furniture
+    /// carries collision (walls/floor don't), so the nearest hit is the right piece.
+    /// The ortho ray is the same one the drag handler uses. The overlay skips this
+    /// entirely when there's no furniture (`hasFurniture`).
     func furnitureID(atScreenPoint point: CGPoint, viewSize: CGSize) -> UUID? {
-        guard let floor = floorPoint(forScreenPoint: point, viewSize: viewSize) else { return nil }
-        for footprint in currentFootprints.reversed() {
-            let rect = OrientedFootprint(
-                center: SIMD2(footprint.worldPosition.x, footprint.worldPosition.z),
-                size: SIMD2(footprint.dimensions.x, footprint.dimensions.y),
-                rotation: footprint.yRotation
-            )
-            if Geometry2D.isPoint(floor, insidePolygon: rect.corners) { return footprint.id }
+        guard let ray = orthoRay(forScreenPoint: point, viewSize: viewSize),
+              let scene = root.scene else { return nil }
+        let hits = scene.raycast(origin: ray.origin, direction: ray.direction,
+                                 length: 1000, query: .all, mask: .all)
+        for hit in hits {
+            if let tag = Self.furnitureTag(of: hit.entity) { return tag.footprintID }
+        }
+        return nil
+    }
+
+    /// Walk up from a hit entity to find the furniture tag (collision is on the box
+    /// root, but be defensive about hitting a child).
+    private static func furnitureTag(of entity: Entity) -> FurnitureTagComponent? {
+        var node: Entity? = entity
+        while let current = node {
+            if let tag = current.components[FurnitureTagComponent.self] { return tag }
+            node = current.parent
         }
         return nil
     }

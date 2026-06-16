@@ -93,9 +93,10 @@ enum FurnitureEntityBuilder {
     /// - `.valid`    → the piece's base color, translucent 0.85
     /// - `.tooClose` → base color + amber emissive (#BA7517 @ 0.3)
     /// - `.invalid`  → red base (#B85450) + red emissive (@ 0.4)
-    /// When `selected`, a Clay emissive (#E8714A @ 0.25) replaces the state emissive
-    /// so the piece reads as "selected" without losing its base-color collision cue
-    /// (red base still signals invalid). Swap is instantaneous (one frame).
+    /// When `selected`, a strong Clay emissive (#E8714A @ 0.5) replaces the state
+    /// emissive so the piece reads as "selected" without losing its base-color
+    /// collision cue (red base still signals invalid). The selection scale "pop"
+    /// is applied separately in `RoomSceneController.syncFurniture`.
     static func applyPlacementState(_ state: PlacementState, selected: Bool = false, to entity: Entity) {
         guard let model = entity as? ModelEntity, var component = model.model,
               let tag = entity.components[FurnitureTagComponent.self] else { return }
@@ -121,7 +122,7 @@ enum FurnitureEntityBuilder {
 
         if selected {
             material.emissiveColor = .init(color: UIColor(rgb: 0xE8714A))   // Clay selection
-            material.emissiveIntensity = 0.25
+            material.emissiveIntensity = 0.5
         }
 
         component.materials = [material]
