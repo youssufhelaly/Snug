@@ -939,21 +939,27 @@ final class RoomSceneController {
         guard !corners.isEmpty else { return }
         let xs = corners.map(\.x), zs = corners.map(\.y)
         let minX = xs.min()!, maxX = xs.max()!, minZ = zs.min()!, maxZ = zs.max()!
-        let centerXZ = SIMD2((minX + maxX) / 2, (minZ + maxZ) / 2)
-        target = SIMD3(centerXZ.x, room.ceilingHeight * 0.35, centerXZ.y)
+        // Aim at the true floor-polygon centroid, not the bounding-box center: for
+        // an L-shaped room the bbox center can land in the missing quadrant.
+        let centroid = corners.reduce(SIMD2<Float>.zero, +) / Float(corners.count)
+        target = SIMD3(centroid.x, room.ceilingHeight * 0.35, centroid.y)
 
         let span = simd_length(SIMD2(maxX - minX, maxZ - minZ))
         let extent = max(span, room.ceilingHeight)
-        // Seed the orbit distance. With an orthographic camera the distance no
-        // longer sets apparent size (the ortho `scale` does, derived from `radius`
-        // in `updateCamera`), but `radius` still positions the camera for orbit and
-        // must clear the geometry. We keep the original distance formula so the
-        // initial ortho scale (≈ 1.2 × room extent) frames the room exactly as the
-        // tuned perspective camera did. The 1.2 margin leaves breathing room.
+        // Tighter framing so the room fills more of the screen. NOTE: this camera is
+        // ORTHOGRAPHIC — `orthoScale(forRadius:)` works out to `multiplier · extent`
+        // (the FOV term cancels), so the multiplier on `fitDistance` IS the fraction
+        // of `extent` the view spans vertically. 0.85 fills more than the old 1.2
+        // without clipping (extent uses the bbox diagonal, an over-estimate of the
+        // visible footprint). The range still lets the user pinch out to ~3× for the
+        // full room.
         let halfFOV = (Self.isoFOVDegrees * .pi / 180) / 2
         let fitDistance = (extent * 0.5) / tan(halfFOV)
-        radius = max(fitDistance * 1.2, 3)
-        radiusRange = max(fitDistance * 0.6, 1.5)...max(fitDistance * 2.6, 12)
+        radius = max(fitDistance * 0.85, 2.0)
+        radiusRange = max(fitDistance * 0.3, 0.8)...max(fitDistance * 3.0, 14)
+        // Slightly steeper than the canonical iso angle — a more top-down read makes
+        // the floor plan and furniture placement clearer.
+        elevation = .pi / 4
 
         defaultAzimuth = azimuth
         defaultElevation = elevation
