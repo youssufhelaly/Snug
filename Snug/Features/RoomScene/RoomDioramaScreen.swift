@@ -19,10 +19,26 @@ struct RoomDioramaScreen: View {
     /// than on every `body` re-eval (mode toggle, reset, rename alert). The
     /// diorama never mutates geometry, so a one-time decode is correct.
     @State private var room: RoomModel?
+    /// Editable furniture (live during placement; persisted on gesture end). Seeded
+    /// from the saved room; the room view is now a persistent furniture canvas.
+    @State private var footprints: [FurnitureFootprint] = []
+    @State private var selectedFurnitureID: UUID?
 
     init(stored: StoredRoom) {
         self.stored = stored
-        _room = State(initialValue: stored.roomModel)
+        let decoded = stored.roomModel
+        _room = State(initialValue: decoded)
+        _footprints = State(initialValue: decoded?.detectedFurniture ?? [])
+    }
+
+    /// Live fit classification per footprint (recomputed on edits, not per frame).
+    private func placementStates(for room: RoomModel) -> [UUID: PlacementState] {
+        var states: [UUID: PlacementState] = [:]
+        for footprint in footprints where !footprint.isCleared {
+            states[footprint.id] = FurniturePlacementValidator.validate(
+                footprint: footprint, against: room, existingFootprints: footprints)
+        }
+        return states
     }
 
     var body: some View {
@@ -39,7 +55,11 @@ struct RoomDioramaScreen: View {
                     room: room,
                     mode: mode,
                     resetToken: resetToken,
-                    onThumbnail: { data in store.setThumbnail(data, for: stored) }
+                    onThumbnail: { data in store.setThumbnail(data, for: stored) },
+                    editableFurniture: footprints,
+                    placementStates: placementStates(for: room),
+                    selectedFurnitureID: selectedFurnitureID,
+                    onSelectFurniture: { selectedFurnitureID = $0 }
                 )
                 .ignoresSafeArea()
 

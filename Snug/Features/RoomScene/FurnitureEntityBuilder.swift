@@ -89,15 +89,14 @@ enum FurnitureEntityBuilder {
     }
 
     /// Tint a furniture entity by its placement state — the red/amber/green fit
-    /// feedback. Swaps the box's material:
-    /// - `.valid`    → the piece's base color, translucent 0.85, no emissive
+    /// feedback — plus an optional Clay selection emissive layered on top.
+    /// - `.valid`    → the piece's base color, translucent 0.85
     /// - `.tooClose` → base color + amber emissive (#BA7517 @ 0.3)
     /// - `.invalid`  → red base (#B85450) + red emissive (@ 0.4)
-    ///
-    /// The swap is instantaneous (one frame) — which is the responsiveness the
-    /// tray needs. (RealityKit material assignment isn't driven by SwiftUI's
-    /// `withAnimation`, so we don't wrap it; an instant swap reads as immediate.)
-    static func applyPlacementState(_ state: PlacementState, to entity: Entity) {
+    /// When `selected`, a Clay emissive (#E8714A @ 0.25) replaces the state emissive
+    /// so the piece reads as "selected" without losing its base-color collision cue
+    /// (red base still signals invalid). Swap is instantaneous (one frame).
+    static func applyPlacementState(_ state: PlacementState, selected: Bool = false, to entity: Entity) {
         guard let model = entity as? ModelEntity, var component = model.model,
               let tag = entity.components[FurnitureTagComponent.self] else { return }
 
@@ -118,6 +117,11 @@ enum FurnitureEntityBuilder {
             material.baseColor = .init(tint: red)
             material.emissiveColor = .init(color: red)
             material.emissiveIntensity = 0.4
+        }
+
+        if selected {
+            material.emissiveColor = .init(color: UIColor(rgb: 0xE8714A))   // Clay selection
+            material.emissiveIntensity = 0.25
         }
 
         component.materials = [material]

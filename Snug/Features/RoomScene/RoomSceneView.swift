@@ -38,6 +38,12 @@ struct RoomSceneView: View {
     /// `syncFurniture`, tinted by `placementStates`. Nil = static viewing mode.
     var editableFurniture: [FurnitureFootprint]? = nil
     var placementStates: [UUID: PlacementState] = [:]
+    /// The selected piece (drives highlight + which entity a drag/pinch targets).
+    var selectedFurnitureID: UUID? = nil
+    /// Called when a tap selects a furniture id (or nil for empty-space deselect).
+    var onSelectFurniture: ((UUID?) -> Void)? = nil
+    /// Called when a drag/pinch ends with the mutated footprints, for persistence.
+    var onFurnitureChanged: (([FurnitureFootprint]) -> Void)? = nil
 
     /// The scene/camera/culling engine. Held in `@State` so the single instance
     /// survives `body` re-evaluations (mode toggle, reset) — `RealityView`'s `make`
@@ -74,7 +80,7 @@ struct RoomSceneView: View {
             } update: { _ in
                 controller.applyExternalState(mode: mode, resetToken: resetToken)
                 if let editableFurniture {
-                    controller.syncFurniture(editableFurniture, states: placementStates)
+                    controller.syncFurniture(editableFurniture, states: placementStates, selectedID: selectedFurnitureID)
                 }
             }
             .overlay { gestureLayer }
@@ -107,7 +113,7 @@ struct RoomSceneView: View {
     // MARK: - Overlays
 
     private var gestureLayer: some View {
-        SceneGestureOverlay(controller: controller)
+        SceneGestureOverlay(controller: controller, onSelectFurniture: onSelectFurniture)
     }
 
     /// The cross-fade freeze: shown instantly at full opacity (covering the material
@@ -147,11 +153,15 @@ struct RoomSceneView: View {
 /// controller's camera intents. `RealityView` needs no touches of its own here.
 private struct SceneGestureOverlay: UIViewRepresentable {
     let controller: RoomSceneController
+    /// Tap selection callback (nil = deselect). Furniture drag/pinch is added in
+    /// later items; this item wires tap-to-select only.
+    var onSelectFurniture: ((UUID?) -> Void)? = nil
 
     func makeUIView(context: Context) -> UIView {
         let view = UIView()
         view.backgroundColor = .clear
         context.coordinator.controller = controller
+        context.coordinator.onSelectFurniture = onSelectFurniture
 
         let orbit = UIPanGestureRecognizer(target: context.coordinator,
                                             action: #selector(Coordinator.handleOrbit(_:)))
@@ -167,11 +177,18 @@ private struct SceneGestureOverlay: UIViewRepresentable {
         let pinch = UIPinchGestureRecognizer(target: context.coordinator,
                                              action: #selector(Coordinator.handlePinch(_:)))
         view.addGestureRecognizer(pinch)
+
+        // Tap selects/deselects furniture. Coexists with the pan recognizers (a
+        // tap is a discrete touch; pans require movement).
+        let tap = UITapGestureRecognizer(target: context.coordinator,
+                                         action: #selector(Coordinator.handleTap(_:)))
+        view.addGestureRecognizer(tap)
         return view
     }
 
     func updateUIView(_ uiView: UIView, context: Context) {
         context.coordinator.controller = controller
+        context.coordinator.onSelectFurniture = onSelectFurniture
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -181,6 +198,7 @@ private struct SceneGestureOverlay: UIViewRepresentable {
     @MainActor
     final class Coordinator: NSObject {
         weak var controller: RoomSceneController?
+        var onSelectFurniture: ((UUID?) -> Void)?
 
         @objc func handleOrbit(_ gesture: UIPanGestureRecognizer) {
             guard let view = gesture.view else { return }
@@ -199,6 +217,15 @@ private struct SceneGestureOverlay: UIViewRepresentable {
         @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
             controller?.pinch(scale: Float(gesture.scale))
             gesture.scale = 1
+        }
+
+        @objc func handleTap(_ gesture: UITapGestureRecognizer) {
+            guard let controller, let view = gesture.view else { return }
+            // Skip all hit-testing when there's no furniture to hit.
+            guard controller.hasFurniture else { return }
+            let point = gesture.location(in: view)
+            let id = controller.furnitureID(atScreenPoint: point, viewSize: view.bounds.size)
+            onSelectFurniture?(id)
         }
     }
 }
@@ -274,6 +301,14 @@ final class RoomSceneController {
     /// When true, `buildGeometry` skips the static furniture pass — the tray owns
     /// furniture entities through `syncFurniture`.
     private var editingFurniture = false
+    /// Last-synced footprints (non-cleared), kept so the UIKit gesture overlay can
+    /// hit-test a screen tap against the floor rectangles without a SwiftUI round-trip.
+    private(set) var currentFootprints: [FurnitureFootprint] = []
+    /// The currently selected piece (drives the Clay highlight + gesture gating).
+    private var selectedFurnitureID: UUID?
+
+    /// Whether any furniture exists — the overlay skips all hit-testing when false.
+    var hasFurniture: Bool { !currentFootprints.isEmpty }
 
     // MARK: Camera state
 
@@ -1026,8 +1061,10 @@ final class RoomSceneController {
     /// re-tints each by its `PlacementState`. Keyed by `footprint.id` in a store
     /// separate from the wall/floor scene, so it never perturbs the PLAY/BUY
     /// geometry invariant.
-    func syncFurniture(_ footprints: [FurnitureFootprint], states: [UUID: PlacementState]) {
+    func syncFurniture(_ footprints: [FurnitureFootprint], states: [UUID: PlacementState], selectedID: UUID?) {
         let active = footprints.filter { !$0.isCleared }
+        currentFootprints = active
+        selectedFurnitureID = selectedID
         let activeIDs = Set(active.map(\.id))
 
         // Remove entities for pieces that were cleared or deleted.
@@ -1049,9 +1086,60 @@ final class RoomSceneController {
                 furnitureSnapshots[footprint.id] = footprint
             }
             if let entity = furnitureEntities[footprint.id] {
-                FurnitureEntityBuilder.applyPlacementState(states[footprint.id] ?? .valid, to: entity)
+                FurnitureEntityBuilder.applyPlacementState(
+                    states[footprint.id] ?? .valid,
+                    selected: footprint.id == selectedID,
+                    to: entity
+                )
             }
         }
+    }
+
+    // MARK: - Furniture hit-testing (orthographic screen → floor)
+
+    /// Convert a screen point (UIKit points, origin top-left) to a point on the
+    /// floor plane (Y = 0), for the ORTHOGRAPHIC diorama camera. Every screen point
+    /// casts a ray parallel to the camera forward; its origin is offset in the
+    /// camera's right/up axes by the screen offset × world-units-per-point
+    /// (`orthoScale / viewHeight`). We then intersect that ray with Y = 0. No view/
+    /// projection matrices or live ARSession needed — exact for an ortho camera.
+    /// Returns nil if the ray is parallel to the floor.
+    func floorPoint(forScreenPoint point: CGPoint, viewSize: CGSize) -> SIMD2<Float>? {
+        guard viewSize.width > 0, viewSize.height > 0 else { return nil }
+        let camPos = camera.position(relativeTo: nil)
+        let forward = simd_normalize(target - camPos)
+        guard abs(forward.y) > 1e-5 else { return nil }
+
+        let worldUp = SIMD3<Float>(0, 1, 0)
+        let right = simd_normalize(simd_cross(forward, worldUp))
+        let up = simd_cross(right, forward)
+
+        let worldPerPoint = Self.orthoScale(forRadius: radius) / Float(viewSize.height)
+        let offX = Float(point.x - viewSize.width / 2) * worldPerPoint
+        let offY = Float(point.y - viewSize.height / 2) * worldPerPoint
+        // Screen y grows downward → subtract `up`.
+        let origin = camPos + right * offX - up * offY
+
+        let t = (0 - origin.y) / forward.y   // intersect floor plane Y = 0
+        let hit = origin + forward * t
+        return SIMD2(hit.x, hit.z)
+    }
+
+    /// The id of the furniture whose floor footprint contains `point`, if any.
+    /// Tests the most-recently-synced rectangles back-to-front so the topmost
+    /// (last-added) piece wins an overlap. The overlay skips this when there's no
+    /// furniture (`hasFurniture`).
+    func furnitureID(atScreenPoint point: CGPoint, viewSize: CGSize) -> UUID? {
+        guard let floor = floorPoint(forScreenPoint: point, viewSize: viewSize) else { return nil }
+        for footprint in currentFootprints.reversed() {
+            let rect = OrientedFootprint(
+                center: SIMD2(footprint.worldPosition.x, footprint.worldPosition.z),
+                size: SIMD2(footprint.dimensions.x, footprint.dimensions.y),
+                rotation: footprint.yRotation
+            )
+            if Geometry2D.isPoint(floor, insidePolygon: rect.corners) { return footprint.id }
+        }
+        return nil
     }
 
     // MARK: - Per-frame loop
