@@ -31,6 +31,10 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         case findingFloor
         case markingCorners
         case markingOpenings
+        /// Post-openings pan step: detect existing furniture (Phase 2). Skippable;
+        /// auto-skipped when the CoreML model isn't bundled. Sits between
+        /// `markingOpenings` and `review` (the ceiling-look-up close sequence).
+        case furnitureDetection
         case review
     }
 
@@ -102,6 +106,21 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     @Published private(set) var isLookingUp = false
     /// Copy for the look-up overlay (extends to "Keep pointing up…" on retry).
     @Published private(set) var lookUpPrompt = "Almost done — point your phone at the ceiling for 1 second."
+
+    // MARK: Furniture detection (Phase 2)
+
+    /// The Vision/CoreML detector. `@Observable`; the pan UI reads its `progress`
+    /// and `isRunning` directly. Owned here so the controller can drive the
+    /// fixed-length pan and convert results to footprints with the floor baseline
+    /// and room polygon it already holds.
+    let furnitureService = FurnitureDetectionService()
+    /// Footprints resolved from this scan, written into the final `RoomModel`.
+    @Published private(set) var detectedFurniture: [FurnitureFootprint] = []
+    /// True once the pan finished and footprints were resolved — drives the
+    /// "Found X items" success copy before the auto-advance to close.
+    @Published private(set) var furnitureDetectionFinished = false
+    /// The fixed-length pan task, so Skip can cancel it cleanly.
+    private var furnitureTask: Task<Void, Never>?
 
     // MARK: Two-tap intersection (deprecated — replaced by high-wall projection)
 
@@ -259,6 +278,11 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     var canClosePolygon: Bool { corners.count >= 3 }
 
+    /// Floor baseline for placing furniture (weighted `sessionFloorY`, falling back
+    /// to the render baseline or 0). Exposed so the manual picker can snap pieces
+    /// to the floor without reaching into private capture state.
+    var furniturePlacementFloorY: Float { sessionFloorY ?? floorY ?? 0 }
+
     // MARK: - Session lifecycle
 
     func attach(to arView: ARView) {
@@ -358,6 +382,11 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         resolvedCeilingHeight = Self.defaultCeilingHeight
         ceilingConfidence = .low
         isLookingUp = false
+        furnitureTask?.cancel()
+        furnitureTask = nil
+        detectedFurniture = []
+        furnitureDetectionFinished = false
+        furnitureService.reset()
         cornerMarkers.forEach { $0.removeFromParent() }
         cornerMarkers.removeAll()
         edgeContainer.children.removeAll()
@@ -746,13 +775,148 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     // MARK: - Finish & ceiling resolution (Part 2)
 
+    /// "Done" from the openings step. Per the Phase 2 flow this runs furniture
+    /// detection next (markingOpenings → furnitureDetection → review), rather
+    /// than closing straight to the ceiling look-up.
+    func finish() {
+        guard corners.count >= 3, step == .markingOpenings else { return }
+        beginFurnitureDetection()
+    }
+
+    // MARK: - Furniture detection step (Phase 2)
+
+    /// Enter the pan step and run the fixed-length detection sweep. If the CoreML
+    /// model isn't bundled there is nothing to detect, so we skip straight to the
+    /// close with no furniture (CLAUDE.md: degrade gracefully, never a dead end).
+    func beginFurnitureDetection() {
+        guard step == .markingOpenings else { return }
+        furnitureDetectionFinished = false
+        guard furnitureService.modelAvailable else {
+            detectedFurniture = []
+            beginClose()
+            return
+        }
+        step = .furnitureDetection
+        furnitureService.reset()
+
+        furnitureTask = Task { @MainActor in
+            await runFurniturePan()
+            guard !Task.isCancelled else { return }
+            detectedFurniture = resolveFootprints(from: furnitureService.finalizeDetections())
+            furnitureDetectionFinished = true
+            // Auto-advance ~1.5 s after the success message so the user reads it.
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            beginClose()
+        }
+    }
+
+    /// Skip the automatic pan and hand off to the manual fallback picker. Cancels
+    /// the in-flight sweep but stays on `.furnitureDetection` so the picker sheet
+    /// (presented by the view) can complete via `completeFurniture(with:)`.
+    func cancelFurniturePan() {
+        furnitureTask?.cancel()
+        furnitureTask = nil
+    }
+
+    /// Finish the furniture step with an explicit set of footprints (the manual
+    /// picker's result, possibly empty) and close.
+    func completeFurniture(with footprints: [FurnitureFootprint]) {
+        cancelFurniturePan()
+        detectedFurniture = footprints
+        beginClose()
+    }
+
+    /// Sample exactly `totalDetectionFrames` frames ~500 ms apart, feeding each to
+    /// the detector. Spacing (not every ARFrame) gives the user time to pan so the
+    /// IoU consensus sees each piece from a few angles.
+    @MainActor
+    private func runFurniturePan() async {
+        for _ in 0..<FurnitureDetectionService.totalDetectionFrames {
+            if Task.isCancelled { return }
+            if let frame = arView?.session.currentFrame {
+                await furnitureService.processFrame(
+                    frame.capturedImage,
+                    ambientIntensity: frame.lightEstimate.map { Double($0.ambientIntensity) }
+                )
+            }
+            try? await Task.sleep(nanoseconds: 500_000_000)
+        }
+    }
+
+    /// Convert confirmed observations into floor-placed footprints. Raycasts each
+    /// box's bottom-center to the floor, then hands the resolved hit (or a camera
+    /// fallback) to the pure `FurniturePlacementService`.
+    @MainActor
+    private func resolveFootprints(from observations: [FurnitureObservation]) -> [FurnitureFootprint] {
+        guard let arView, corners.count >= 3 else { return [] }
+        let floorY = sessionFloorY ?? floorY ?? 0
+        let roomXZ = corners.map(\.simd2)
+        let camOrigin = cameraOrigin(in: arView)
+        let camXZ = SIMD2(camOrigin.x, camOrigin.z)
+        let camForward = cameraSighting(in: arView)?.forward
+
+        let service = FurniturePlacementService()
+        return observations.map { obs in
+            let (hitXZ, distance) = floorHit(for: obs.boundingBox, in: arView, floorY: floorY)
+            let appearance = FurnitureAppearance(
+                colorCategory: .other,   // device color sampling is wired in the detector; default until then
+                materialClass: .inferred(for: obs.category)
+            )
+            return service.place(.init(
+                observation: obs,
+                appearance: appearance,
+                raycastHitXZ: hitXZ,
+                raycastDistance: distance,
+                sessionFloorY: floorY,
+                roomCorners: roomXZ,
+                cameraPositionXZ: camXZ,
+                cameraForwardXZ: camForward
+            ))
+        }
+    }
+
+    /// Raycast the bottom-center of a normalized Vision box to the floor plane.
+    /// Returns the world XZ and the camera→hit distance (for width back-projection),
+    /// or `(nil, nil)` if nothing was hit. The Vision→view coordinate mapping uses
+    /// the frame's `displayTransform`; VALIDATE on device — the orientation and
+    /// viewport plumbing is the part most likely to need a tweak.
+    @MainActor
+    private func floorHit(for boundingBox: CGRect, in arView: ARView, floorY: Float)
+        -> (xz: SIMD2<Float>?, distance: Float?) {
+        guard let frame = arView.session.currentFrame else { return (nil, nil) }
+        let viewport = arView.bounds.size
+        guard viewport.width > 0, viewport.height > 0 else { return (nil, nil) }
+
+        // Vision space: normalized, origin bottom-left. Bottom-center of the box is
+        // the furniture's floor contact point: midX, and the SMALLER y (Vision's
+        // bottom). `displayTransform` maps normalized image space → normalized view
+        // space for the current interface orientation.
+        let bottomCenter = CGPoint(x: boundingBox.midX, y: boundingBox.minY)
+        let transform = frame.displayTransform(for: .portrait, viewportSize: viewport)
+        let normalizedView = bottomCenter.applying(transform)
+        let screenPoint = CGPoint(x: normalizedView.x * viewport.width,
+                                  y: normalizedView.y * viewport.height)
+
+        let origin = cameraOrigin(in: arView)
+        for target in [ARRaycastQuery.Target.existingPlaneGeometry, .existingPlaneInfinite, .estimatedPlane] {
+            guard let hit = arView.raycast(from: screenPoint, allowing: target, alignment: .horizontal).first else { continue }
+            let w = hit.worldTransform.columns.3
+            let world = SIMD3(w.x, w.y, w.z)
+            guard simd_distance(world, origin) <= Self.maxTapReach else { continue }
+            // Trust XZ; Y is snapped to the floor baseline by the placement service.
+            return (SIMD2(world.x, world.z), simd_distance(world, origin))
+        }
+        return (nil, nil)
+    }
+
     /// Begins the close sequence: run the one-time ceiling look-up, resolve the
     /// final ceiling height, then build the room.
-    func finish() {
-        // Guard against a double-tap of "Done": once we advance to `.review`
-        // the close sequence (and its async look-up Task) is already running,
-        // so a second call must not launch it again or emit a second room.
-        guard corners.count >= 3, step != .review else { return }
+    private func beginClose() {
+        // Guard against re-entry: once we advance to `.review` the close sequence
+        // (and its async look-up Task) is already running.
+        guard step != .review else { return }
+        cancelFurniturePan()
         step = .review
         passiveCeilingHeight = nil
 
@@ -825,7 +989,8 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
             provenance: .manualAR,
             floorCorners: corners,
             ceilingHeight: resolvedCeilingHeight,
-            openings: openings
+            openings: openings,
+            detectedFurniture: detectedFurniture
         )
         UINotificationFeedbackGenerator().notificationOccurred(.success)
         onComplete?(room)

@@ -312,18 +312,33 @@ Phase 2 is landing in layers. What exists and is unit-tested today:
   its multiplier and classifying against the base margin (the four-state thresholds
   scale linearly with the margin, so this is exact and leaves the all-`.measured`
   path byte-identical). It never blocks placement — only shifts toward "too close".
-Still DEVICE-ONLY work (needs Xcode + a LiDAR/AR iPhone, not buildable on Linux CI):
-- `FurnitureDetectionService` (Vision/CoreML, CVPixelBuffer retain handling, the
-  serial detection queue, all `@Observable` mutations hopped to `@MainActor`).
-- Wiring the post-scan pan step into `ManualARCaptureController`. NOTE: the real
-  controller is an `ObservableObject`/`NSObject` with steps
-  `findingFloor → markingCorners → markingOpenings → review`; ceiling look-up is a
-  sub-state of the `review` close sequence, not a `Step`. Inserting a furniture
-  step means extending that enum + the close sequence — a deliberate decision to
-  make with the team, not a drop-in.
-- The SwiftUI/RealityKit surfaces: `FurnitureDetectionView`, `ManualFurniturePickerView`,
-  `DeclutterView`, and `FurnitureEntityBuilder`.
-- Bundling `YOLO26nFurniture.mlpackage` (the asset does not exist in the repo yet).
+Landed but DEVICE-VERIFY (compiles/passes only on a Mac; written to spec, not run
+on Linux — validate the AR/Vision/RealityKit specifics on an AR iPhone):
+- `FurnitureDetectionService` (Vision/CoreML). Pure `consensus`/`iou` are unit-tested;
+  the Vision parsing assumes a `VNRecognizedObjectObservation` export (validate the
+  label set), `processFrame` mutates `@Observable` state only via `MainActor.run`,
+  and the `CVPixelBuffer` is held for the request's lifetime. `#if DEBUG` injects
+  synthetic detections when the model isn't bundled.
+- Pan step wired into `ManualARCaptureController` (Option A): new `.furnitureDetection`
+  `Step` between `markingOpenings` and `review`. `Done` → `furnitureDetection` →
+  (auto/skip) → `review`. Skippable to the manual picker; auto-skipped when no model.
+- SwiftUI surfaces: `FurnitureDetectionView` (pan progress + Skip), `ManualFurniturePickerView`
+  (first-class fallback, ≤ 8 items), `DeclutterView` (keep/clear over the diorama).
+- `FurnitureEntityBuilder` — collision + input-target + footprint-id-tagged boxes
+  (unit-tested for bounds/components on device).
+- The Vision→ARView bbox mapping (`displayTransform`) in `floorHit` is the part most
+  likely to need a device tweak (orientation/viewport).
+
+Still TODO:
+- Bundling `YOLO26nFurniture.mlpackage` — ON HOLD pending confirmation of a stable
+  YOLO26n CoreML export (asset not in the repo yet). Until then DEBUG synthetic mode
+  / the manual picker carry the flow.
+- Rendering `FurnitureEntityBuilder` boxes INSIDE the live diorama with 3D
+  tap-to-clear (RealityView targeted gestures, extending `RoomSceneController`'s
+  hit-testing). `DeclutterView` currently drives keep/clear over the diorama backdrop;
+  the model contract (`isKept`/`isCleared`) is identical either way.
+- Device color sampling: the mask-intersected pixel grid that feeds the (pure,
+  tested) `FurnitureColorClassifier`; footprints default to `.other` color until then.
 
 ## Hard rules
 - NEVER fake the scan. If RoomPlan fails or confidence is low,

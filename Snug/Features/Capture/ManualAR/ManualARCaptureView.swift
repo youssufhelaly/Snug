@@ -18,6 +18,8 @@ struct ManualARCaptureView: View {
 
     @StateObject private var controller = ManualARCaptureController()
     @State private var hasCameraAccess = false
+    /// Manual fallback picker sheet, opened from the detection step's Skip button.
+    @State private var showManualPicker = false
 
     /// Local post-capture phase. Capture stays in `.capturing` until the room is
     /// resolved; a low-confidence capture detours through `.correcting`.
@@ -82,6 +84,32 @@ struct ManualARCaptureView: View {
             if controller.cameraInterrupted {
                 cameraPausedOverlay
             }
+
+            // Phase 2 furniture-detection step: an opaque pan overlay covering the
+            // capture chrome while the detector sweeps, then a brief success.
+            if controller.step == .furnitureDetection {
+                FurnitureDetectionView(
+                    service: controller.furnitureService,
+                    finished: controller.furnitureDetectionFinished,
+                    foundCount: controller.detectedFurniture.count,
+                    onSkip: {
+                        controller.cancelFurniturePan()
+                        showManualPicker = true
+                    }
+                )
+                .transition(.opacity)
+            }
+        }
+        .sheet(isPresented: $showManualPicker) {
+            ManualFurniturePickerView(
+                roomCorners: controller.corners,
+                floorY: controller.furniturePlacementFloorY
+            ) { footprints in
+                controller.completeFurniture(with: footprints)
+            }
+            // Force an explicit Skip/Done so a swipe-to-dismiss can't strand the
+            // flow on the detection step with a cancelled sweep.
+            .interactiveDismissDisabled()
         }
     }
 
@@ -215,6 +243,9 @@ struct ManualARCaptureView: View {
             markingControls
         case .markingOpenings:
             openingControls
+        case .furnitureDetection:
+            // The full-screen FurnitureDetectionView overlay owns this step's UI.
+            EmptyView()
         case .review:
             ProgressView("Saving room…")
         }
@@ -296,6 +327,7 @@ struct ManualARCaptureView: View {
         case .findingFloor: "Point at the floor"
         case .markingCorners: controller.isHighWallModeActive ? "Tap the wall above the corner" : "Tap each floor corner"
         case .markingOpenings: "Mark doors & windows"
+        case .furnitureDetection: "Finding your furniture"
         case .review: "All set"
         }
     }
@@ -310,6 +342,8 @@ struct ManualARCaptureView: View {
                 : "Tap a clear floor corner first. If a corner is blocked by furniture, tap the wall above it instead."
         case .markingOpenings:
             "Tap each side of a door or window — point at the wall or its base. Skip with Done if you'd rather not."
+        case .furnitureDetection:
+            "Pan slowly so we can spot your existing furniture."
         case .review:
             "Building your room…"
         }
