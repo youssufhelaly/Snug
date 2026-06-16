@@ -17,18 +17,38 @@ struct SnugApp: App {
 
     init() {
         let schema = Schema(versionedSchema: SnugSchemaV1.self)
+        let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         do {
-            container = try ModelContainer(
-                for: schema,
-                migrationPlan: SnugMigrationPlan.self,
-                configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)]
-            )
+            container = try Self.makeContainer(schema: schema, configuration: configuration)
         } catch {
-            // A failed store is unrecoverable and would mean every room save
-            // fails silently; fail loudly in development instead.
-            fatalError("Could not create the Snug data store: \(error)")
+            // The on-disk store is incompatible with the current schema. Pre-release,
+            // the V1 schema is still settling and we add no migration stage for a
+            // dev-time storage change (e.g. flipping `thumbnailData` off
+            // `.externalStorage`), so an old store can fail to load. Rather than
+            // brick launch, recreate it once from scratch — there is no shipped data
+            // and no cloud, so this is safe in V1. Logged loudly; never silent.
+            print("⚠️ Snug: data store incompatible (\(error)). Recreating it fresh.")
+            Self.destroyStore(at: configuration.url)
+            do {
+                container = try Self.makeContainer(schema: schema, configuration: configuration)
+            } catch {
+                fatalError("Could not create the Snug data store after reset: \(error)")
+            }
         }
         _roomStore = State(initialValue: RoomStore(context: container.mainContext))
+    }
+
+    private static func makeContainer(schema: Schema, configuration: ModelConfiguration) throws -> ModelContainer {
+        try ModelContainer(for: schema, migrationPlan: SnugMigrationPlan.self, configurations: [configuration])
+    }
+
+    /// Remove the SQLite store and its write-ahead-log siblings so a fresh one can
+    /// be created. Used only after a load failure (the launch-blocking path).
+    private static func destroyStore(at url: URL) {
+        let fileManager = FileManager.default
+        for path in [url.path, url.path + "-wal", url.path + "-shm"] {
+            try? fileManager.removeItem(at: URL(fileURLWithPath: path))
+        }
     }
 
     var body: some Scene {

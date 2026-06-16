@@ -446,6 +446,10 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
             } else {
                 flagRaycastFailure()
             }
+        case .furnitureDetection:
+            // Taps are ignored here — the full-screen detection overlay owns this
+            // step's interaction (pan + Skip), not the AR tap recognizer.
+            break
         case .review:
             break
         }
