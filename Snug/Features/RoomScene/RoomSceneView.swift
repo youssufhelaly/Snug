@@ -1203,17 +1203,22 @@ final class RoomSceneController {
     /// Every screen point casts a ray parallel to the camera forward; its origin is
     /// offset in the camera's right/up axes by the screen offset × world-units-per-
     /// point (`orthoScale / viewHeight`). Shared by both the floor intersection
-    /// (drag) and the collision raycast (selection) so they can never disagree.
+    /// (drag) and the box hit-test (selection) so they can never disagree.
+    ///
+    /// The right/up/forward basis is read DIRECTLY from the camera's live world
+    /// matrix columns — not reconstructed from `cross(forward, worldUp)`. Manual
+    /// trig matches RealityKit's rendered orientation only when the camera is on a
+    /// primary axis; off-axis (orbited yaw + pitch) the two drift apart, which is
+    /// the "accurate from some angles, not others" tap bug. The matrix columns ARE
+    /// the orientation RealityKit renders with, so the ray locks to the visuals.
     private func orthoRay(forScreenPoint point: CGPoint, viewSize: CGSize)
         -> (origin: SIMD3<Float>, direction: SIMD3<Float>)? {
         guard viewSize.width > 0, viewSize.height > 0 else { return nil }
-        let camPos = camera.position(relativeTo: nil)
-        let forward = simd_normalize(target - camPos)
-        guard simd_length(forward) > 1e-5 else { return nil }
-
-        let worldUp = SIMD3<Float>(0, 1, 0)
-        let right = simd_normalize(simd_cross(forward, worldUp))
-        let up = simd_cross(right, forward)
+        let m = camera.transformMatrix(relativeTo: nil)
+        let right = simd_normalize(SIMD3(m.columns.0.x, m.columns.0.y, m.columns.0.z))   // +X
+        let up = simd_normalize(SIMD3(m.columns.1.x, m.columns.1.y, m.columns.1.z))      // +Y
+        let forward = simd_normalize(SIMD3(-m.columns.2.x, -m.columns.2.y, -m.columns.2.z)) // -Z = view dir
+        let camPos = SIMD3(m.columns.3.x, m.columns.3.y, m.columns.3.z)
 
         let worldPerPoint = Self.orthoScale(forRadius: radius) / Float(viewSize.height)
         let offX = Float(point.x - viewSize.width / 2) * worldPerPoint
