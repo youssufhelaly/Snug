@@ -900,9 +900,8 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         }
     }
 
-    /// Skip the automatic pan and hand off to the manual fallback picker. Cancels
-    /// the in-flight sweep but stays on `.furnitureDetection` so the picker sheet
-    /// (presented by the view) can complete via `completeFurniture(with:)`.
+    /// Cancel the automatic pan sweep. The detection step is not lingered on —
+    /// the caller is responsible for advancing the flow (e.g. via `completeFurniture`).
     func cancelFurniturePan() {
         furnitureTask?.cancel()
         furnitureTask = nil
