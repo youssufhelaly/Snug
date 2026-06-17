@@ -193,7 +193,7 @@ struct FurniturePlacementService {
     /// (no new spatial math). `margin` (8 cm) is intentionally tighter than
     /// `FitService`'s error margin: enough to keep furniture off the walls without
     /// fighting the user's deliberate placements.
-    func clampToBoundary(
+    static func clampToBoundary(
         position: SIMD2<Float>,
         dimensions: SIMD2<Float>,   // x = width, y = depth
         rotation: Float,
