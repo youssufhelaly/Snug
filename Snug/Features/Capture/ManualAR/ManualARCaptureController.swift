@@ -425,6 +425,12 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
             NotificationCenter.default.removeObserver(foregroundObserver)
             self.foregroundObserver = nil
         }
+        // Cancel the furniture-detection pan if it's mid-flight (matches reset()'s
+        // teardown). Without this, navigating away during the pan leaves the task
+        // holding the controller for ~6 s, then firing beginClose() → onComplete?
+        // on an already-dismissed flow (a stale room write / spurious navigation).
+        furnitureTask?.cancel()
+        furnitureTask = nil
         arView?.session.pause()
     }
 

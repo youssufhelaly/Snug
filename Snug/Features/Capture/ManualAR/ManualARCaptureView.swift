@@ -45,6 +45,10 @@ struct ManualARCaptureView: View {
             }
         }
         .task { await prepare() }
+        // Teardown when the capture flow is dismissed (Cancel / back / completion):
+        // releases the AR session AND cancels an in-flight furniture-detection pan,
+        // so a navigate-away mid-pan can't fire onComplete on a dismissed flow.
+        .onDisappear { controller.stop() }
     }
 
     // MARK: - Capture content
