@@ -29,3 +29,14 @@ Every "while we're at it..." idea lands here instead of in the build.
 - **Drag-to-correct for RoomPlan captures (V2?)** — the editor is gated to
   `.manualAR` provenance. LiDAR geometry is trusted straight to review. If real
   RoomPlan scans also bulge around furniture, open the editor to them too.
+- **Furniture snap-to-wall (V2)** — direct drag positions furniture freely with
+  red/amber/green fit feedback, but does not snap a piece flush to the nearest wall.
+  Auto-snapping (and auto-resolving overlaps) is deliberately out of V1 — the user
+  nudges and the feedback guides them. (Direct drag-to-move + pinch-to-resize SHIPPED
+  in the interaction-redesign PR; snap remains parked.)
+- **Furniture undo/redo (V2)** — placement auto-saves on every gesture end with no
+  history stack. An undo/redo of moves/resizes/adds/removes is a V2 nicety.
+- **Multi-select furniture (V2)** — selection is single-piece. Selecting and
+  moving/resizing several at once is out of V1 scope.
+- **Corner drag-handles on furniture (V2)** — pinch-to-resize is sufficient for V1;
+  explicit on-entity resize handles are a later refinement.

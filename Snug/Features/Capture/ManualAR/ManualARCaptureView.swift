@@ -45,6 +45,10 @@ struct ManualARCaptureView: View {
             }
         }
         .task { await prepare() }
+        // Teardown when the capture flow is dismissed (Cancel / back / completion):
+        // releases the AR session AND cancels an in-flight furniture-detection pan,
+        // so a navigate-away mid-pan can't fire onComplete on a dismissed flow.
+        .onDisappear { controller.stop() }
     }
 
     // MARK: - Capture content
@@ -81,6 +85,20 @@ struct ManualARCaptureView: View {
 
             if controller.cameraInterrupted {
                 cameraPausedOverlay
+            }
+
+            // Phase 2 furniture-detection step: an opaque pan overlay covering the
+            // capture chrome while the detector sweeps, then a brief success.
+            if controller.step == .furnitureDetection {
+                FurnitureDetectionView(
+                    service: controller.furnitureService,
+                    finished: controller.furnitureDetectionFinished,
+                    foundCount: controller.detectedFurniture.count,
+                    // Skip just closes the detection step — manual furniture is now
+                    // added later in the room diorama (the persistent `+` button).
+                    onSkip: { controller.completeFurniture(with: []) }
+                )
+                .transition(.opacity)
             }
         }
     }
@@ -215,6 +233,9 @@ struct ManualARCaptureView: View {
             markingControls
         case .markingOpenings:
             openingControls
+        case .furnitureDetection:
+            // The full-screen FurnitureDetectionView overlay owns this step's UI.
+            EmptyView()
         case .review:
             ProgressView("Saving room…")
         }
@@ -296,6 +317,7 @@ struct ManualARCaptureView: View {
         case .findingFloor: "Point at the floor"
         case .markingCorners: controller.isHighWallModeActive ? "Tap the wall above the corner" : "Tap each floor corner"
         case .markingOpenings: "Mark doors & windows"
+        case .furnitureDetection: "Finding your furniture"
         case .review: "All set"
         }
     }
@@ -310,6 +332,8 @@ struct ManualARCaptureView: View {
                 : "Tap a clear floor corner first. If a corner is blocked by furniture, tap the wall above it instead."
         case .markingOpenings:
             "Tap each side of a door or window — point at the wall or its base. Skip with Done if you'd rather not."
+        case .furnitureDetection:
+            "Pan slowly so we can spot your existing furniture."
         case .review:
             "Building your room…"
         }

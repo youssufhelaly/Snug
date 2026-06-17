@@ -312,18 +312,67 @@ Phase 2 is landing in layers. What exists and is unit-tested today:
   its multiplier and classifying against the base margin (the four-state thresholds
   scale linearly with the margin, so this is exact and leaves the all-`.measured`
   path byte-identical). It never blocks placement — only shifts toward "too close".
-Still DEVICE-ONLY work (needs Xcode + a LiDAR/AR iPhone, not buildable on Linux CI):
-- `FurnitureDetectionService` (Vision/CoreML, CVPixelBuffer retain handling, the
-  serial detection queue, all `@Observable` mutations hopped to `@MainActor`).
-- Wiring the post-scan pan step into `ManualARCaptureController`. NOTE: the real
-  controller is an `ObservableObject`/`NSObject` with steps
-  `findingFloor → markingCorners → markingOpenings → review`; ceiling look-up is a
-  sub-state of the `review` close sequence, not a `Step`. Inserting a furniture
-  step means extending that enum + the close sequence — a deliberate decision to
-  make with the team, not a drop-in.
-- The SwiftUI/RealityKit surfaces: `FurnitureDetectionView`, `ManualFurniturePickerView`,
-  `DeclutterView`, and `FurnitureEntityBuilder`.
-- Bundling `YOLO26nFurniture.mlpackage` (the asset does not exist in the repo yet).
+Landed but DEVICE-VERIFY (compiles/passes only on a Mac; written to spec, not run
+on Linux — validate the AR/Vision/RealityKit specifics on an AR iPhone):
+- `FurnitureDetectionService` (Vision/CoreML). Pure `consensus`/`iou` are unit-tested;
+  the Vision parsing assumes a `VNRecognizedObjectObservation` export (validate the
+  label set), `processFrame` mutates `@Observable` state only via `MainActor.run`,
+  and the `CVPixelBuffer` is held for the request's lifetime. `#if DEBUG` injects
+  synthetic detections when the model isn't bundled.
+- Pan step wired into `ManualARCaptureController` (Option A): new `.furnitureDetection`
+  `Step` between `markingOpenings` and `review`. `Done` → `furnitureDetection` →
+  (auto/skip) → `review`. Skip just CLOSES the step now (no inline picker);
+  auto-skipped when no model. Manual add/transform moved to the post-capture tray.
+- Furniture placement is NOT a wizard. There is no "placement step" / "Done" —
+  `RoomDioramaScreen` is a persistent interactive canvas. After review, `Done`
+  saves and opens the room; furniture is added/edited there anytime and AUTO-SAVES
+  on each gesture end (`RoomStore.update`). (`FurniturePlacementTray`, `DeclutterView`,
+  and the `.placingFurniture` flow step were removed.)
+- Interaction model (all in `RoomDioramaScreen` + `SceneGestureOverlay`, UIKit gestures):
+  tap a piece to select (Clay emissive highlight, additive over the red/green tint),
+  single-finger drag the selected piece to move it on the floor, pinch it to resize
+  width/depth (height fixed, floor-anchored). Drag on empty space orbits; pinch on
+  empty space zooms (camera gestures unchanged — added to, not replaced). A drag on
+  an UNselected piece selects it without moving. Selected → a micro-pill (label /
+  Fine Tune / trash); Fine Tune opens a ≤40% `FineTuneSheet` (W/D/H + rotation, no
+  X/Z). A persistent `+ Add` opens `FurnitureCarouselOverlay` (≤8 items).
+- Gesture↔camera disambiguation: furniture tap/drag/pinch are NATIVE RealityKit
+  SwiftUI gestures (`.targetedToAnyEntity()`) at `.highPriorityGesture`, so
+  RealityKit unprojects to the correct entity for the orthographic camera (no
+  manual ray math — the old UIKit-overlay + hand-rolled ortho ray drifted
+  off-axis). Camera orbit + pinch-zoom are plain SwiftUI gestures handling empty
+  space, feeding the unchanged `RoomSceneController` orbit/pinch math. Drag-move
+  uses `value.convert(value.location3D, …)` to the floor; TWO-FINGER CAMERA PAN
+  was dropped (SwiftUI has no clean 2-finger pan; `RoomSceneController.pan`
+  remains, unbound, for a future recognizer).
+- `RoomSceneController.syncFurniture` keeps furniture entities in a store SEPARATE
+  from wall/floor building (PLAY/BUY geometry invariant untouched). Live drag/pinch
+  mutate the entity (transform / in-place mesh + collision) directly for immediacy;
+  the footprints are pushed up and persisted on gesture end.
+- `FurniturePlacementValidator` (pure): boundary + SAT-overlap → red/amber/green;
+  `FurnitureEntityBuilder.applyPlacementState(_:selected:to:)` tints per state + selection.
+- Camera is a NARROW-FOV (14°) `PerspectiveCameraComponent`, NOT orthographic:
+  RealityKit's native entity gesture hit-testing (`targetedToAnyEntity`/`unproject`)
+  does not work against an ortho camera on iOS, so taps/drags don't register. The
+  long lens reads near-isometric (minimal foreshortening; BUY labels still show true
+  measurements). `updateCamera` only moves the camera (zoom = distance via `radius`)
+  and never re-sets the component, so it stays perspective for the whole session.
+  `frameCamera` fits the room to that FOV (×0.85 to fill), aims at the floor centroid,
+  elevation 45° — global to all rooms.
+- ARSession lifecycle: `attach` runs with `[.resetTracking,.removeExistingAnchors]`,
+  `deinit` releases the session, a `didBecomeActive` observer resumes the feed WITHOUT
+  reset (preserving placed corners) — fixes the black-camera-on-second-scan.
+- The Vision→ARView bbox mapping (`displayTransform`) in `floorHit` is the part most
+  likely to need a device tweak (orientation/viewport).
+
+Still TODO:
+- Bundling `YOLO26nFurniture.mlpackage` — ON HOLD pending confirmation of a stable
+  YOLO26n CoreML export (asset not in the repo yet). Until then DEBUG synthetic mode
+  / the manual `+ Add` carousel carry the flow.
+- Device color sampling: the mask-intersected pixel grid that feeds the (pure,
+  tested) `FurnitureColorClassifier`; footprints default to `.other` color until then.
+- The ortho `floorPoint` projection constants and the drag/pinch feel need device
+  tuning (written to spec, not run on hardware here).
 
 ## Hard rules
 - NEVER fake the scan. If RoomPlan fails or confidence is low,

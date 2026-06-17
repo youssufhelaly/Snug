@@ -46,8 +46,9 @@ struct RoomCaptureFlowView: View {
         case .completed(let room):
             RoomModelReviewScreen(
                 room: room,
-                // "Done" finalizes the capture: hand the room up to be saved
-                // and shown as a diorama.
+                // "Done" saves and opens the room. Furniture is no longer a wizard
+                // step — it's placed/edited anytime in the room diorama (the `+`
+                // button + direct touch), auto-saving on each gesture.
                 onDone: { onComplete(room) },
                 onRecapture: { state = .capturing },
                 // Manual-AR rooms can always hop back into the drag editor;

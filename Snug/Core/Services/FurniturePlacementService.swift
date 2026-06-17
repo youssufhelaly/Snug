@@ -49,10 +49,8 @@ struct FurniturePlacementService {
     }
 
     func place(_ input: Input) -> FurnitureFootprint {
-        let prior = input.observation.category.defaultDimensions
-
         // 1–4. Resolve floor XZ. Prefer the raycast; otherwise project forward
-        //       from the camera by a category-height heuristic and mark estimated.
+        //       from the camera (or fall back to the room centroid) and mark estimated.
         var usedFallbackPosition = false
         let rawXZ: SIMD2<Float>
         if let hit = input.raycastHitXZ {
@@ -63,17 +61,24 @@ struct FurniturePlacementService {
                 cameraPositionXZ: input.cameraPositionXZ,
                 cameraForwardXZ: input.cameraForwardXZ,
                 category: input.observation.category
-            )
+            ) ?? Self.centroid(of: input.roomCorners)
         }
-
-        // 6. Keep the footprint inside the room polygon.
-        let clampedXZ = Self.clamped(rawXZ, toRoom: input.roomCorners)
 
         // Dimensions: width is back-projected and clamped; depth/height are priors.
         let (dimensions, widthFellBack) = Self.estimatedDimensions(
             category: input.observation.category,
             boundingBoxWidth: Float(input.observation.boundingBox.width),
             raycastDistance: input.raycastDistance
+        )
+
+        // 6. Keep the WHOLE footprint inside the room polygon (all four corners,
+        //    8 cm clear of every wall) — not just its center. Computed after the
+        //    dimensions so the box's real footprint drives the clamp.
+        let clampedXZ = clampToBoundary(
+            position: rawXZ,
+            dimensions: SIMD2(dimensions.x, dimensions.y),
+            rotation: 0,
+            room: RoomFootprint(corners: input.roomCorners)
         )
 
         // Confidence: a real raycast hit AND a trusted back-projected width earns
@@ -85,10 +90,15 @@ struct FurniturePlacementService {
         return FurnitureFootprint(
             id: input.observation.id,
             category: input.observation.category,
-            // Snap Y to the floor baseline ALWAYS (never trust raw raycast Y
-            // drift on non-LiDAR devices). `dimensions.z` is height; the box's
-            // base sits on the floor, so its center is half a height up.
-            worldPosition: SIMD3(clampedXZ.x, input.sessionFloorY + prior.z / 2, clampedXZ.y),
+            // Y is FLOOR-RELATIVE: `RoomModel`'s floor is the y=0 plane (the
+            // diorama and FitService both treat it as the reference; RoomModel
+            // stores no absolute altitude). The box's base sits on that floor, so
+            // its center is half its height up. We deliberately do NOT bake in the
+            // AR session's `sessionFloorY` (an arbitrary world altitude, usually
+            // ~-1.2 m) — doing so sank furniture below the diorama floor. The raw
+            // raycast Y is likewise ignored (drifts on non-LiDAR devices); only
+            // its XZ is trusted.
+            worldPosition: SIMD3(clampedXZ.x, dimensions.z / 2, clampedXZ.y),
             dimensions: dimensions,
             yRotation: 0,
             appearance: input.appearance,
@@ -153,9 +163,9 @@ struct FurniturePlacementService {
         cameraPositionXZ: SIMD2<Float>?,
         cameraForwardXZ: SIMD2<Float>?,
         category: FurnitureCategory
-    ) -> SIMD2<Float> {
+    ) -> SIMD2<Float>? {
         guard let origin = cameraPositionXZ, let forward = cameraForwardXZ else {
-            return .zero
+            return nil   // no camera pose — caller falls back to the room centroid
         }
         let length = simd_length(forward)
         let direction = length > 1e-5 ? forward / length : SIMD2(0, 1)
@@ -163,6 +173,74 @@ struct FurniturePlacementService {
         // farther from where you stand to photograph them.
         let reach = max(1.0 as Float, category.defaultDimensions.x)
         return origin + direction * reach
+    }
+
+    static func centroid(of corners: [SIMD2<Float>]) -> SIMD2<Float> {
+        guard !corners.isEmpty else { return .zero }
+        return corners.reduce(SIMD2<Float>.zero, +) / Float(corners.count)
+    }
+
+    // MARK: - Boundary clamp
+
+    /// Clamp `position` so all four footprint corners are at least `margin` meters
+    /// inside the room polygon. Iterative: each pass finds the corner most in
+    /// violation (outside, or closer than `margin` to its nearest wall) and pushes
+    /// the whole center inward along that wall's inward normal by the shortfall.
+    /// Converges for normal rooms; capped at 10 iterations so a degenerate room (or
+    /// a box bigger than the room) can't loop forever — it returns the best effort.
+    ///
+    /// Uses only `OrientedFootprint.corners` and `Geometry2D` from `FitGeometry`
+    /// (no new spatial math). `margin` (8 cm) is intentionally tighter than
+    /// `FitService`'s error margin: enough to keep furniture off the walls without
+    /// fighting the user's deliberate placements.
+    static func clampToBoundary(
+        position: SIMD2<Float>,
+        dimensions: SIMD2<Float>,   // x = width, y = depth
+        rotation: Float,
+        room: RoomFootprint,
+        margin: Float = 0.08
+    ) -> SIMD2<Float> {
+        guard room.corners.count >= 3 else { return position }
+        let roomCentroid = Self.centroid(of: room.corners)
+        var center = position
+
+        for _ in 0..<10 {
+            let corners = OrientedFootprint(center: center, size: dimensions, rotation: rotation).corners
+            var worstShortfall: Float = 0
+            var pushDirection = SIMD2<Float>(0, 0)
+
+            for corner in corners {
+                // Nearest wall edge and the distance to it.
+                var nearestEdge: (start: SIMD2<Float>, end: SIMD2<Float>)?
+                var bestDistance = Float.greatestFiniteMagnitude
+                for edge in room.edges {
+                    let d = Geometry2D.distance(from: corner, toSegment: edge.start, edge.end)
+                    if d < bestDistance { bestDistance = d; nearestEdge = edge }
+                }
+                guard let edge = nearestEdge else { continue }
+
+                // Signed depth: positive when the corner is inside the room.
+                let inside = Geometry2D.isPoint(corner, insidePolygon: room.corners)
+                let signedDepth = inside ? bestDistance : -bestDistance
+                let shortfall = margin - signedDepth   // > 0 ⇒ must move inward
+                guard shortfall > worstShortfall else { continue }
+
+                // Inward normal of the offending edge (toward the room centroid).
+                let edgeDir = edge.end - edge.start
+                var normal = SIMD2<Float>(-edgeDir.y, edgeDir.x)
+                let edgeMid = (edge.start + edge.end) / 2
+                if simd_dot(normal, roomCentroid - edgeMid) < 0 { normal = -normal }
+                let length = simd_length(normal)
+                guard length > 1e-5 else { continue }
+
+                worstShortfall = shortfall
+                pushDirection = normal / length
+            }
+
+            if worstShortfall <= 0 { break }   // all corners satisfied
+            center += pushDirection * worstShortfall
+        }
+        return center
     }
 
     private static func nearestPointOnSegment(

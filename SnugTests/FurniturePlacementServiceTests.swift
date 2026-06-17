@@ -84,6 +84,25 @@ struct FurniturePlacementServiceTests {
         #expect(footprint.worldPosition.z == -0.4)
     }
 
+    @Test func yIsFloorRelativeNotARAltitude() {
+        // Regression: the AR session's floor altitude must NOT be baked into the
+        // stored Y — doing so sank furniture ~1 m below the diorama's y=0 floor,
+        // so nothing appeared. With ANY sessionFloorY the box center must be half
+        // its height above the room floor (y=0): sofa height 0.80 → 0.40.
+        let input = FurniturePlacementService.Input(
+            observation: observation(.sofa, boxWidth: 0.5),
+            appearance: FurnitureAppearance(colorCategory: .cream, materialClass: .fabric),
+            raycastHitXZ: SIMD2(0.2, -0.4),
+            raycastDistance: 3.0,
+            sessionFloorY: -1.2,   // AR world altitude, well below the origin
+            roomCorners: bedroom,
+            cameraPositionXZ: nil,
+            cameraForwardXZ: nil
+        )
+        let footprint = FurniturePlacementService().place(input)
+        #expect(abs(footprint.worldPosition.y - 0.40) < 0.001)
+    }
+
     @Test func missingRaycastFallsBackToEstimated() {
         let input = FurniturePlacementService.Input(
             observation: observation(.chair, boxWidth: 0.4),

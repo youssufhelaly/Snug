@@ -33,6 +33,17 @@ struct RoomSceneView: View {
     /// Called once with PNG data after the first frames render, for the room's
     /// list thumbnail. Optional.
     var onThumbnail: ((Data) -> Void)? = nil
+    /// When non-nil, the diorama is in furniture-EDITING mode: these footprints
+    /// (not `room.detectedFurniture`) drive the furniture entities live via
+    /// `syncFurniture`, tinted by `placementStates`. Nil = static viewing mode.
+    var editableFurniture: [FurnitureFootprint]? = nil
+    var placementStates: [UUID: PlacementState] = [:]
+    /// The selected piece (drives highlight + which entity a drag/pinch targets).
+    var selectedFurnitureID: UUID? = nil
+    /// Called when a tap selects a furniture id (or nil for empty-space deselect).
+    var onSelectFurniture: ((UUID?) -> Void)? = nil
+    /// Called when a drag/pinch ends with the mutated footprints, for persistence.
+    var onFurnitureChanged: (([FurnitureFootprint]) -> Void)? = nil
 
     /// The scene/camera/culling engine. Held in `@State` so the single instance
     /// survives `body` re-evaluations (mode toggle, reset) — `RealityView`'s `make`
@@ -47,12 +58,19 @@ struct RoomSceneView: View {
     /// toggle already replaced it with.
     @State private var crossfadeToken = 0
 
+    // Native-gesture state. Camera gestures are cumulative in SwiftUI; that cumulative
+    // tracking now lives on `RoomSceneController` (NOT `@State`), so orbit/zoom ticks
+    // never invalidate `body`. Furniture-drag state decides move-vs-select per gesture.
+    @State private var furnitureDragID: UUID?
+    @State private var furnitureDragIsMove = false
+    @State private var furnitureResizeActive = false
+
     @Environment(\.displayScale) private var displayScale
 
     var body: some View {
         GeometryReader { geo in
             RealityView { content in
-                controller.makeEntities(room: room, mode: mode, onThumbnail: onThumbnail)
+                controller.makeEntities(room: room, mode: mode, editingFurniture: editableFurniture != nil, onThumbnail: onThumbnail)
                 content.add(controller.root)
                 content.add(controller.cameraAnchor)
                 // Per-frame loop: reset spring, dollhouse wall culling, one-time
@@ -68,8 +86,35 @@ struct RoomSceneView: View {
                 }
             } update: { _ in
                 controller.applyExternalState(mode: mode, resetToken: resetToken)
+                if let editableFurniture {
+                    controller.syncFurniture(editableFurniture, states: placementStates, selectedID: selectedFurnitureID)
+                }
             }
-            .overlay { gestureLayer }
+            // Native RealityKit gestures. Furniture interactions are
+            // `.targetedToAnyEntity()` (RealityKit unprojects to the right entity
+            // for the orthographic camera — no manual ray math), at high priority
+            // so they win when a touch lands on a piece; camera orbit/zoom are
+            // plain gestures that handle empty space. (The old UIKit overlay +
+            // manual ortho ray drifted off-axis; this is the fix.)
+            // Gesture composition (this ordering is load-bearing — see below).
+            // Furniture tap/drag/pinch are `.targetedToAnyEntity()`, so they only
+            // fire when the touch lands on a piece. The CAMERA gestures are attached
+            // as `.simultaneousGesture` ON PURPOSE: a plain `.gesture` orbit is LOWER
+            // priority than the targeted gestures and SwiftUI won't deliver to it
+            // until the targeted drag *fails* — but a targeted drag only fails once
+            // the arbiter rules out an entity hit, which starves orbit to ~1 event/s
+            // (the "laggy, non-responsive" bug). Simultaneous gestures never wait on
+            // arbitration, so orbit/zoom stay smooth; they're GATED below so they no-op
+            // while a furniture drag/resize is in flight (the targeted gesture sets the
+            // flag), giving clean move-vs-orbit separation without the priority stall.
+            // The tap pair keeps the priority relationship (furniture tap must beat the
+            // empty-space deselect), and taps are discrete so they don't stall.
+            .highPriorityGesture(furnitureTapGesture)
+            .gesture(furnitureDragGesture)
+            .gesture(furnitureMagnifyGesture)
+            .gesture(deselectTapGesture)
+            .simultaneousGesture(cameraOrbitGesture)
+            .simultaneousGesture(cameraZoomGesture)
             .overlay { crossfadeOverlay }
             .onChange(of: crossfadeImage) { _, image in startCrossfade(image) }
             .onChange(of: geo.size) { syncPixelSize(geo.size) }
@@ -96,10 +141,132 @@ struct RoomSceneView: View {
                                       height: size.height * displayScale)
     }
 
-    // MARK: - Overlays
+    // MARK: - Gestures (native RealityKit, entity-targeted)
 
-    private var gestureLayer: some View {
-        SceneGestureOverlay(controller: controller)
+    /// A horizontal plane (normal = +Y) at world height `y`, expressed as a 4×4
+    /// transform for `unproject(…ontoPlane:)`. Used to drop the 2D drag point onto
+    /// the floor during a furniture move.
+    private static func horizontalPlane(atHeight y: Float) -> float4x4 {
+        var m = matrix_identity_float4x4
+        m.columns.3.y = y
+        return m
+    }
+
+    /// Tap on a furniture entity → select it. RealityKit returns the exact tapped
+    /// entity (correct unprojection for the ortho camera), so no manual ray.
+    private var furnitureTapGesture: some Gesture {
+        SpatialTapGesture().targetedToAnyEntity().onEnded { value in
+            if let (_, id) = taggedFurnitureRoot(for: value.entity) {
+                onSelectFurniture?(id)
+            }
+        }
+    }
+
+    /// Walk up from a hit entity to the box that carries the furniture tag — taps
+    /// can land on a child (label / outline shell), which has no tag of its own.
+    private func taggedFurnitureRoot(for entity: Entity) -> (entity: Entity, id: UUID)? {
+        var current: Entity? = entity
+        while let e = current {
+            if let tag = e.components[FurnitureTagComponent.self] {
+                return (e, tag.footprintID)
+            }
+            current = e.parent
+        }
+        return nil
+    }
+
+    /// Drag a furniture entity. On the selected piece → move it on the floor using
+    /// RealityKit's native `unproject(…ontoPlane:)` (camera-correct, no manual ray);
+    /// dragging an UNselected piece selects it without moving (a second drag moves).
+    private var furnitureDragGesture: some Gesture {
+        DragGesture()
+            .targetedToAnyEntity()
+            .onChanged { value in
+                guard let (root, id) = taggedFurnitureRoot(for: value.entity),
+                      let parent = root.parent else { return }
+                let floorPlane = Self.horizontalPlane(atHeight: root.position.y)
+
+                if furnitureDragID != id {
+                    furnitureDragID = id
+
+                    if id == selectedFurnitureID {
+                        furnitureDragIsMove = true
+
+                        if let start = value.unproject(value.startLocation, from: .local,
+                                                       to: parent, ontoPlane: floorPlane) {
+                            controller.beginFurnitureDrag(id, grabWorldXZ: SIMD2(start.x, start.z))
+                        }
+                    } else {
+                        furnitureDragIsMove = false
+                        onSelectFurniture?(id)
+                    }
+                }
+
+                if furnitureDragIsMove,
+                   let world = value.unproject(value.location, from: .local,
+                                               to: parent, ontoPlane: floorPlane) {
+                    controller.dragFurniture(toWorldXZ: SIMD2(world.x, world.z))
+                }
+            }
+            .onEnded { _ in
+                if furnitureDragIsMove {
+                    onFurnitureChanged?(controller.endFurnitureDrag())
+                }
+
+                furnitureDragID = nil
+                furnitureDragIsMove = false
+            }
+    }
+
+    /// Pinch on the selected furniture entity → resize width/depth (height fixed).
+    private var furnitureMagnifyGesture: some Gesture {
+        MagnifyGesture().targetedToAnyEntity()
+            .onChanged { value in
+                guard let (_, id) = taggedFurnitureRoot(for: value.entity),
+                      id == selectedFurnitureID else { return }
+                if !furnitureResizeActive { controller.beginFurnitureResize(id); furnitureResizeActive = true }
+                controller.resizeFurniture(scale: Float(value.magnification))
+            }
+            .onEnded { _ in
+                if furnitureResizeActive {
+                    onFurnitureChanged?(controller.endFurnitureResize())
+                    furnitureResizeActive = false
+                }
+            }
+    }
+
+    /// Tap on empty space → deselect. (Fires only when no entity tap consumed it.)
+    private var deselectTapGesture: some Gesture {
+        TapGesture().onEnded { onSelectFurniture?(nil) }
+    }
+
+    /// One-finger drag on empty space → orbit. The controller tracks the cumulative
+    /// translation and feeds itself incremental deltas, so this closure never writes
+    /// `@State` (which would invalidate `body` every frame and stall the gesture).
+    private var cameraOrbitGesture: some Gesture {
+        DragGesture()
+            .onChanged { value in
+                // Gate: a furniture drag (targeted gesture) sets `furnitureDragID` on
+                // its first tick; once set, this simultaneous orbit no-ops so dragging
+                // a piece doesn't also spin the camera. Empty-space drags never set it.
+                guard furnitureDragID == nil else { return }
+                controller.orbitContinuous(translation: value.translation)
+            }
+            .onEnded { _ in controller.endOrbit() }
+    }
+
+    /// Pinch on empty space → zoom. Cumulative magnification is converted to the
+    /// incremental factor inside the controller — again, no `@State` written per tick.
+    private var cameraZoomGesture: some Gesture {
+        MagnifyGesture()
+            .onChanged { value in
+                // Gate: a pinch on the selected piece sets `furnitureResizeActive`;
+                // while it's active this simultaneous zoom no-ops so resizing furniture
+                // doesn't also zoom the camera.
+                guard !furnitureResizeActive else { return }
+                controller.zoomContinuous(magnification: value.magnification)
+            }
+            .onEnded { _ in controller.endZoom() }
     }
 
     /// The cross-fade freeze: shown instantly at full opacity (covering the material
@@ -128,69 +295,6 @@ struct RoomSceneView: View {
             fadeOpacity = 0
         } completion: {
             if crossfadeToken == token { crossfadeImage = nil }
-        }
-    }
-}
-
-/// A transparent UIKit layer over the `RealityView` that hosts the three camera
-/// gesture recognizers. SwiftUI has no clean way to distinguish a one-finger drag
-/// (orbit) from a two-finger drag (pan), so the recognizers — which coordinate on
-/// touch count exactly as they did on the old `ARView` — stay in UIKit and feed the
-/// controller's camera intents. `RealityView` needs no touches of its own here.
-private struct SceneGestureOverlay: UIViewRepresentable {
-    let controller: RoomSceneController
-
-    func makeUIView(context: Context) -> UIView {
-        let view = UIView()
-        view.backgroundColor = .clear
-        context.coordinator.controller = controller
-
-        let orbit = UIPanGestureRecognizer(target: context.coordinator,
-                                            action: #selector(Coordinator.handleOrbit(_:)))
-        orbit.maximumNumberOfTouches = 1
-        view.addGestureRecognizer(orbit)
-
-        let pan = UIPanGestureRecognizer(target: context.coordinator,
-                                         action: #selector(Coordinator.handlePan(_:)))
-        pan.minimumNumberOfTouches = 2
-        pan.maximumNumberOfTouches = 2
-        view.addGestureRecognizer(pan)
-
-        let pinch = UIPinchGestureRecognizer(target: context.coordinator,
-                                             action: #selector(Coordinator.handlePinch(_:)))
-        view.addGestureRecognizer(pinch)
-        return view
-    }
-
-    func updateUIView(_ uiView: UIView, context: Context) {
-        context.coordinator.controller = controller
-    }
-
-    func makeCoordinator() -> Coordinator { Coordinator() }
-
-    /// `@MainActor` so the `@objc` recognizer callbacks (which UIKit always delivers
-    /// on the main thread) can call the controller's main-actor camera intents.
-    @MainActor
-    final class Coordinator: NSObject {
-        weak var controller: RoomSceneController?
-
-        @objc func handleOrbit(_ gesture: UIPanGestureRecognizer) {
-            guard let view = gesture.view else { return }
-            let t = gesture.translation(in: view)
-            controller?.orbit(dx: Float(t.x), dy: Float(t.y))
-            gesture.setTranslation(.zero, in: view)
-        }
-
-        @objc func handlePan(_ gesture: UIPanGestureRecognizer) {
-            guard let view = gesture.view else { return }
-            let t = gesture.translation(in: view)
-            controller?.pan(dx: Float(t.x), dy: Float(t.y))
-            gesture.setTranslation(.zero, in: view)
-        }
-
-        @objc func handlePinch(_ gesture: UIPinchGestureRecognizer) {
-            controller?.pinch(scale: Float(gesture.scale))
-            gesture.scale = 1
         }
     }
 }
@@ -255,15 +359,39 @@ final class RoomSceneController {
     /// BUY-mode dimension labels (lie flat on the floor like a blueprint).
     private var labels: [ModelEntity] = []
 
+    // MARK: Phase 2 furniture (separate keyed store — never mixed into the
+    // wall/floor/opening scene building, so the PLAY/BUY geometry invariant is
+    // untouched). In editing mode these are driven live by the placement tray via
+    // `syncFurniture`; in viewing mode `buildGeometry` adds them once, statically.
+    private var furnitureEntities: [UUID: Entity] = [:]
+    /// Last-synced footprint per id, so `syncFurniture` only rebuilds an entity
+    /// when its geometry actually changed (cheap re-tints otherwise).
+    private var furnitureSnapshots: [UUID: FurnitureFootprint] = [:]
+    /// When true, `buildGeometry` skips the static furniture pass — the tray owns
+    /// furniture entities through `syncFurniture`.
+    private var editingFurniture = false
+    /// Last-synced footprints (non-cleared), so live drag/pinch can validate and
+    /// look up the dragged piece without a SwiftUI round-trip.
+    private(set) var currentFootprints: [FurnitureFootprint] = []
+    /// The room being edited — stored so live drag/pinch can validate without a
+    /// SwiftUI round-trip. Set in `makeEntities`.
+    private var editingRoom: RoomModel?
+    /// The piece a single-finger drag is currently moving (nil when not dragging).
+    private var draggingFurnitureID: UUID?
+    /// Previous placement state during a drag, so the "became invalid" warning
+    /// haptic fires once on transition rather than every move.
+    private var lastDragState: PlacementState?
+
     // MARK: Camera state
 
-    /// Calibration for the orthographic view-volume. The diorama uses a TRUE
-    /// orthographic camera (`OrthographicCameraComponent`), so parallel lines stay
-    /// parallel by projection, not by faking a narrow FOV. This constant is no
-    /// longer a real field of view: it sets how far the camera sits (`radius`, for
-    /// orbit + clipping) and, through the same value, calibrates `orthoScale(forRadius:)`
-    /// so the framing matches the values the team already tuned. Smaller = camera
-    /// sits farther back; apparent size is governed by the ortho scale. Both modes.
+    /// Camera field of view (degrees). We use a PERSPECTIVE camera with a NARROW
+    /// FOV, which reads as near-isometric (little foreshortening) while keeping the
+    /// thing orthographic broke: RealityKit's native entity gesture hit-testing
+    /// (`targetedToAnyEntity` / `unproject`) does NOT work against an
+    /// `OrthographicCameraComponent` on iOS — taps/drags simply don't register.
+    /// A long-lens perspective is the smallest change that restores reliable native
+    /// gestures; BUY-mode scale is only mildly affected at this FOV (labels still
+    /// show true measurements). Also drives initial framing in `frameCamera`.
     static let isoFOVDegrees: Float = 14
     /// True isometric viewing angle above the horizon: `atan(1/√2) ≈ 35.26°`.
     /// Paired with a 45° azimuth this is the canonical diorama orientation.
@@ -304,7 +432,7 @@ final class RoomSceneController {
     /// be eyeballed on device. This is NOT real placement — flip to `false` (or
     /// delete this flag, `placeDemoFurniture`, and its call) before shipping.
     /// The preview pieces are not mode-aware: they keep their PLAY styling in BUY.
-    static let demoFurniture = true
+    static let demoFurniture = false
     /// Bumped on every `setMode`; a snapshot callback applies its frame only if it's
     /// still the latest generation, so rapid toggles can't flash a stale one.
     private var modeGeneration = 0
@@ -324,8 +452,10 @@ final class RoomSceneController {
 
     /// Build all scene entities (geometry, lights, camera). The view adds `root` and
     /// `cameraAnchor` to its `RealityViewContent` and wires the per-frame loop.
-    func makeEntities(room: RoomModel, mode: RoomRenderMode, onThumbnail: ((Data) -> Void)?) {
+    func makeEntities(room: RoomModel, mode: RoomRenderMode, editingFurniture: Bool = false, onThumbnail: ((Data) -> Void)?) {
         self.mode = mode
+        self.editingFurniture = editingFurniture
+        self.editingRoom = room
         self.onThumbnail = onThumbnail
 
         buildLights()
@@ -336,11 +466,15 @@ final class RoomSceneController {
         root.addChild(iblEntity)
         buildGeometry(room: room)
 
-        // True orthographic projection — the canonical isometric-diorama camera. The
-        // ortho `scale` (view-volume height) is set every frame in `updateCamera`,
-        // derived from `radius`, so the existing orbit / pinch-zoom / reset machinery
-        // keeps driving a single value and needs no other change.
-        camera.components.set(OrthographicCameraComponent())
+        // Narrow-FOV PERSPECTIVE camera (NOT orthographic): native entity gesture
+        // hit-testing (`targetedToAnyEntity`/`unproject`) is broken against an
+        // ortho camera on iOS, so taps/drags don't register. A long lens keeps the
+        // near-isometric look. Set ONCE here and never overwritten — `updateCamera`
+        // only moves it (zoom = distance via `radius`), so it stays perspective for
+        // the whole session (orbiting/zooming won't revert it and re-break gestures).
+        var cam = PerspectiveCameraComponent()
+        cam.fieldOfViewInDegrees = Self.isoFOVDegrees
+        camera.components.set(cam)
         cameraAnchor.addChild(camera)
 
         frameCamera(room: room)
@@ -471,8 +605,22 @@ final class RoomSceneController {
             root.addChild(label)
         }
 
-        // TEMPORARY furniture preview — delete with `placeDemoFurniture`.
-        if Self.demoFurniture { placeDemoFurniture(at: centroidXZ) }
+        // Phase 2: detected existing furniture, rendered as stylized identity
+        // boxes (collision + tap-target tagged) so it appears in the diorama. Y is
+        // floor-relative (the box center is half its height above this y=0 floor),
+        // so it sits ON the floor regardless of the AR session's altitude. In
+        // editing mode this static pass is skipped — `syncFurniture` (driven by the
+        // placement tray) owns the entities so they can update live.
+        if !editingFurniture {
+            for footprint in room.detectedFurniture where !footprint.isCleared {
+                root.addChild(FurnitureEntityBuilder.entity(for: footprint))
+            }
+        }
+
+        // TEMPORARY furniture preview — only when there's no real detected
+        // furniture, so detection testing isn't cluttered by the demo cluster.
+        // Delete with `placeDemoFurniture`.
+        if Self.demoFurniture && room.detectedFurniture.isEmpty { placeDemoFurniture(at: centroidXZ) }
     }
 
     /// TEMPORARY visual preview of the Phase-3 furniture — NOT real placement.
@@ -904,21 +1052,26 @@ final class RoomSceneController {
         guard !corners.isEmpty else { return }
         let xs = corners.map(\.x), zs = corners.map(\.y)
         let minX = xs.min()!, maxX = xs.max()!, minZ = zs.min()!, maxZ = zs.max()!
-        let centerXZ = SIMD2((minX + maxX) / 2, (minZ + maxZ) / 2)
-        target = SIMD3(centerXZ.x, room.ceilingHeight * 0.35, centerXZ.y)
+        // Aim at the true floor-polygon centroid, not the bounding-box center: for
+        // an L-shaped room the bbox center can land in the missing quadrant.
+        let centroid = corners.reduce(SIMD2<Float>.zero, +) / Float(corners.count)
+        target = SIMD3(centroid.x, room.ceilingHeight * 0.35, centroid.y)
 
         let span = simd_length(SIMD2(maxX - minX, maxZ - minZ))
         let extent = max(span, room.ceilingHeight)
-        // Seed the orbit distance. With an orthographic camera the distance no
-        // longer sets apparent size (the ortho `scale` does, derived from `radius`
-        // in `updateCamera`), but `radius` still positions the camera for orbit and
-        // must clear the geometry. We keep the original distance formula so the
-        // initial ortho scale (≈ 1.2 × room extent) frames the room exactly as the
-        // tuned perspective camera did. The 1.2 margin leaves breathing room.
+        // Tighter framing so the room fills more of the screen. `fitDistance` is the
+        // distance at which the room `extent` exactly fills the narrow camera FOV;
+        // 0.85 sits a bit closer so the room fills more (extent is the bbox diagonal,
+        // an over-estimate of the visible footprint, so this won't clip). The range
+        // lets the user pinch out to ~3× for the full room. With the narrow FOV this
+        // reads near-isometric, but it IS perspective (required for native gestures).
         let halfFOV = (Self.isoFOVDegrees * .pi / 180) / 2
         let fitDistance = (extent * 0.5) / tan(halfFOV)
-        radius = max(fitDistance * 1.2, 3)
-        radiusRange = max(fitDistance * 0.6, 1.5)...max(fitDistance * 2.6, 12)
+        radius = max(fitDistance * 0.85, 2.0)
+        radiusRange = max(fitDistance * 0.3, 0.8)...max(fitDistance * 3.0, 14)
+        // Slightly steeper than the canonical iso angle — a more top-down read makes
+        // the floor plan and furniture placement clearer.
+        elevation = .pi / 4
 
         defaultAzimuth = azimuth
         defaultElevation = elevation
@@ -932,23 +1085,12 @@ final class RoomSceneController {
             radius * sinf(elevation),
             radius * cosf(elevation) * cosf(azimuth)
         )
+        // Perspective camera: zoom is DISTANCE. `radius` (mutated by orbit/zoom/
+        // reset) sets how far the camera sits, so `look(at:from:)` above is all that's
+        // needed. We deliberately do NOT set a camera component here — the narrow-FOV
+        // `PerspectiveCameraComponent` from `makeEntities` must persist (re-setting an
+        // ortho component each frame is what re-broke native gesture hit-testing).
         camera.look(at: target, from: position, relativeTo: nil)
-
-        // Drive the orthographic view-volume from `radius` so orbit/zoom/reset (all
-        // of which already mutate `radius`) keep working unchanged. Re-setting the
-        // value-type component is cheap and only happens on camera moves.
-        var ortho = OrthographicCameraComponent()
-        ortho.scale = Self.orthoScale(forRadius: radius)
-        camera.components.set(ortho)
-    }
-
-    /// The orthographic `scale` (vertical world extent the view spans) that matches
-    /// what a perspective camera at `radius` with the iso calibration FOV would have
-    /// framed — so switching to true ortho keeps the tuned framing at every zoom
-    /// level, only removing the perspective foreshortening (which is the point).
-    private static func orthoScale(forRadius radius: Float) -> Float {
-        let halfFOV = (isoFOVDegrees * .pi / 180) / 2
-        return 2 * radius * tan(halfFOV)
     }
 
     func resetCamera(animated: Bool) {
@@ -977,6 +1119,179 @@ final class RoomSceneController {
             lastResetToken = resetToken
             resetCamera(animated: true)
         }
+    }
+
+    /// Reconcile the live furniture entities with the placement tray's footprints
+    /// (editing mode only). Adds new pieces, removes cleared/deleted ones, rebuilds
+    /// an entity only when its geometry changed (position/size/rotation), and
+    /// re-tints each by its `PlacementState`. Keyed by `footprint.id` in a store
+    /// separate from the wall/floor scene, so it never perturbs the PLAY/BUY
+    /// geometry invariant.
+    func syncFurniture(_ footprints: [FurnitureFootprint], states: [UUID: PlacementState], selectedID: UUID?) {
+        let active = footprints.filter { !$0.isCleared }
+        currentFootprints = active
+        let activeIDs = Set(active.map(\.id))
+
+        // Remove entities for pieces that were cleared or deleted.
+        for (id, entity) in furnitureEntities where !activeIDs.contains(id) {
+            entity.removeFromParent()
+            furnitureEntities[id] = nil
+            furnitureSnapshots[id] = nil
+        }
+
+        for footprint in active {
+            // (Re)build when new or when its geometry changed; a box mesh is cheap,
+            // and this keeps size/position/rotation edits correct without mutating
+            // meshes in place.
+            if furnitureEntities[footprint.id] == nil || furnitureSnapshots[footprint.id] != footprint {
+                furnitureEntities[footprint.id]?.removeFromParent()
+                let entity = FurnitureEntityBuilder.entity(for: footprint)
+                root.addChild(entity)
+                furnitureEntities[footprint.id] = entity
+                furnitureSnapshots[footprint.id] = footprint
+            }
+            if let entity = furnitureEntities[footprint.id] {
+                let selected = footprint.id == selectedID
+                FurnitureEntityBuilder.applyPlacementState(
+                    states[footprint.id] ?? .valid,
+                    selected: selected,
+                    to: entity
+                )
+                // Selection "pop": scale to 1.03 when selected, 1.0 otherwise. Only
+                // animate when the scale actually changes, so a re-sync (e.g. after a
+                // drag ends) doesn't re-fire it — and it stays put during a live drag,
+                // which never round-trips through syncFurniture. RealityKit's
+                // transform-animation API has no spring timing; a short easeOut reads
+                // as the snappy pop the spec calls for (~0.2 s).
+                let targetScale: Float = selected ? 1.03 : 1.0
+                if abs(entity.transform.scale.x - targetScale) > 0.001 {
+                    var transform = entity.transform
+                    transform.scale = SIMD3(repeating: targetScale)
+                    entity.move(to: transform, relativeTo: entity.parent, duration: 0.2, timingFunction: .easeOut)
+                }
+            }
+        }
+    }
+
+    // MARK: - Live drag-to-move (driven by native targeted gestures)
+
+    /// Offset captured at grab: (box floor-center) − (floor point under the finger).
+    /// Maintained through the drag so the piece keeps its position RELATIVE to the
+    /// finger instead of snapping its center under the finger — which, on a tilted
+    /// camera, made the box float above the fingertip.
+    private var dragGrabOffset = SIMD2<Float>(0, 0)
+
+    /// Begin moving `id`. `grabWorldXZ` is the world point the finger grabbed
+    /// (from the native gesture's `convert(location3D)`); the offset to the box
+    /// center is captured so the piece tracks the finger without snapping. A light
+    /// tap confirms the grab.
+    func beginFurnitureDrag(_ id: UUID, grabWorldXZ: SIMD2<Float>) {
+        draggingFurnitureID = id
+        lastDragState = nil
+        if let footprint = currentFootprints.first(where: { $0.id == id }) {
+            dragGrabOffset = SIMD2(footprint.worldPosition.x, footprint.worldPosition.z) - grabWorldXZ
+        } else {
+            dragGrabOffset = .zero
+        }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    /// Move the dragging piece to `worldXZ` (the native gesture's unprojected floor
+    /// point, in root/world space) plus the grab offset. Mutates the entity
+    /// transform + tint directly for immediacy; final footprints are pushed up in
+    /// `endFurnitureDrag`. Floor-anchor invariant: only X/Z change, never Y.
+    func dragFurniture(toWorldXZ worldXZ: SIMD2<Float>) {
+        guard let id = draggingFurnitureID,
+              let room = editingRoom,
+              let index = currentFootprints.firstIndex(where: { $0.id == id }) else { return }
+
+        currentFootprints[index].worldPosition.x = worldXZ.x + dragGrabOffset.x
+        currentFootprints[index].worldPosition.z = worldXZ.y + dragGrabOffset.y   // SIMD2.y carries world Z; altitude untouched
+        let footprint = currentFootprints[index]
+
+        let state = FurniturePlacementValidator.validate(
+            footprint: footprint, against: room, existingFootprints: currentFootprints)
+
+        if let entity = furnitureEntities[id] {
+            entity.position = footprint.worldPosition
+            FurnitureEntityBuilder.applyPlacementState(state, selected: true, to: entity)
+            furnitureSnapshots[id] = footprint   // keep snapshot in sync so the post-drag re-sync won't rebuild
+        }
+
+        if state == .invalid && lastDragState != .invalid {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+        lastDragState = state
+    }
+
+    /// End the drag and return the updated footprints for persistence.
+    func endFurnitureDrag() -> [FurnitureFootprint] {
+        draggingFurnitureID = nil
+        lastDragState = nil
+        return currentFootprints
+    }
+
+    // MARK: - Live pinch-to-resize (width/depth only)
+
+    private var resizingFurnitureID: UUID?
+    /// Dimensions captured at pinch start, so the cumulative gesture scale applies
+    /// to a stable base rather than compounding each callback.
+    private var resizeBaseDimensions: SIMD3<Float> = .one
+
+    static let minFurnitureWidth: Float = 0.30
+    static let maxFurnitureWidth: Float = 3.50
+    static let minFurnitureDepth: Float = 0.30
+    static let maxFurnitureDepth: Float = 2.50
+
+    func beginFurnitureResize(_ id: UUID) {
+        guard let footprint = currentFootprints.first(where: { $0.id == id }) else { return }
+        resizingFurnitureID = id
+        resizeBaseDimensions = footprint.dimensions
+        lastDragState = nil
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    /// Scale width (X) and depth (Y) by the cumulative gesture `scale`, clamped.
+    /// Height (Z) is NEVER changed. The footprint center is unchanged and height is
+    /// fixed, so the box grows/shrinks around its center and stays floor-anchored.
+    /// The mesh + collision shape are replaced in place (no remove/re-add → no pop).
+    func resizeFurniture(scale: Float) {
+        guard let id = resizingFurnitureID,
+              let room = editingRoom,
+              let index = currentFootprints.firstIndex(where: { $0.id == id }) else { return }
+
+        let width = min(max(resizeBaseDimensions.x * scale, Self.minFurnitureWidth), Self.maxFurnitureWidth)
+        let depth = min(max(resizeBaseDimensions.y * scale, Self.minFurnitureDepth), Self.maxFurnitureDepth)
+        let height = resizeBaseDimensions.z   // unchanged
+        currentFootprints[index].dimensions = SIMD3(width, depth, height)
+        let footprint = currentFootprints[index]
+
+        let state = FurniturePlacementValidator.validate(
+            footprint: footprint, against: room, existingFootprints: currentFootprints)
+
+        if let entity = furnitureEntities[id] as? ModelEntity, var model = entity.model {
+            // generateBox uses (width: x, height: z, depth: y) — the convention in
+            // FurnitureEntityBuilder. Replace mesh + collision in place.
+            model.mesh = .generateBox(width: width, height: height, depth: depth, cornerRadius: 0.04)
+            entity.model = model
+            entity.collision = CollisionComponent(shapes: [.generateBox(size: SIMD3(width, height, depth))])
+            // Drop the stale-sized selection border so applyPlacementState rebuilds
+            // it to fit the resized box.
+            entity.findEntity(named: FurnitureEntityBuilder.selectionOutlineName)?.removeFromParent()
+            FurnitureEntityBuilder.applyPlacementState(state, selected: true, to: entity)
+            furnitureSnapshots[id] = footprint
+        }
+
+        if state == .invalid && lastDragState != .invalid {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+        lastDragState = state
+    }
+
+    func endFurnitureResize() -> [FurnitureFootprint] {
+        resizingFurnitureID = nil
+        lastDragState = nil
+        return currentFootprints
     }
 
     // MARK: - Per-frame loop
@@ -1045,7 +1360,11 @@ final class RoomSceneController {
         return 1 + c3 * p * p * p + c1 * p * p
     }
 
-    // MARK: - Gesture intents (from `SceneGestureOverlay`)
+    // MARK: - Camera intents (driven by the SwiftUI gestures on RoomSceneView)
+    //
+    // `pan` is retained but currently unbound: SwiftUI has no clean two-finger-pan
+    // gesture, so the camera exposes orbit + pinch-zoom. Re-wire `pan` if a
+    // two-finger pan recognizer is added back.
 
     /// One-finger drag → orbit. `dx`/`dy` are incremental screen-point deltas.
     func orbit(dx: Float, dy: Float) {
@@ -1054,6 +1373,35 @@ final class RoomSceneController {
         elevation = min(max(elevation - dy * 0.008, 0.06), .pi / 2 - 0.05)
         updateCamera()
     }
+
+    // MARK: Continuous camera gestures (cumulative → incremental)
+    //
+    // SwiftUI hands the gesture's CUMULATIVE value each tick. We track the previous
+    // value HERE — on this plain (non-observed) controller — and feed `orbit`/`pinch`
+    // the per-tick delta, so the SwiftUI view's gesture closures never mutate `@State`.
+    // Writing `@State` per tick would invalidate `body` ~60×/sec, re-running the
+    // `RealityView` `update:` closure and rebuilding the gestures mid-touch — the
+    // stall that drops camera movement to ~1 FPS.
+    private var lastOrbitTranslation: CGSize = .zero
+    private var lastZoomMagnification: CGFloat = 1
+
+    /// Orbit from the drag gesture's cumulative translation.
+    func orbitContinuous(translation: CGSize) {
+        orbit(dx: Float(translation.width - lastOrbitTranslation.width),
+              dy: Float(translation.height - lastOrbitTranslation.height))
+        lastOrbitTranslation = translation
+    }
+
+    /// Zoom from the magnify gesture's cumulative magnification.
+    func zoomContinuous(magnification: CGFloat) {
+        guard lastZoomMagnification > 0 else { return }
+        pinch(scale: Float(magnification / lastZoomMagnification))
+        lastZoomMagnification = magnification
+    }
+
+    /// Reset the cumulative baselines when a camera gesture ends.
+    func endOrbit() { lastOrbitTranslation = .zero }
+    func endZoom() { lastZoomMagnification = 1 }
 
     /// Two-finger drag → pan the look-at target across the floor, in the camera's
     /// screen plane (right/forward derived from the current azimuth).
