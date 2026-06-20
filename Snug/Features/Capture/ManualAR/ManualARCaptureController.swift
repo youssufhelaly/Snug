@@ -1,7 +1,7 @@
 import Foundation
 import ARKit
 import RealityKit
-import Combine
+import Observation
 import simd
 import UIKit
 
@@ -13,16 +13,16 @@ import UIKit
 /// This is the de-facto implementation object for `ManualARCaptureMethod` (the
 /// method struct is a stateless factory; all per-session AR state lives here).
 /// It runs on `ARWorldTrackingConfiguration` with no LiDAR dependency, so it
-/// works on any modern iPhone. It is an `NSObject`/`ObservableObject` (rather
-/// than `@Observable`) because it has to be the `ARSession` and coaching-overlay
-/// delegate, which require `NSObject` conformance; the published properties
-/// drive the SwiftUI overlay.
+/// works on any modern iPhone. It is `@Observable` (on an `NSObject` base) so
+/// the SwiftUI overlay re-renders only on the specific properties it reads.
+/// `NSObject` is required for `ARSession` and coaching-overlay delegate conformance.
 ///
 /// Capture-quality bookkeeping (`floorTaps`, the weighted `sessionFloorY`, the
 /// ceiling pipeline, `usedHighWallProjection`) is documented at length in
 /// CLAUDE.md under "Manual AR capture". Per the architecture rules, none of it
 /// leaks into `RoomModel` except `resolvedCeilingHeight`, written once at close.
-final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDelegate, ARCoachingOverlayViewDelegate {
+@Observable
+final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOverlayViewDelegate {
 
     /// Where we are in the capture flow. Note: there is no longer a manual
     /// `measuringHeight` step — ceiling height is estimated automatically (see
@@ -59,41 +59,41 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     // MARK: - Published state
 
-    @Published private(set) var step: Step = .findingFloor
-    @Published private(set) var corners: [PlanePoint] = []
-    @Published private(set) var openings: [RoomOpening] = []
-    @Published private(set) var trackingQuality: TrackingQuality = .initializing
+    private(set) var step: Step = .findingFloor
+    private(set) var corners: [PlanePoint] = []
+    private(set) var openings: [RoomOpening] = []
+    private(set) var trackingQuality: TrackingQuality = .initializing
     /// True while camera capture is interrupted (a call, another app or Control
     /// Center grabbing the camera, or the iOS 26 capture-stack hiccup that logs
     /// `FigCaptureSourceRemote err=-17281`). The passthrough goes black until the
     /// interruption ends; the overlay shows a brief "camera paused" note and we
     /// restart automatically. See `sessionWasInterrupted` / `sessionInterruptionEnded`.
-    @Published private(set) var cameraInterrupted = false
-    @Published private(set) var lastRaycastFailed = false
+    private(set) var cameraInterrupted = false
+    private(set) var lastRaycastFailed = false
     /// Set when a placement tap was ignored because tracking wasn't reliable
     /// enough yet. Surfaced so a tap that "does nothing" is explained, not silent.
-    @Published private(set) var tapNeedsBetterTracking = false
+    private(set) var tapNeedsBetterTracking = false
     /// First tap of an in-progress opening; the second tap completes it.
-    @Published private(set) var pendingOpeningStart: PlanePoint?
+    private(set) var pendingOpeningStart: PlanePoint?
     /// Wall segment used by the first tap of an in-progress opening, so the
     /// second tap can be snapped to the same wall instead of a nearby AR plane.
-    private var pendingOpeningWallIndex: Int?
+    @ObservationIgnored private var pendingOpeningWallIndex: Int?
     /// Which kind of opening the next tap-pair will create.
-    @Published var openingKind: RoomOpening.Kind = .door
+    var openingKind: RoomOpening.Kind = .door
     /// Set when an attempt to close the room was rejected (e.g. the corners are
     /// nearly in a line, so there's no real floor area). Surfaced to the user
     /// rather than silently producing a fake room.
-    @Published private(set) var closeWarning: String?
+    private(set) var closeWarning: String?
 
     // MARK: High-wall projection (Part 1)
 
     /// True while the "Corner blocked?" toggle is active: the next tap targets a
     /// point on the wall *above* a blocked corner, which we project straight down
     /// to the floor baseline. Always toggleable; never disabled.
-    @Published private(set) var isHighWallModeActive = false
+    private(set) var isHighWallModeActive = false
     /// True once at least one corner was placed via high-wall projection. Feeds
     /// the conditional correction-canvas trigger; never written to `RoomModel`.
-    @Published private(set) var usedHighWallProjection = false
+    @ObservationIgnored private(set) var usedHighWallProjection = false
     /// True when the cumulative deduplicated floor-tap weight exceeds `2.0`.
     /// Derived from `floorTaps` (never stored) so it can't drift out of sync;
     /// the SwiftUI overlay re-reads it whenever `corners` changes, which is the
@@ -103,9 +103,9 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     // MARK: Ceiling look-up (Part 2)
 
     /// True while the active "point at the ceiling" overlay is showing.
-    @Published private(set) var isLookingUp = false
+    private(set) var isLookingUp = false
     /// Copy for the look-up overlay (extends to "Keep pointing up…" on retry).
-    @Published private(set) var lookUpPrompt = "Almost done — point your phone at the ceiling for 1 second."
+    private(set) var lookUpPrompt = "Almost done — point your phone at the ceiling for 1 second."
 
     // MARK: Furniture detection (Phase 2)
 
@@ -115,12 +115,17 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     /// and room polygon it already holds.
     let furnitureService = FurnitureDetectionService()
     /// Footprints resolved from this scan, written into the final `RoomModel`.
-    @Published private(set) var detectedFurniture: [FurnitureFootprint] = []
+    private(set) var detectedFurniture: [FurnitureFootprint] = []
     /// True once the pan finished and footprints were resolved — drives the
     /// "Found X items" success copy before the auto-advance to close.
-    @Published private(set) var furnitureDetectionFinished = false
-    /// The fixed-length pan task, so Skip can cancel it cleanly.
-    private var furnitureTask: Task<Void, Never>?
+    private(set) var furnitureDetectionFinished = false
+    /// The continuous detection task, so Done/Skip can cancel it cleanly.
+    @ObservationIgnored private var furnitureTask: Task<Void, Never>?
+    /// Floor hits captured PER DETECTION FRAME (keyed by observation id), raycast at
+    /// the moment each piece is seen — NOT deferred to Done, when the camera has
+    /// panned away and the stale screen point would unproject to the wrong place.
+    /// `resolveFootprints` reads the confirmed piece's hit from here.
+    @ObservationIgnored private var detectionWorldHits: [UUID: (xz: SIMD2<Float>?, distance: Float?)] = [:]
 
     // MARK: Two-tap intersection (deprecated — replaced by high-wall projection)
 
@@ -133,9 +138,9 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         case preview
     }
 
-    @Published private(set) var intersectionStage: IntersectionStage = .inactive
-    @Published private(set) var intersectionWarning: String?
-    @Published private(set) var pendingIntersectionCorner: PlanePoint?
+    @ObservationIgnored private(set) var intersectionStage: IntersectionStage = .inactive
+    @ObservationIgnored private(set) var intersectionWarning: String?
+    @ObservationIgnored private(set) var pendingIntersectionCorner: PlanePoint?
 
     /// Smallest floor area we'll accept as a real room (m²). Below this the
     /// corners are effectively collinear/coincident — honesty over a fake scan.
@@ -151,31 +156,50 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     /// below the 20 m+ artifacts this guards against.
     private static let maxTapReach: Float = 12.0
 
+    /// Max |y| of a surface normal still treated as a wall in the high-wall path.
+    /// A plane raycast's worldTransform y-basis is the surface normal: ~1 for a
+    /// floor/ceiling, ~0 for a wall. 0.5 (≈30° off vertical) accepts real walls
+    /// while rejecting the infinite-floor-extension hit that warped corners 20+ m.
+    private static let maxVerticalNormalY: Float = 0.5
+
+    /// How close (perpendicular, metres) a floor-corner tap must be to a detected
+    /// vertical wall plane for the corner to be "magneted" onto that wall. A renter
+    /// taps a few cm shy of the true wall-floor seam; this pulls the corner out onto
+    /// the wall. Kept tight (20 cm) so a tap that genuinely belongs mid-room is never
+    /// yanked across the scene — beyond this the raw tap stands.
+    private static let wallSnapDistance: Float = 0.20
+
+    /// Slack (metres) added to a wall plane's measured horizontal half-extent when
+    /// testing whether the tap falls *along* that wall. ARWorldTracking under-reports
+    /// a wall's true width (it grows the patch as you look around), so a little
+    /// padding lets a corner near the as-yet-unmeasured end of a wall still snap.
+    private static let wallSnapLateralPadding: Float = 0.30
+
     /// Called once with the finished room.
-    var onComplete: ((RoomModel) -> Void)?
+    @ObservationIgnored var onComplete: ((RoomModel) -> Void)?
 
     /// Surfaces an unrecoverable session/camera failure to the capture screen's
     /// failure UI. Set by the view alongside `onComplete`. Loud, never silent
     /// (CLAUDE.md): a dead camera ends in an honest failure screen, not a frozen
     /// black view.
-    var onFailure: ((CaptureFailure) -> Void)?
+    @ObservationIgnored var onFailure: ((CaptureFailure) -> Void)?
 
     // MARK: - AR scene
 
-    private weak var arView: ARView?
+    @ObservationIgnored private weak var arView: ARView?
     /// Observes app foregrounding so a session paused by backgrounding mid-scan
     /// resumes its camera feed. Removed in `stop()` / `deinit`.
-    private var foregroundObserver: NSObjectProtocol?
+    @ObservationIgnored private var foregroundObserver: NSObjectProtocol?
 
     /// Set true the first time the running session delivers a frame. Used by the
     /// black-feed watchdog to tell "still starting up" from "started but stuck".
-    private var hasReceivedFrame = false
+    @ObservationIgnored private var hasReceivedFrame = false
     /// How many times the watchdog has re-run a black session. Capped so a truly
     /// dead camera ends in an honest failure instead of an infinite kick loop.
-    private var blackFeedRecoveryAttempts = 0
+    @ObservationIgnored private var blackFeedRecoveryAttempts = 0
     private let maxBlackFeedRecoveryAttempts = 3
-    private var floorY: Float?
-    private var cornerMarkers: [AnchorEntity] = []
+    @ObservationIgnored private var floorY: Float?
+    @ObservationIgnored private var cornerMarkers: [AnchorEntity] = []
     private let edgeContainer = AnchorEntity(world: .zero)
     private let previewContainer = AnchorEntity(world: .zero)
 
@@ -187,9 +211,9 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     // pre-warming them at session start (see `prewarmRenderResources`) pays that
     // cost during start-up, where a brief stall is invisible, not on the user's
     // first tap.
-    private lazy var cornerMarkerMesh: MeshResource = .generateSphere(radius: 0.03)
-    private lazy var cornerMarkerMaterial = SimpleMaterial(color: .systemOrange, isMetallic: false)
-    private lazy var edgeMaterial = SimpleMaterial(color: .systemTeal, isMetallic: false)
+    @ObservationIgnored private lazy var cornerMarkerMesh: MeshResource = .generateSphere(radius: 0.03)
+    @ObservationIgnored private lazy var cornerMarkerMaterial = SimpleMaterial(color: .systemOrange, isMetallic: false)
+    @ObservationIgnored private lazy var edgeMaterial = SimpleMaterial(color: .systemTeal, isMetallic: false)
 
     /// Whether this device can build a scene mesh (LiDAR). Drives the
     /// ceiling-estimation pipeline's device-capability split. Computed once.
@@ -199,7 +223,7 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     /// Weighted floor-height samples. Each direct floor-corner tap contributes
     /// one (after spatial deduplication); high-wall taps never append here.
-    private var floorTaps: [(y: Float, weight: Float, anchorID: UUID, position: simd_float2)] = []
+    @ObservationIgnored private var floorTaps: [(y: Float, weight: Float, anchorID: UUID, position: simd_float2)] = []
 
     /// Weighted-average floor height across all accepted floor taps.
     private var sessionFloorY: Float? {
@@ -218,33 +242,33 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     /// World-space high-point Y values observed passively throughout the scan.
     /// Capped at `maxCeilingCandidates` so a long sweep can't grow this without
     /// bound — a 95th-percentile only needs a modest sample.
-    private var ceilingCandidates: [Float] = []
+    @ObservationIgnored private var ceilingCandidates: [Float] = []
     /// Distinct camera XZ positions that contributed passive candidates.
-    private var passiveCameraPositions: [simd_float2] = []
+    @ObservationIgnored private var passiveCameraPositions: [simd_float2] = []
     /// The most recent camera position that contributed a passive candidate.
     /// The spread gate compares against this (not against every prior position)
     /// so revisiting an area doesn't permanently block further collection.
-    private var lastPassiveCameraPosition: simd_float2?
+    @ObservationIgnored private var lastPassiveCameraPosition: simd_float2?
     /// Active "look up" hits: mesh-vertex Y values (LiDAR) above the threshold.
-    private var activeMeshHits: [Float] = []
+    @ObservationIgnored private var activeMeshHits: [Float] = []
     /// Active "look up" feature points, deduplicated by ARKit identifier.
-    private var activeFeaturePoints: [UInt64: Float] = [:]
+    @ObservationIgnored private var activeFeaturePoints: [UInt64: Float] = [:]
     /// Mesh anchors currently known (LiDAR only), keyed by identifier.
-    private var meshAnchors: [UUID: ARMeshAnchor] = [:]
+    @ObservationIgnored private var meshAnchors: [UUID: ARMeshAnchor] = [:]
 
     /// Passive ceiling estimate (m above the floor), or nil if the usable
     /// threshold wasn't met. Computed at scan close.
-    private(set) var passiveCeilingHeight: Float?
+    @ObservationIgnored private(set) var passiveCeilingHeight: Float?
     /// Active "look up" ceiling estimate (m above the floor), or nil.
-    private(set) var activeCeilingHeight: Float?
+    @ObservationIgnored private(set) var activeCeilingHeight: Float?
     /// RoomPlan ceiling height — only ever non-nil on LiDAR devices that run
     /// RoomPlan. The manual-AR method does not run RoomPlan, so this stays nil
     /// here; it is kept in the resolution order so the priority chain reads
     /// faithfully and a future RoomPlan hand-off can populate it.
-    private(set) var roomPlanCeilingHeight: Float?
+    @ObservationIgnored private(set) var roomPlanCeilingHeight: Float?
     /// The single ceiling value written to `RoomModel` at close. Defaults to the
     /// honest 2.5 m fallback until resolution runs.
-    private(set) var resolvedCeilingHeight: Float = 2.5
+    @ObservationIgnored private(set) var resolvedCeilingHeight: Float = 2.5
     /// Confidence in `resolvedCeilingHeight`; drives display copy and the
     /// conditional correction-canvas trigger.
     private(set) var ceilingConfidence: CeilingConfidence = .low
@@ -255,7 +279,9 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     /// Plausible residential ceiling range accepted from the one-time look-up.
     private static let ceilingEstimateRange: ClosedRange<Float> = 2.1...3.2
     /// Minimum plausible ceiling feature points needed before trusting look-up.
-    private static let minimumActiveCeilingPoints = 60
+    /// Non-LiDAR devices surface far fewer rawFeaturePoints on plain ceilings
+    /// than textured surfaces, so 60 almost always falls through to the 2.5 m default.
+    private static let minimumActiveCeilingPoints = 15
     /// Round accepted look-up estimates to 5 cm to avoid false precision.
     private static let ceilingEstimateStep: Float = 0.05
     /// Hardcoded final fallback ceiling height (m).
@@ -291,8 +317,28 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     // MARK: - Session lifecycle
 
+    /// A single, app-lifetime capture `ARView`, reused across every scan instead of
+    /// creating a fresh one each time. This is the fix for the black camera after a
+    /// diorama: on iOS 26 a NEWLY-created `ARView` renderer is poisoned by the
+    /// diorama's lingering SwiftUI `RealityView` render context (camera frames
+    /// arrive but the passthrough renders black, alternating every other scan). A
+    /// reused `ARView` initializes its renderer ONCE (first cold scan) and is never
+    /// re-created, so there is no fresh renderer for the RealityView to poison.
+    /// Created lazily on the main thread at first capture. `attach` fully re-prepares
+    /// it each time (clears prior gestures/coaching/anchors), so reuse is clean.
+    /// Only ever accessed on the main thread (from the representable's makeUIView).
+    static let sharedARView = ARView(frame: .zero)
+
     func attach(to arView: ARView) {
         self.arView = arView
+
+        // This ARView is REUSED across captures, so strip anything a previous scan's
+        // controller left on it before re-preparing — otherwise gesture recognizers,
+        // coaching overlays, and scene anchors accumulate across scans.
+        arView.gestureRecognizers?.forEach(arView.removeGestureRecognizer)
+        arView.subviews.compactMap { $0 as? ARCoachingOverlayView }.forEach { $0.removeFromSuperview() }
+        arView.scene.anchors.removeAll()
+
         arView.session.delegate = self
         // Pin delegate callbacks to the main queue. Every ceiling/floor/mesh
         // collection buffer touched in those callbacks (ceilingCandidates,
@@ -409,6 +455,12 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         }
     }
 
+    /// Recovery for the RealityView→ARView black-passthrough contention. A BLIND
+    /// re-kick is wrong here: each `pause()`+`run()` merely TOGGLES the wedged
+    /// state (live↔black), so a fixed number of kicks lands on black every other
+    /// scan. Instead we VERIFY whether the passthrough is actually rendering and
+    /// re-kick only until it is (or give up honestly). Runs once per capture, only
+    /// after a diorama has rendered this session — cold-launch capture is untouched.
     private func makeConfiguration() -> ARWorldTrackingConfiguration {
         let config = ARWorldTrackingConfiguration()
         // Horizontal planes anchor the floor; vertical planes help when marking
@@ -476,6 +528,7 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         furnitureTask?.cancel()
         furnitureTask = nil
         detectedFurniture = []
+        detectionWorldHits.removeAll()
         furnitureDetectionFinished = false
         furnitureService.reset()
         cornerMarkers.forEach { $0.removeFromParent() }
@@ -520,8 +573,13 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
             if isHighWallModeActive {
                 handleHighWallTap(at: point, in: arView)
             } else if let hit = raycastFloor(from: point, in: arView) {
+                // Record the floor baseline on the RAW hit — its job is the floor
+                // *height* and tap dedup, which the wall snap must not perturb.
                 recordFloorTap(hit)
-                addCorner(at: hit.world)
+                // Then magnet the corner's XZ onto the nearest detected wall (the
+                // floor Y is preserved); falls through to the raw point if no wall
+                // plane is close enough.
+                addCorner(at: snapXZToNearestWall(hit.world, in: arView))
             } else {
                 flagRaycastFailure()
             }
@@ -620,16 +678,64 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         let uniqueAnchor = hit.isPlaneAnchor && !floorTaps.contains { $0.anchorID == hit.anchorID }
         guard farEnough || uniqueAnchor else { return }
 
-        // Mutating @Published `corners` on the same tap drives the overlay
-        // refresh that re-reads the derived `floorLocked`; floorTaps itself is
-        // not published.
-        objectWillChange.send()
+        // @Observable tracks `floorTaps` accesses, so views reading `floorLocked`
+        // (which derives from `cumulativeFloorWeight` → `floorTaps`) are
+        // invalidated automatically when this appends.
         floorTaps.append((y: hit.world.y, weight: hit.weight, anchorID: hit.anchorID, position: posXZ))
     }
 
     private func flagRaycastFailure() {
         lastRaycastFailed = true
         UINotificationFeedbackGenerator().notificationOccurred(.warning)
+    }
+
+    /// "Magnet" a floor-corner tap onto the wall it belongs to. A room corner is
+    /// where a wall meets the floor, but the raycast lands wherever the finger
+    /// pointed — usually a few cm *inside* the room — so corners float off the
+    /// wall. This projects the tap's XZ onto the nearest detected vertical
+    /// `ARPlaneAnchor`, leaving the floor Y untouched.
+    ///
+    /// Honesty over magic (the snap NEVER invents geometry):
+    /// - Vertical-plane detection is weak on the non-LiDAR hardware we target —
+    ///   plain painted walls often produce no anchor. When nothing qualifies we
+    ///   return the raw tap unchanged rather than guessing where a wall "should" be.
+    /// - We snap only to a wall within `wallSnapDistance` perpendicular AND whose
+    ///   horizontal extent (plus padding) actually spans the tap, so a corner is
+    ///   never yanked sideways onto an unrelated wall.
+    /// - We pick the nearest qualifying wall. At a true corner both walls sit ~0 m
+    ///   away, so the projection barely moves the point either way — correct.
+    private func snapXZToNearestWall(_ world: SIMD3<Float>, in arView: ARView) -> SIMD3<Float> {
+        guard let anchors = arView.session.currentFrame?.anchors else { return world }
+        let walls = anchors.compactMap { $0 as? ARPlaneAnchor }.filter { $0.alignment == .vertical }
+
+        var best: (xz: simd_float2, perp: Float)?
+        for wall in walls {
+            // Tap in the wall's local frame. For a vertical ARPlaneAnchor the plane
+            // lies in local XZ with the normal along local +Y, so the perpendicular
+            // distance to the wall is the local Y offset and the along-wall axis is
+            // local X. (Local Z is the wall's vertical extent — irrelevant here:
+            // the tap is near the floor, often below the detected patch.)
+            let local4 = simd_inverse(wall.transform) * SIMD4(world, 1)
+            let rel = SIMD3(local4.x, local4.y, local4.z) - wall.center
+            let perp = abs(rel.y)
+            guard perp <= Self.wallSnapDistance else { continue }
+
+            // Undo the extent's in-plane rotation so the half-width test is axis
+            // aligned, then require the tap to fall along the wall (with padding).
+            let phi = wall.planeExtent.rotationOnYAxis
+            let alongWall = rel.x * cos(phi) + rel.z * sin(phi)
+            guard abs(alongWall) <= wall.planeExtent.width / 2 + Self.wallSnapLateralPadding else { continue }
+
+            // Project onto the plane: zero the perpendicular (local Y) offset.
+            let projLocal = SIMD3(local4.x, wall.center.y, local4.z)
+            let projWorld = wall.transform * SIMD4(projLocal, 1)
+            let candidate = simd_float2(projWorld.x, projWorld.z)
+            if best == nil || perp < best!.perp { best = (candidate, perp) }
+        }
+
+        guard let snapped = best else { return world }
+        // XZ from the wall, Y from the floor — the snap is purely lateral.
+        return SIMD3(snapped.xz.x, world.y, snapped.xz.y)
     }
 
     // MARK: - High-wall projection (Part 1)
@@ -690,6 +796,16 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     /// hit beyond `maxTapReach` — a grazing intersection on an infinite plane.
     /// If everything misses or is implausibly far, we return nil and the caller
     /// surfaces "couldn't read that point" rather than inventing a far corner.
+    ///
+    /// CRUCIAL: every accepted hit must lie on a near-VERTICAL surface. A
+    /// high-wall tap targets a wall, never the floor, so we reject any hit whose
+    /// surface normal points up/down. Without this, the `.any`-alignment fallback
+    /// (which fires whenever no vertical plane is classified — the common case on
+    /// this non-LiDAR path) lets `.existingPlaneInfinite` intersect the
+    /// infinitely-extended FLOOR far across the room, placing the corner 20+ m
+    /// away. The normal test kills that trap regardless of alignment: for a plane
+    /// raycast, the worldTransform's y-basis (`columns.1`) is the surface normal,
+    /// so |normal.y| ≈ 1 is a horizontal surface (floor/ceiling) and ≈ 0 is a wall.
     private func raycastAnySurface(from point: CGPoint, in arView: ARView) -> SIMD3<Float>? {
         let targets: [ARRaycastQuery.Target] = [
             .existingPlaneInfinite,
@@ -701,6 +817,10 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         for alignment in [ARRaycastQuery.TargetAlignment.vertical, .any] {
             for target in targets {
                 let hits = arView.raycast(from: point, allowing: target, alignment: alignment)
+                    .filter { result in
+                        // Reject horizontal surfaces (floor/ceiling extension).
+                        abs(result.worldTransform.columns.1.y) <= Self.maxVerticalNormalY
+                    }
                     .map { SIMD3($0.worldTransform.columns.3.x, $0.worldTransform.columns.3.y, $0.worldTransform.columns.3.z) }
                     .filter { simd_distance($0, origin) <= Self.maxTapReach }
                 if let nearest = hits.min(by: { simd_distance($0, origin) < simd_distance($1, origin) }) {
@@ -880,9 +1000,12 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     // MARK: - Furniture detection step (Phase 2)
 
-    /// Enter the pan step and run the fixed-length detection sweep. If the CoreML
-    /// model isn't bundled there is nothing to detect, so we skip straight to the
-    /// close with no furniture (CLAUDE.md: degrade gracefully, never a dead end).
+    /// Enter the pan step and start a CONTINUOUS detection sweep that runs until the
+    /// user taps Done (`finishFurnitureDetection`). The user pans freely, sees the
+    /// live camera with bounding boxes, and stops when satisfied — a fixed timer
+    /// would cut some people off and make others stare at a blank wait. If the
+    /// CoreML model isn't bundled there's nothing to detect, so we skip straight to
+    /// the close with no furniture (CLAUDE.md: degrade gracefully, never a dead end).
     func beginFurnitureDetection() {
         guard step == .markingOpenings else { return }
         furnitureDetectionFinished = false
@@ -893,14 +1016,34 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         }
         step = .furnitureDetection
         furnitureService.reset()
+        detectionWorldHits.removeAll()
 
+        // Sample frames continuously. The detector's `isProcessingFrame` guard drops
+        // ticks that arrive while Vision is still busy, so this self-throttles; the
+        // ~120 ms spacing keeps the live boxes responsive without starving the
+        // camera's buffer pool (each frame is grabbed and released per tick).
+        // `processOneDetectionFrame` also raycasts new detections against the frame's
+        // OWN camera pose, so placement reflects where each piece was actually seen.
         furnitureTask = Task { @MainActor in
-            await runFurniturePan()
-            guard !Task.isCancelled else { return }
-            detectedFurniture = resolveFootprints(from: furnitureService.finalizeDetections())
-            furnitureDetectionFinished = true
-            // Auto-advance ~1.5 s after the success message so the user reads it.
-            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            while !Task.isCancelled {
+                await processOneDetectionFrame()
+                try? await Task.sleep(nanoseconds: 120_000_000)
+            }
+        }
+    }
+
+    /// User tapped Done: stop the live sweep, resolve everything seen so far through
+    /// the consensus gate into floor-placed footprints, show the brief "Found N"
+    /// confirmation, then close. Safe to call only during the detection step.
+    @MainActor
+    func finishFurnitureDetection() {
+        guard step == .furnitureDetection else { return }
+        furnitureTask?.cancel()
+        detectedFurniture = resolveFootprints(from: furnitureService.finalizeDetections())
+        furnitureDetectionFinished = true
+        furnitureTask = Task { @MainActor in
+            // A short beat so the success state + haptic register before advancing.
+            try? await Task.sleep(nanoseconds: 700_000_000)
             guard !Task.isCancelled else { return }
             beginClose()
         }
@@ -921,31 +1064,64 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         beginClose()
     }
 
-    /// Sample exactly `totalDetectionFrames` frames ~500 ms apart, feeding each to
-    /// the detector. Spacing (not every ARFrame) gives the user time to pan so the
-    /// IoU consensus sees each piece from a few angles.
-    @MainActor
-    private func runFurniturePan() async {
-        for _ in 0..<FurnitureDetectionService.totalDetectionFrames {
-            if Task.isCancelled { return }
-            await processOneDetectionFrame()
-            try? await Task.sleep(nanoseconds: 500_000_000)
-        }
-    }
-
     /// Grab the current frame, hand it to the detector, and let it go. Scoped to
     /// its own function on purpose: the `ARFrame` (and the camera `CVPixelBuffer`
-    /// it owns) is released when this returns — BEFORE the inter-frame sleep in
-    /// `runFurniturePan`. Holding ARKit's capture buffers across the sleep starves
-    /// the camera's buffer pool and drops the capture pipeline (the
+    /// it owns) is released when this returns — BEFORE the inter-frame sleep in the
+    /// detection loop. Holding ARKit's capture buffers across the sleep starves the
+    /// camera's buffer pool and drops the capture pipeline (the
     /// `FigCaptureSourceRemote err=-17281` hiccup), which then breaks tracking and
     /// every raycast. We hold the buffer only for the (short) Vision request.
     @MainActor
     private func processOneDetectionFrame() async {
-        guard let frame = arView?.session.currentFrame else { return }
+        guard let arView, let frame = arView.session.currentFrame else { return }
         let pixelBuffer = frame.capturedImage
         let lux = frame.lightEstimate.map { Double($0.ambientIntensity) }
+        // Capture the pose + viewport for THIS frame: the boxes Vision returns belong
+        // to this frame, so they must be raycast against this camera — not the
+        // already-moved pose after Vision finishes. `ARCamera` holds no capture
+        // buffer, so retaining it past the buffer's release is safe.
+        let camera = frame.camera
+        let viewport = arView.bounds.size
+        let baseline = sessionFloorY ?? floorY ?? 0
+
         await furnitureService.processFrame(pixelBuffer, ambientIntensity: lux)
+
+        // Raycast each newly-seen detection to the floor using its own frame's pose,
+        // keyed by observation id; `resolveFootprints` reads these at Done.
+        for region in furnitureService.liveRegions where detectionWorldHits[region.id] == nil {
+            detectionWorldHits[region.id] = Self.floorHit(
+                for: region.visionBoundingBox, camera: camera, viewport: viewport, floorY: baseline
+            )
+        }
+    }
+
+    /// World floor XZ where a detection box's bottom-center ray meets the floor,
+    /// computed from the DETECTION-TIME camera via `ARCamera.unprojectPoint` onto an
+    /// analytic floor plane (`y = floorY`). Accurate regardless of Vision latency
+    /// (uses the frame's own pose) and needs no detected plane out where the
+    /// furniture is. The box→screen mapping is the same `CameraAspectFillProjection`
+    /// the on-screen overlay uses, so the ray matches the box the user sees.
+    private static func floorHit(
+        for box: CGRect, camera: ARCamera, viewport: CGSize, floorY: Float
+    ) -> (xz: SIMD2<Float>?, distance: Float?) {
+        guard viewport.width > 0, viewport.height > 0 else { return (nil, nil) }
+        // Camera image is landscape; the upright (portrait) view swaps the dimensions.
+        let oriented = CGSize(width: camera.imageResolution.height, height: camera.imageResolution.width)
+        let projection = CameraAspectFillProjection(imageSize: oriented, viewport: viewport)
+        // Vision box is bottom-left; the furniture's floor contact is the box bottom,
+        // which in top-left (the projection's convention) is `1 - minY`.
+        let screenPoint = projection.point(CGPoint(x: box.midX, y: 1 - box.minY))
+
+        var plane = matrix_identity_float4x4
+        plane.columns.3 = SIMD4(0, floorY, 0, 1)   // horizontal floor plane, normal +Y
+        guard let world = camera.unprojectPoint(
+            screenPoint, ontoPlane: plane, orientation: .portrait, viewportSize: viewport
+        ) else { return (nil, nil) }
+
+        let cam = camera.transform.columns.3
+        let distance = simd_distance(world, SIMD3(cam.x, cam.y, cam.z))
+        guard distance <= maxTapReach else { return (nil, nil) }
+        return (SIMD2(world.x, world.z), distance)
     }
 
     /// Convert confirmed observations into floor-placed footprints. Raycasts each
@@ -962,9 +1138,13 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
         let service = FurniturePlacementService()
         return observations.map { obs in
-            let (hitXZ, distance) = floorHit(for: obs.boundingBox, in: arView, floorY: floorY)
+            // Use the hit captured when this piece was actually seen; only re-raycast
+            // (stale, but better than nothing) if we somehow have no live hit for it.
+            let (hitXZ, distance) = detectionWorldHits[obs.id]
+                ?? floorHit(for: obs.boundingBox, in: arView, floorY: floorY)
             let appearance = FurnitureAppearance(
-                colorCategory: .other,   // device color sampling is wired in the detector; default until then
+                // Track-aggregated sampled perceptual color from the detector.
+                colorCategory: obs.colorCategory,
                 materialClass: .inferred(for: obs.category)
             )
             return service.place(.init(
@@ -982,9 +1162,13 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
 
     /// Raycast the bottom-center of a normalized Vision box to the floor plane.
     /// Returns the world XZ and the camera→hit distance (for width back-projection),
-    /// or `(nil, nil)` if nothing was hit. The Vision→view coordinate mapping uses
-    /// the frame's `displayTransform`; VALIDATE on device — the orientation and
-    /// viewport plumbing is the part most likely to need a tweak.
+    /// or `(nil, nil)` if nothing was hit.
+    ///
+    /// The box comes from Vision in the `.right`-ORIENTED (portrait-upright) image
+    /// space, so we map it with the SAME aspect-fill projection the live overlay
+    /// uses (`CameraAspectFillProjection`) rather than `displayTransform` — which
+    /// expects raw-buffer coordinates and would land the raycast off-target now that
+    /// detection runs on the oriented frame. VALIDATE on device.
     @MainActor
     private func floorHit(for boundingBox: CGRect, in arView: ARView, floorY: Float)
         -> (xz: SIMD2<Float>?, distance: Float?) {
@@ -992,15 +1176,16 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
         let viewport = arView.bounds.size
         guard viewport.width > 0, viewport.height > 0 else { return (nil, nil) }
 
-        // Vision space: normalized, origin bottom-left. Bottom-center of the box is
-        // the furniture's floor contact point: midX, and the SMALLER y (Vision's
-        // bottom). `displayTransform` maps normalized image space → normalized view
-        // space for the current interface orientation.
-        let bottomCenter = CGPoint(x: boundingBox.midX, y: boundingBox.minY)
-        let transform = frame.displayTransform(for: .portrait, viewportSize: viewport)
-        let normalizedView = bottomCenter.applying(transform)
-        let screenPoint = CGPoint(x: normalizedView.x * viewport.width,
-                                  y: normalizedView.y * viewport.height)
+        // Portrait `.right` always swaps the landscape buffer to upright dimensions.
+        let buffer = frame.capturedImage
+        let imageSize = CGSize(width: CGFloat(CVPixelBufferGetHeight(buffer)),
+                               height: CGFloat(CVPixelBufferGetWidth(buffer)))
+        let projection = CameraAspectFillProjection(imageSize: imageSize, viewport: viewport)
+        // The furniture's floor contact is the bottom-center of the box. In Vision's
+        // bottom-left space that's the SMALLER y; in top-left (the projection's
+        // convention) that's `1 - minY`.
+        let bottomCenter = CGPoint(x: boundingBox.midX, y: 1 - boundingBox.minY)
+        let screenPoint = projection.point(bottomCenter)
 
         let origin = cameraOrigin(in: arView)
         for target in [ARRaycastQuery.Target.existingPlaneGeometry, .existingPlaneInfinite, .estimatedPlane] {
@@ -1313,8 +1498,8 @@ final class ManualARCaptureController: NSObject, ObservableObject, ARSessionDele
     /// The wall sightings collected so far in intersection mode: each is a floor
     /// point on the wall plus the camera's horizontal forward (the wall's
     /// direction) and floor position at tap time.
-    private var intersectionTaps: [(point: SIMD2<Float>, dir: SIMD2<Float>, camFloor: SIMD2<Float>)] = []
-    private var intersectionFloorY: Float?
+    @ObservationIgnored private var intersectionTaps: [(point: SIMD2<Float>, dir: SIMD2<Float>, camFloor: SIMD2<Float>)] = []
+    @ObservationIgnored private var intersectionFloorY: Float?
 
     @available(*, deprecated, message: "Use high-wall projection instead")
     func beginIntersectionMode() {

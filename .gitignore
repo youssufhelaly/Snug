@@ -1,5 +1,9 @@
 # macOS
 .DS_Store
+**/.DS_Store
+
+# Claude Code
+skills-lock.json
 
 # Xcode user state
 xcuserdata/
@@ -17,6 +21,10 @@ Products/
 # Swift Package Manager build output
 .build/
 
+# Python virtual environment
+.venv/
+venv/
+
 # Local editor/project metadata
 .vscode/
 .idea/
@@ -25,3 +33,16 @@ Products/
 *.swp
 *.tmp
 *.log
+
+/ml/datasets/
+/ml/runs/
+
+# ML training data, run outputs, and PyTorch weights
+# (the app ships the CoreML .mlpackage, not these)
+/local_data/
+/runs/
+*.pt
+
+.claude/
+
+graphify-out/

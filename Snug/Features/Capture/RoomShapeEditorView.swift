@@ -200,12 +200,13 @@ struct RoomShapeEditorView: View {
                 // One draggable handle per corner. Handles are real views (not
                 // Canvas hit-testing) so each gets a 24pt target, its own
                 // gesture, and a VoiceOver label.
-                ForEach(Array(editable.enumerated()), id: \.element.id) { index, corner in
+                ForEach(editable) { corner in
+                    let index = editable.firstIndex(where: { $0.id == corner.id })!
                     cornerHandle(index: index, transform: t, size: geo.size)
                         .position(t.project(corner.point))
                 }
             }
-            .coordinateSpace(name: coordinateSpaceName)
+            .coordinateSpace(.named(coordinateSpaceName))
         }
         .padding()
         .frame(maxHeight: .infinity)

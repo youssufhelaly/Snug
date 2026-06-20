@@ -17,6 +17,8 @@ struct MyRoomsView: View {
     @State private var renameDraft = ""
     @State private var failedSave: FailedSave?
     @State private var deleteErrorMessage: String?
+    /// Toggled on each scan-button tap purely to drive its tap haptic.
+    @State private var scanTapped = false
 
     private var methods: [any RoomCaptureMethod] { CaptureMethodRegistry.supported }
 
@@ -190,7 +192,7 @@ struct MyRoomsView: View {
 
     private var scanButton: some View {
         Button {
-            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            scanTapped.toggle()
             if methods.count > 1 {
                 showMethodDialog = true
             } else if let method = methods.first {
@@ -205,6 +207,8 @@ struct MyRoomsView: View {
         .buttonStyle(.borderedProminent)
         .tint(SnugTheme.clay)
         .clipShape(Capsule())
+        // Tap feedback fires declaratively off the toggle (iOS 17+).
+        .sensoryFeedback(.impact(weight: .medium), trigger: scanTapped)
         .accessibilityHint("Starts capturing a new room")
     }
 

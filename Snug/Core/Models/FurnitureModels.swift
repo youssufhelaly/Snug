@@ -33,19 +33,39 @@ struct FurnitureObservation: Codable, Equatable, Sendable {
     /// Vision's convention).
     let boundingBox: CGRect
     let frameTimestamp: TimeInterval
+    /// Perceptual color sampled for this detection at the detection edge. `.other`
+    /// when the frame couldn't be read (or before device sampling lands). Consensus
+    /// aggregates these across a track into the footprint's persisted color.
+    let colorCategory: FurnitureColorCategory
 
     init(
         id: UUID = UUID(),
         category: FurnitureCategory,
         confidence: Float,
         boundingBox: CGRect,
-        frameTimestamp: TimeInterval
+        frameTimestamp: TimeInterval,
+        colorCategory: FurnitureColorCategory = .other
     ) {
         self.id = id
         self.category = category
         self.confidence = confidence
         self.boundingBox = boundingBox
         self.frameTimestamp = frameTimestamp
+        self.colorCategory = colorCategory
+    }
+
+    /// A copy with a different sampled color (the rest of the observation is the
+    /// real frame's). Used by consensus to stamp the track-aggregated color onto
+    /// the representative observation it returns.
+    func withColorCategory(_ colorCategory: FurnitureColorCategory) -> FurnitureObservation {
+        FurnitureObservation(
+            id: id,
+            category: category,
+            confidence: confidence,
+            boundingBox: boundingBox,
+            frameTimestamp: frameTimestamp,
+            colorCategory: colorCategory
+        )
     }
 }
 

@@ -45,13 +45,13 @@ enum FurnitureEntityBuilder {
     /// Build the entity for one footprint: a translucent rounded box in the
     /// category color, with collision + input-target for tapping and a billboarded
     /// category label. Tagged with the footprint id for tap routing.
-    static func entity(for footprint: FurnitureFootprint) -> Entity {
+    static func entity(for footprint: FurnitureFootprint, mode: RoomRenderMode = .play) -> Entity {
         registerComponentsIfNeeded()
 
         let size = SIMD3<Float>(footprint.dimensions.x, footprint.dimensions.z, footprint.dimensions.y)
         let root = ModelEntity(
             mesh: .generateBox(width: size.x, height: size.y, depth: size.z, cornerRadius: 0.04),
-            materials: [material(for: footprint, opacity: defaultOpacity)]
+            materials: [material(for: footprint, opacity: defaultOpacity, mode: mode)]
         )
         root.name = "furniture_\(footprint.id.uuidString)"
         root.position = footprint.worldPosition
@@ -73,9 +73,9 @@ enum FurnitureEntityBuilder {
     /// Switch a pending box to the "kept" look: fully opaque in its real color,
     /// with an amber outline shell. Takes the footprint so the color is exact
     /// rather than read back out of the live material.
-    static func applyKeptAppearance(to entity: Entity, footprint: FurnitureFootprint) {
+    static func applyKeptAppearance(to entity: Entity, footprint: FurnitureFootprint, mode: RoomRenderMode = .play) {
         if let model = entity as? ModelEntity, var component = model.model {
-            component.materials = [material(for: footprint, opacity: 1.0)]
+            component.materials = [material(for: footprint, opacity: 1.0, mode: mode)]
             model.model = component
         }
         // Add the amber outline shell once.
@@ -101,7 +101,7 @@ enum FurnitureEntityBuilder {
     /// (@ 0.6) AND gains a Clay border (inverted-hull shell child) — so it stays
     /// obviously "the one being moved" the whole time it's selected, not just a
     /// momentary pop. The base color still signals collision (red base = invalid).
-    static func applyPlacementState(_ state: PlacementState, selected: Bool = false, to entity: Entity) {
+    static func applyPlacementState(_ state: PlacementState, selected: Bool = false, mode: RoomRenderMode = .play, to entity: Entity) {
         guard let model = entity as? ModelEntity, var component = model.model,
               let tag = entity.components[FurnitureTagComponent.self] else { return }
 
@@ -112,9 +112,9 @@ enum FurnitureEntityBuilder {
 
         switch state {
         case .valid:
-            material.baseColor = .init(tint: UIColor(tag.colorCategory.playModeColor))
+            material.baseColor = .init(tint: tint(tag.colorCategory, mode: mode))
         case .tooClose:
-            material.baseColor = .init(tint: UIColor(tag.colorCategory.playModeColor))
+            material.baseColor = .init(tint: tint(tag.colorCategory, mode: mode))
             material.emissiveColor = .init(color: keptOutlineColor)        // amber #BA7517
             material.emissiveIntensity = 0.3
         case .invalid:
@@ -162,18 +162,51 @@ enum FurnitureEntityBuilder {
 
     // MARK: - Materials
 
-    /// Stylized material in the category's perceptual PLAY color, matching the
-    /// project's `PhysicallyBasedMaterial` idiom (`PlayModeMaterials`). `opacity`
-    /// drives transparent blending — translucent while pending, solid once kept.
-    private static func material(for footprint: FurnitureFootprint, opacity: Float) -> PhysicallyBasedMaterial {
+    /// Material in the category's color for the given render mode. `opacity` drives
+    /// transparent blending — translucent while pending, solid once kept.
+    private static func material(for footprint: FurnitureFootprint, opacity: Float, mode: RoomRenderMode) -> PhysicallyBasedMaterial {
         var m = PhysicallyBasedMaterial()
-        m.baseColor = .init(tint: UIColor(footprint.appearance.colorCategory.playModeColor))
+        m.baseColor = .init(tint: tint(footprint.appearance.colorCategory, mode: mode))
         m.roughness = .init(floatLiteral: footprint.appearance.materialClass.roughness)
         m.metallic = .init(floatLiteral: 0)
         if opacity < 1 {
             m.blending = .transparent(opacity: .init(floatLiteral: opacity))
         }
         return m
+    }
+
+    /// The base tint for a perceptual color in a render mode.
+    ///
+    /// BUY is the **true** color (`representativeRGB`, neutral) — the buy-mode promise.
+    /// PLAY is a **softened pastel** of that same color (lightened toward white) for
+    /// the playful look. They must be derived from one source: the catalog defines
+    /// `playModeColor == representativeRGB`, so using `playModeColor` for PLAY made
+    /// the toggle a no-op — both modes rendered the identical color.
+    static func tint(_ category: FurnitureColorCategory, mode: RoomRenderMode) -> UIColor {
+        let rgb = category.representativeRGB
+        let trueColor = UIColor(red: CGFloat(rgb.x), green: CGFloat(rgb.y), blue: CGFloat(rgb.z), alpha: 1)
+        switch mode {
+        case .buy:  return trueColor
+        case .play: return Self.pastel(rgb)
+        }
+    }
+
+    /// A lightened, gently desaturated version of a true color for PLAY's stylized
+    /// look — 30% toward white, so a navy reads as a soft slate and a black armchair
+    /// as a warm grey, clearly distinct from BUY's true color on toggle.
+    private static func pastel(_ rgb: SIMD3<Float>) -> UIColor {
+        let mix: Float = 0.30
+        let lighten: (Float) -> CGFloat = { CGFloat($0 + (1 - $0) * mix) }
+        return UIColor(red: lighten(rgb.x), green: lighten(rgb.y), blue: lighten(rgb.z), alpha: 1)
+    }
+
+    /// Re-tint a static (viewing-mode) furniture entity for a new render mode,
+    /// preserving its pending translucency. Editing mode re-tints via
+    /// `applyPlacementState` (which also carries the fit-state coloring).
+    static func retint(_ entity: Entity, footprint: FurnitureFootprint, mode: RoomRenderMode) {
+        guard let model = entity as? ModelEntity, var component = model.model else { return }
+        component.materials = [material(for: footprint, opacity: defaultOpacity, mode: mode)]
+        model.model = component
     }
 
     private static func label(_ category: FurnitureCategory, atHeight y: Float) -> Entity {
