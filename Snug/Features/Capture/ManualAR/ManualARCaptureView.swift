@@ -16,7 +16,7 @@ struct ManualARCaptureView: View {
     let onComplete: (RoomModel) -> Void
     let onFailure: (CaptureFailure) -> Void
 
-    @StateObject private var controller = ManualARCaptureController()
+    @State private var controller = ManualARCaptureController()
     @State private var hasCameraAccess = false
 
     /// Local post-capture phase. Capture stays in `.capturing` until the room is
@@ -72,10 +72,17 @@ struct ManualARCaptureView: View {
 
             VStack {
                 topBar
-                trackingBanner
-                floorIndicator
-                Spacer()
-                instructionCard
+                // During furniture detection the transparent FurnitureDetectionView
+                // owns the chrome (live boxes + Done); keep only Cancel from the base
+                // layer so the camera and boxes aren't hidden behind a duplicate card.
+                if controller.step != .furnitureDetection {
+                    trackingBanner
+                    floorIndicator
+                    Spacer()
+                    instructionCard
+                } else {
+                    Spacer()
+                }
             }
             .padding()
 
@@ -87,13 +94,15 @@ struct ManualARCaptureView: View {
                 cameraPausedOverlay
             }
 
-            // Phase 2 furniture-detection step: an opaque pan overlay covering the
-            // capture chrome while the detector sweeps, then a brief success.
+            // Phase 2 furniture-detection step: a TRANSPARENT overlay over the live
+            // camera with live bounding boxes; the user pans and taps Done when
+            // satisfied (continuous, not a fixed timer), then a brief success.
             if controller.step == .furnitureDetection {
                 FurnitureDetectionView(
                     service: controller.furnitureService,
                     finished: controller.furnitureDetectionFinished,
                     foundCount: controller.detectedFurniture.count,
+                    onDone: { controller.finishFurnitureDetection() },
                     // Skip just closes the detection step — manual furniture is now
                     // added later in the room diorama (the persistent `+` button).
                     onSkip: { controller.completeFurniture(with: []) }
@@ -415,7 +424,12 @@ private struct ARViewContainer: UIViewRepresentable {
     let controller: ManualARCaptureController
 
     func makeUIView(context: Context) -> ARView {
-        let arView = ARView(frame: .zero)
+        // Reuse the single app-lifetime capture ARView (see
+        // `ManualARCaptureController.sharedARView`) rather than creating a fresh one
+        // — a new ARView renderer gets poisoned black by the diorama's RealityView
+        // on iOS 26. Detach it from any prior superview before re-hosting.
+        let arView = ManualARCaptureController.sharedARView
+        arView.removeFromSuperview()
         controller.attach(to: arView)
         return arView
     }
@@ -428,6 +442,9 @@ private struct ARViewContainer: UIViewRepresentable {
     /// second session that can't acquire the held camera, producing the black
     /// passthrough that only a full app restart clears.
     static func dismantleUIView(_ uiView: ARView, coordinator: ()) {
+        // The ARView is shared and reused, so pause + detach from the hierarchy —
+        // never destroy it (that would re-introduce the fresh-renderer black camera).
         uiView.session.pause()
+        uiView.removeFromSuperview()
     }
 }

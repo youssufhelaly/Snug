@@ -367,6 +367,11 @@ final class RoomSceneController {
     /// Last-synced footprint per id, so `syncFurniture` only rebuilds an entity
     /// when its geometry actually changed (cheap re-tints otherwise).
     private var furnitureSnapshots: [UUID: FurnitureFootprint] = [:]
+    /// Last-synced placement state + selection (editing mode), so a PLAY↔BUY swap
+    /// can re-tint furniture with the new mode's color while preserving the fit-state
+    /// coloring — without waiting for a SwiftUI round-trip.
+    private var lastFurnitureStates: [UUID: PlacementState] = [:]
+    private var lastSelectedFurnitureID: UUID?
     /// When true, `buildGeometry` skips the static furniture pass — the tray owns
     /// furniture entities through `syncFurniture`.
     private var editingFurniture = false
@@ -613,7 +618,11 @@ final class RoomSceneController {
         // placement tray) owns the entities so they can update live.
         if !editingFurniture {
             for footprint in room.detectedFurniture where !footprint.isCleared {
-                root.addChild(FurnitureEntityBuilder.entity(for: footprint))
+                let entity = FurnitureEntityBuilder.entity(for: footprint, mode: mode)
+                root.addChild(entity)
+                // Track so a PLAY↔BUY swap can re-tint these static pieces too.
+                furnitureEntities[footprint.id] = entity
+                furnitureSnapshots[footprint.id] = footprint
             }
         }
 
@@ -989,6 +998,7 @@ final class RoomSceneController {
         let size = pixelSize
         guard animated, size.width > 0, size.height > 0 else {
             applyPalette(for: newMode)
+            retintFurniture()
             return
         }
 
@@ -1000,11 +1010,32 @@ final class RoomSceneController {
             guard let image else {
                 // Failure already surfaced by the renderer — swap without a fade.
                 self.applyPalette(for: newMode)
+                self.retintFurniture()
                 return
             }
             // Show the freeze first, then swap materials underneath it.
             self.crossfade?(image)
             self.applyPalette(for: newMode)
+            self.retintFurniture()
+        }
+    }
+
+    /// Re-tint furniture after a PLAY↔BUY swap — `applyPalette` only covers
+    /// walls/floor/openings. Editing pieces keep their fit-state + selection
+    /// coloring (re-applied for the new mode); static viewing pieces re-tint to the
+    /// mode's base color. Geometry is never touched, only the material.
+    private func retintFurniture() {
+        for (id, entity) in furnitureEntities {
+            if editingFurniture {
+                FurnitureEntityBuilder.applyPlacementState(
+                    lastFurnitureStates[id] ?? .valid,
+                    selected: id == lastSelectedFurnitureID,
+                    mode: mode,
+                    to: entity
+                )
+            } else if let footprint = furnitureSnapshots[id] {
+                FurnitureEntityBuilder.retint(entity, footprint: footprint, mode: mode)
+            }
         }
     }
 
@@ -1128,6 +1159,8 @@ final class RoomSceneController {
     /// separate from the wall/floor scene, so it never perturbs the PLAY/BUY
     /// geometry invariant.
     func syncFurniture(_ footprints: [FurnitureFootprint], states: [UUID: PlacementState], selectedID: UUID?) {
+        lastFurnitureStates = states
+        lastSelectedFurnitureID = selectedID
         let active = footprints.filter { !$0.isCleared }
         currentFootprints = active
         let activeIDs = Set(active.map(\.id))
@@ -1145,7 +1178,7 @@ final class RoomSceneController {
             // meshes in place.
             if furnitureEntities[footprint.id] == nil || furnitureSnapshots[footprint.id] != footprint {
                 furnitureEntities[footprint.id]?.removeFromParent()
-                let entity = FurnitureEntityBuilder.entity(for: footprint)
+                let entity = FurnitureEntityBuilder.entity(for: footprint, mode: mode)
                 root.addChild(entity)
                 furnitureEntities[footprint.id] = entity
                 furnitureSnapshots[footprint.id] = footprint
@@ -1155,6 +1188,7 @@ final class RoomSceneController {
                 FurnitureEntityBuilder.applyPlacementState(
                     states[footprint.id] ?? .valid,
                     selected: selected,
+                    mode: mode,
                     to: entity
                 )
                 // Selection "pop": scale to 1.03 when selected, 1.0 otherwise. Only

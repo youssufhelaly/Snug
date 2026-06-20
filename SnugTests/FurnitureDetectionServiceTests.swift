@@ -6,8 +6,8 @@ import Foundation
 /// consensus gate. (The Vision/CoreML glue is device-only and not exercised here.)
 struct FurnitureDetectionServiceTests {
 
-    private func obs(_ category: FurnitureCategory, _ box: CGRect, _ t: TimeInterval, confidence: Float = 0.9) -> FurnitureObservation {
-        FurnitureObservation(category: category, confidence: confidence, boundingBox: box, frameTimestamp: t)
+    private func obs(_ category: FurnitureCategory, _ box: CGRect, _ t: TimeInterval, confidence: Float = 0.9, color: FurnitureColorCategory = .other) -> FurnitureObservation {
+        FurnitureObservation(category: category, confidence: confidence, boundingBox: box, frameTimestamp: t, colorCategory: color)
     }
 
     // MARK: - IoU
@@ -94,5 +94,84 @@ struct FurnitureDetectionServiceTests {
 
     @Test func emptyInputYieldsNoDetections() {
         #expect(consensus([]).isEmpty)
+    }
+
+    // MARK: - Color aggregation
+
+    @Test func confirmedDetectionCarriesDominantTrackColor() {
+        let box = CGRect(x: 0.3, y: 0.2, width: 0.4, height: 0.3)
+        // Sofa seen 4×: navy, navy, warmRed, .other(unreadable) → navy wins.
+        let confirmed = consensus([
+            obs(.sofa, box, 0.0, color: .navy),
+            obs(.sofa, box, 0.1, color: .navy),
+            obs(.sofa, box, 0.2, color: .warmRed),
+            obs(.sofa, box, 0.3, color: .other),
+        ])
+        #expect(confirmed.count == 1)
+        #expect(confirmed.first?.colorCategory == .navy)
+    }
+
+    @Test func dominantColorIgnoresOtherAndFallsBackWhenAllUnreadable() {
+        // A few good reads beat many `.other`s.
+        let mixed = [
+            obs(.bed, .zero, 0.0, color: .other),
+            obs(.bed, .zero, 0.1, color: .other),
+            obs(.bed, .zero, 0.2, color: .tan),
+        ]
+        #expect(FurnitureDetectionService.dominantColor(in: mixed) == .tan)
+        // Nothing readable → `.other`.
+        let blank = [obs(.bed, .zero, 0.0), obs(.bed, .zero, 0.1)]
+        #expect(FurnitureDetectionService.dominantColor(in: blank) == .other)
+    }
+
+    // MARK: - Region coordinate conversion
+
+    @Test func uiKitBoundingBoxFlipsVerticallyFromVisionSpace() {
+        let region = DetectedFurnitureRegion(
+            category: .sofa, confidence: 0.9,
+            visionBoundingBox: CGRect(x: 0.2, y: 0.3, width: 0.4, height: 0.5),
+            frameTimestamp: 0)
+        let uiKit = region.uiKitBoundingBox
+        // x/width/height are preserved; y is inverted: 1 - y - height.
+        #expect(abs(uiKit.minX - 0.2) < 0.0001)
+        #expect(abs(uiKit.width - 0.4) < 0.0001)
+        #expect(abs(uiKit.height - 0.5) < 0.0001)
+        #expect(abs(uiKit.minY - 0.2) < 0.0001)            // 1 - 0.3 - 0.5
+        // The Vision bottom edge (minY) becomes the UIKit bottom edge (maxY).
+        #expect(abs(uiKit.maxY - (1 - 0.3)) < 0.0001)
+    }
+
+    // MARK: - Camera aspect-fill projection
+
+    @Test func aspectFillCenterMapsToViewportCenter() {
+        let p = CameraAspectFillProjection(imageSize: CGSize(width: 100, height: 100),
+                                           viewport: CGSize(width: 100, height: 200))
+        let center = p.point(CGPoint(x: 0.5, y: 0.5))
+        #expect(abs(center.x - 50) < 0.0001)
+        #expect(abs(center.y - 100) < 0.0001)
+    }
+
+    @Test func aspectFillCropsTheOverflowingAxis() {
+        // 100×100 image into a 100×200 viewport fills height (scale 2), so the image
+        // is 200 wide and overflows ±50 px horizontally — left edge sits at x = -50.
+        let p = CameraAspectFillProjection(imageSize: CGSize(width: 100, height: 100),
+                                           viewport: CGSize(width: 100, height: 200))
+        let topLeft = p.point(CGPoint(x: 0, y: 0))
+        #expect(abs(topLeft.x - (-50)) < 0.0001)
+        #expect(abs(topLeft.y - 0) < 0.0001)
+        let full = p.rect(CGRect(x: 0, y: 0, width: 1, height: 1))
+        #expect(abs(full.width - 200) < 0.0001)
+        #expect(abs(full.height - 200) < 0.0001)
+        #expect(abs(full.midX - 50) < 0.0001)
+        #expect(abs(full.midY - 100) < 0.0001)
+    }
+
+    @Test func aspectFillDegradesToStretchWhenImageSizeUnknown() {
+        // Zero image size (no frame yet) falls back to a plain normalized stretch.
+        let p = CameraAspectFillProjection(imageSize: .zero,
+                                           viewport: CGSize(width: 320, height: 640))
+        let pt = p.point(CGPoint(x: 0.5, y: 0.25))
+        #expect(abs(pt.x - 160) < 0.0001)
+        #expect(abs(pt.y - 160) < 0.0001)
     }
 }

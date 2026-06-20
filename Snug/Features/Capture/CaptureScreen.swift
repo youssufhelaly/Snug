@@ -13,6 +13,8 @@ struct CaptureScreen: View {
     @State private var coordinator = RoomCaptureCoordinator()
     @State private var hasCameraAccess = false
     @State private var isProcessing = false
+    /// Toggled when a scan completes, purely to drive the success haptic.
+    @State private var scanCompleted = false
 
     var body: some View {
         ZStack {
@@ -58,6 +60,8 @@ struct CaptureScreen: View {
             }
         }
         .task { await prepare() }
+        // Scan complete is a meaningful action — haptic per CLAUDE.md (iOS 17+).
+        .sensoryFeedback(.success, trigger: scanCompleted)
     }
 
     private var processingOverlay: some View {
@@ -80,8 +84,9 @@ struct CaptureScreen: View {
         }
 
         coordinator.onComplete = { room in
-            // Scan complete is a meaningful action — haptic per CLAUDE.md.
-            UINotificationFeedbackGenerator().notificationOccurred(.success)
+            // Flip the trigger before handing off so the `.sensoryFeedback` above
+            // dispatches the success haptic in the same update.
+            scanCompleted.toggle()
             onComplete(ScanRecord(room: room))
         }
         coordinator.onFailure = onFailure

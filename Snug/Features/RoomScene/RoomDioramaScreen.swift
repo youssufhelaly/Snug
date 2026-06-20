@@ -234,7 +234,7 @@ struct RoomDioramaScreen: View {
         let dims = category.defaultDimensions
         let corners = room.floorCorners.map(\.simd2)
         let centroid = FurniturePlacementService.centroid(of: corners)
-        let xz = FurniturePlacementService().clampToBoundary(
+        let xz = FurniturePlacementService.clampToBoundary(
             position: centroid, dimensions: SIMD2(dims.x, dims.y), rotation: 0,
             room: RoomFootprint(corners: corners))
         let footprint = FurnitureFootprint(
@@ -327,6 +327,8 @@ private struct RenderModeToggle: View {
         }
         .padding(4)
         .background(.ultraThinMaterial, in: Capsule())
+        // Selection haptic fires declaratively on an actual mode switch (iOS 17+).
+        .sensoryFeedback(.selection, trigger: mode)
         .accessibilityElement(children: .contain)
         .accessibilityLabel("Render mode")
     }
@@ -335,7 +337,6 @@ private struct RenderModeToggle: View {
         let isSelected = mode == option
         return Button {
             guard mode != option else { return }
-            UIImpactFeedbackGenerator(style: .soft).impactOccurred()
             if reduceMotion {
                 mode = option
             } else {

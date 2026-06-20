@@ -74,7 +74,7 @@ struct FurniturePlacementService {
         // 6. Keep the WHOLE footprint inside the room polygon (all four corners,
         //    8 cm clear of every wall) — not just its center. Computed after the
         //    dimensions so the box's real footprint drives the clamp.
-        let clampedXZ = clampToBoundary(
+        let clampedXZ = FurniturePlacementService.clampToBoundary(
             position: rawXZ,
             dimensions: SIMD2(dimensions.x, dimensions.y),
             rotation: 0,
