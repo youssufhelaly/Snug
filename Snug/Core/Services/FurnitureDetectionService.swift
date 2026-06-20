@@ -55,7 +55,7 @@ final class FurnitureDetectionService {
     static let totalDetectionFrames: Int = 10
     /// Skip frames whose ambient light is implausibly low/high for a usable color
     /// + detection read (lux). Outside this band the frame is dropped, not trusted.
-    static let usableLuxRange: ClosedRange<Double> = 200...2000
+    static let usableLuxRange: ClosedRange<Double> = 100...2000
     /// The model's square input edge (from the export's `imgsz`). Used to normalize
     /// pixel-space box coords when the end2end output isn't already normalized.
     static let modelInputSize: Double = 640
@@ -196,6 +196,7 @@ final class FurnitureDetectionService {
 
         let oriented = Self.orientedSize(of: pixelBuffer, orientation: orientation)
         guard let regions = await runVision(on: pixelBuffer, orientation: orientation) else { return }
+        guard !Task.isCancelled else { return }
         await MainActor.run { ingest(regions, orientedImageSize: oriented) }
     }
 
