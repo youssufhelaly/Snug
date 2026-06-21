@@ -196,6 +196,7 @@ final class FurnitureDetectionService {
 
         let oriented = Self.orientedSize(of: pixelBuffer, orientation: orientation)
         guard let regions = await runVision(on: pixelBuffer, orientation: orientation) else { return }
+        guard !Task.isCancelled else { return }
         await MainActor.run { ingest(regions, orientedImageSize: oriented) }
     }
 
