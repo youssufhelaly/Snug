@@ -11,6 +11,9 @@ struct FurnitureTagComponent: Component {
     /// Stored so `applyPlacementState` can restore the piece's base color when
     /// returning to the `.valid` tint (the entity carries no other color source).
     let colorCategory: FurnitureColorCategory
+    /// Exact catalog-product color (nil for detected/manual pieces). When set,
+    /// BUY mode renders it instead of `colorCategory`'s representative color.
+    let exactColorRGB: SIMD3<Float>?
 }
 
 /// Builds collision-ready, tap-routable RealityKit entities for detected
@@ -63,7 +66,8 @@ enum FurnitureEntityBuilder {
         root.components.set(FurnitureTagComponent(
             footprintID: footprint.id,
             category: footprint.category,
-            colorCategory: footprint.appearance.colorCategory
+            colorCategory: footprint.appearance.colorCategory,
+            exactColorRGB: footprint.appearance.exactColorRGB
         ))
 
         root.addChild(label(footprint.category, atHeight: size.y / 2 + 0.12))
@@ -105,6 +109,28 @@ enum FurnitureEntityBuilder {
         guard let model = entity as? ModelEntity, var component = model.model,
               let tag = entity.components[FurnitureTagComponent.self] else { return }
 
+        // BUY mode showing a realistic product model: the box mesh stays invisible
+        // so the true model reads through, EXCEPT an `.invalid` overflow flashes a
+        // translucent red so a piece that won't fit is still obvious. Selection is
+        // signaled by the Clay outline + scale-pop, not box opacity. (valid /
+        // tooClose lean on the 2D FitBadge — the honest state is always on screen.)
+        if mode == .buy, hasRealisticModel(entity) {
+            var box = PhysicallyBasedMaterial()
+            if state == .invalid {
+                let red = UIColor(rgb: 0xB85450)
+                box.baseColor = .init(tint: red)
+                box.emissiveColor = .init(color: red)
+                box.emissiveIntensity = 0.4
+                box.blending = .transparent(opacity: .init(floatLiteral: 0.5))
+            } else {
+                box.blending = .transparent(opacity: .init(floatLiteral: 0))
+            }
+            component.materials = [box]
+            model.model = component
+            applySelectionBorder(selected, to: entity, size: component.mesh.bounds.extents)
+            return
+        }
+
         var material = PhysicallyBasedMaterial()
         material.roughness = .init(floatLiteral: 0.85)
         material.metallic = .init(floatLiteral: 0)
@@ -112,9 +138,9 @@ enum FurnitureEntityBuilder {
 
         switch state {
         case .valid:
-            material.baseColor = .init(tint: tint(tag.colorCategory, mode: mode))
+            material.baseColor = .init(tint: tint(tag.colorCategory, exact: tag.exactColorRGB, mode: mode))
         case .tooClose:
-            material.baseColor = .init(tint: tint(tag.colorCategory, mode: mode))
+            material.baseColor = .init(tint: tint(tag.colorCategory, exact: tag.exactColorRGB, mode: mode))
             material.emissiveColor = .init(color: keptOutlineColor)        // amber #BA7517
             material.emissiveIntensity = 0.3
         case .invalid:
@@ -149,6 +175,84 @@ enum FurnitureEntityBuilder {
         }
     }
 
+    // MARK: - Realistic catalog model (BUY-only, visual-only child)
+
+    /// Name of the realistic product-model child attached to a catalog box in BUY.
+    /// Its presence is what flips the box into "show the model" mode; absent for
+    /// detected/manual pieces and in PLAY, where the stylized box is the visual.
+    static let realisticModelName = "catalog_model"
+
+    /// Attach a loaded product model as a VISUAL-ONLY child of the box root, fit to
+    /// `dimensions`, and hide the box's own mesh so the realistic model shows. The
+    /// model carries no collision / input target, so taps and drags still resolve
+    /// to the box (the source of truth). Replaces any existing model child.
+    static func attachRealisticModel(_ model: Entity, to box: Entity, dimensions: SIMD3<Float>, tint: UIColor? = nil) {
+        box.findEntity(named: realisticModelName)?.removeFromParent()
+        model.name = realisticModelName
+        scaleRealisticModel(model, to: dimensions)
+        if let tint { applyModelTint(tint, to: model) }
+        box.addChild(model)
+        setBoxMeshHidden(true, on: box)
+    }
+
+    /// Override every descendant mesh's material with a solid PBR tint.
+    ///
+    /// For the untextured placeholder `.usda` models this is how BUY-mode true
+    /// color is delivered: RealityKit ignores USD `displayColor` without a bound
+    /// material network, so it would otherwise render the shapes default white.
+    /// Tinting to the product's `trueColorRGB` also lets ONE shared model serve
+    /// many products at their real colors (the sofa shape reads charcoal for one
+    /// SKU, navy for another). Real product USDZ ship their own correct materials —
+    /// for those, pass `tint: nil` so we keep them untouched.
+    static func applyModelTint(_ color: UIColor, to entity: Entity) {
+        if let model = entity as? ModelEntity, var component = model.model {
+            var m = PhysicallyBasedMaterial()
+            m.baseColor = .init(tint: color)
+            m.roughness = .init(floatLiteral: 0.85)
+            m.metallic = .init(floatLiteral: 0)
+            component.materials = component.materials.map { _ in m }
+            model.model = component
+        }
+        for child in entity.children { applyModelTint(color, to: child) }
+    }
+
+    /// Re-fit an already-attached model to new `dimensions` (called on resize). Safe
+    /// to call when no model is attached.
+    static func scaleRealisticModel(_ model: Entity, to dimensions: SIMD3<Float>) {
+        // Measure intrinsic bounds with the model's own transform reset, so the fit
+        // is computed from the raw asset every time (resize re-fits from scratch).
+        model.transform = .identity
+        let bounds = model.visualBounds(relativeTo: model)
+        let fit = CatalogModelLoader.fitTransform(
+            modelExtents: bounds.extents, modelCenter: bounds.center, targetDimensions: dimensions)
+        model.scale = fit.scale
+        model.position = fit.position
+    }
+
+    /// Hide or show the box's own mesh by swapping its materials' opacity, WITHOUT
+    /// touching its `CollisionComponent` (so hit-testing is unaffected). Used to
+    /// reveal the realistic model child while the box stays the interactive proxy.
+    static func setBoxMeshHidden(_ hidden: Bool, on entity: Entity) {
+        guard let model = entity as? ModelEntity, var component = model.model else { return }
+        component.materials = component.materials.map { _ in
+            var clear = PhysicallyBasedMaterial()
+            clear.blending = .transparent(opacity: .init(floatLiteral: hidden ? 0 : 1))
+            return clear
+        }
+        model.model = component
+    }
+
+    /// Whether a box currently shows its realistic model child (BUY + catalog).
+    static func hasRealisticModel(_ entity: Entity) -> Bool {
+        entity.findEntity(named: realisticModelName) != nil
+    }
+
+    /// Remove the realistic model child (returning to the stylized box, e.g. on a
+    /// swap back to PLAY). No-op when none is attached.
+    static func removeRealisticModel(from entity: Entity) {
+        entity.findEntity(named: realisticModelName)?.removeFromParent()
+    }
+
     /// Animate a cleared box out: shrink + fade over 0.35 s, then detach. Runs on
     /// the main actor (RealityKit scene mutation).
     @MainActor
@@ -166,7 +270,8 @@ enum FurnitureEntityBuilder {
     /// transparent blending — translucent while pending, solid once kept.
     private static func material(for footprint: FurnitureFootprint, opacity: Float, mode: RoomRenderMode) -> PhysicallyBasedMaterial {
         var m = PhysicallyBasedMaterial()
-        m.baseColor = .init(tint: tint(footprint.appearance.colorCategory, mode: mode))
+        m.baseColor = .init(tint: tint(footprint.appearance.colorCategory,
+                                       exact: footprint.appearance.exactColorRGB, mode: mode))
         m.roughness = .init(floatLiteral: footprint.appearance.materialClass.roughness)
         m.metallic = .init(floatLiteral: 0)
         if opacity < 1 {
@@ -175,15 +280,16 @@ enum FurnitureEntityBuilder {
         return m
     }
 
-    /// The base tint for a perceptual color in a render mode.
+    /// The base tint for a color in a render mode.
     ///
-    /// BUY is the **true** color (`representativeRGB`, neutral) — the buy-mode promise.
-    /// PLAY is a **softened pastel** of that same color (lightened toward white) for
-    /// the playful look. They must be derived from one source: the catalog defines
-    /// `playModeColor == representativeRGB`, so using `playModeColor` for PLAY made
-    /// the toggle a no-op — both modes rendered the identical color.
-    static func tint(_ category: FurnitureColorCategory, mode: RoomRenderMode) -> UIColor {
-        let rgb = category.representativeRGB
+    /// BUY is the **true** color — the buy-mode promise. `exact` (a catalog
+    /// product's known manufacturer sRGB) wins when present; otherwise the
+    /// perceptual `category`'s `representativeRGB` (the best we know for a detected
+    /// piece). PLAY is a **softened pastel** of that same source color (lightened
+    /// toward white) for the playful look — derived from one source so the toggle
+    /// is never a no-op.
+    static func tint(_ category: FurnitureColorCategory, exact: SIMD3<Float>? = nil, mode: RoomRenderMode) -> UIColor {
+        let rgb = exact ?? category.representativeRGB
         let trueColor = UIColor(red: CGFloat(rgb.x), green: CGFloat(rgb.y), blue: CGFloat(rgb.z), alpha: 1)
         switch mode {
         case .buy:  return trueColor
@@ -205,6 +311,14 @@ enum FurnitureEntityBuilder {
     /// `applyPlacementState` (which also carries the fit-state coloring).
     static func retint(_ entity: Entity, footprint: FurnitureFootprint, mode: RoomRenderMode) {
         guard let model = entity as? ModelEntity, var component = model.model else { return }
+        // A shown realistic model keeps the box mesh invisible (BUY catalog piece).
+        if mode == .buy, hasRealisticModel(entity) {
+            var clear = PhysicallyBasedMaterial()
+            clear.blending = .transparent(opacity: .init(floatLiteral: 0))
+            component.materials = [clear]
+            model.model = component
+            return
+        }
         component.materials = [material(for: footprint, opacity: defaultOpacity, mode: mode)]
         model.model = component
     }

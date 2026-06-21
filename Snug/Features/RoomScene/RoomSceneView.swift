@@ -66,10 +66,22 @@ struct RoomSceneView: View {
     @State private var furnitureResizeActive = false
 
     @Environment(\.displayScale) private var displayScale
+    @Environment(CatalogService.self) private var catalog
+
+    /// Maps a placed footprint's `catalogItemID` to its bundled USDZ asset name, so
+    /// the controller can load the realistic product model for BUY mode without
+    /// depending on `CatalogService` directly. Nil for non-catalog pieces / items
+    /// with no bundled model (→ the controller keeps the stylized box).
+    private func catalogModelResolver() -> (String) -> String? {
+        { [catalog] catalogID in
+            catalog.items.first { $0.id == catalogID }?.modelAssetName
+        }
+    }
 
     var body: some View {
         GeometryReader { geo in
             RealityView { content in
+                controller.catalogModelAssetName = catalogModelResolver()
                 controller.makeEntities(room: room, mode: mode, editingFurniture: editableFurniture != nil, onThumbnail: onThumbnail)
                 content.add(controller.root)
                 content.add(controller.cameraAnchor)
@@ -85,6 +97,7 @@ struct RoomSceneView: View {
                     }
                 }
             } update: { _ in
+                controller.catalogModelAssetName = catalogModelResolver()
                 controller.applyExternalState(mode: mode, resetToken: resetToken)
                 if let editableFurniture {
                     controller.syncFurniture(editableFurniture, states: placementStates, selectedID: selectedFurnitureID)
@@ -381,6 +394,14 @@ final class RoomSceneController {
     /// The room being edited — stored so live drag/pinch can validate without a
     /// SwiftUI round-trip. Set in `makeEntities`.
     private var editingRoom: RoomModel?
+    /// Resolves a footprint's `catalogItemID` to its bundled USDZ asset name (set by
+    /// the view from `CatalogService`). Nil-returning for non-catalog pieces / items
+    /// with no model → the stylized box is kept. The realistic model is BUY-only.
+    var catalogModelAssetName: ((String) -> String?)?
+    /// Footprint ids whose product model is currently loading, so a re-sync doesn't
+    /// kick off a duplicate async load.
+    private var modelLoadingIDs: Set<UUID> = []
+
     /// The piece a single-finger drag is currently moving (nil when not dragging).
     private var draggingFurnitureID: UUID?
     /// Previous placement state during a drag, so the "became invalid" warning
@@ -1036,6 +1057,12 @@ final class RoomSceneController {
             } else if let footprint = furnitureSnapshots[id] {
                 FurnitureEntityBuilder.retint(entity, footprint: footprint, mode: mode)
             }
+            // Show/hide the realistic product model for the new mode (BUY shows it,
+            // PLAY restores the stylized box). Runs after the tint so the box
+            // material is correct before the model is layered over it.
+            if let footprint = furnitureSnapshots[id] {
+                updateRealisticModel(for: footprint, on: entity)
+            }
         }
     }
 
@@ -1203,7 +1230,74 @@ final class RoomSceneController {
                     transform.scale = SIMD3(repeating: targetScale)
                     entity.move(to: transform, relativeTo: entity.parent, duration: 0.2, timingFunction: .easeOut)
                 }
+                updateRealisticModel(for: footprint, on: entity)
             }
+        }
+    }
+
+    // MARK: - Realistic catalog model (BUY only)
+
+    /// Show the realistic product model (BUY + a catalog item with a bundled USDZ)
+    /// or restore the stylized box (PLAY, non-catalog, or no asset). The USDZ loads
+    /// asynchronously on first need; the box shows until it arrives, then the box
+    /// mesh is hidden beneath it. Visual only — collision/fit/gestures stay on the box.
+    private func updateRealisticModel(for footprint: FurnitureFootprint, on box: Entity) {
+        let assetName = (mode == .buy)
+            ? footprint.catalogItemID.flatMap { catalogModelAssetName?($0) }
+            : nil
+
+        guard let assetName else {
+            // PLAY / non-catalog / no bundled model → ensure the stylized box shows.
+            if FurnitureEntityBuilder.hasRealisticModel(box) {
+                FurnitureEntityBuilder.removeRealisticModel(from: box)
+                reapplyFurnitureState(for: footprint.id, on: box)
+            }
+            return
+        }
+
+        if FurnitureEntityBuilder.hasRealisticModel(box) {
+            // Already showing: keep it fit to the current dimensions (covers resize).
+            if let model = box.findEntity(named: FurnitureEntityBuilder.realisticModelName) {
+                FurnitureEntityBuilder.scaleRealisticModel(model, to: footprint.dimensions)
+            }
+            return
+        }
+
+        guard !modelLoadingIDs.contains(footprint.id) else { return }
+        modelLoadingIDs.insert(footprint.id)
+        let id = footprint.id
+        // The product's true color, applied to the (untextured placeholder) model so
+        // BUY shows real color — identical source to the box's BUY tint, so model and
+        // box never disagree. (Real product USDZ would pass nil to keep their materials.)
+        let tint = FurnitureEntityBuilder.tint(
+            footprint.appearance.colorCategory, exact: footprint.appearance.exactColorRGB, mode: .buy)
+        Task { [weak self] in
+            let model = await CatalogModelLoader.shared.model(named: assetName)
+            guard let self else { return }
+            self.modelLoadingIDs.remove(id)
+            // The piece / mode may have changed while loading; re-validate.
+            guard self.mode == .buy,
+                  let box = self.furnitureEntities[id],
+                  let model,
+                  let dims = self.furnitureSnapshots[id]?.dimensions else { return }
+            FurnitureEntityBuilder.attachRealisticModel(model, to: box, dimensions: dims, tint: tint)
+            self.reapplyFurnitureState(for: id, on: box)   // box → transparent (red if invalid)
+        }
+    }
+
+    /// Re-run the tint/visibility for one piece after its model visibility changed,
+    /// using the last-synced state — editing pieces get the fit-state coloring,
+    /// static pieces the plain retint.
+    private func reapplyFurnitureState(for id: UUID, on box: Entity) {
+        if editingFurniture {
+            FurnitureEntityBuilder.applyPlacementState(
+                lastFurnitureStates[id] ?? .valid,
+                selected: id == lastSelectedFurnitureID,
+                mode: mode,
+                to: box
+            )
+        } else if let footprint = furnitureSnapshots[id] {
+            FurnitureEntityBuilder.retint(box, footprint: footprint, mode: mode)
         }
     }
 
@@ -1248,7 +1342,7 @@ final class RoomSceneController {
 
         if let entity = furnitureEntities[id] {
             entity.position = footprint.worldPosition
-            FurnitureEntityBuilder.applyPlacementState(state, selected: true, to: entity)
+            FurnitureEntityBuilder.applyPlacementState(state, selected: true, mode: mode, to: entity)
             furnitureSnapshots[id] = footprint   // keep snapshot in sync so the post-drag re-sync won't rebuild
         }
 
@@ -1312,7 +1406,11 @@ final class RoomSceneController {
             // Drop the stale-sized selection border so applyPlacementState rebuilds
             // it to fit the resized box.
             entity.findEntity(named: FurnitureEntityBuilder.selectionOutlineName)?.removeFromParent()
-            FurnitureEntityBuilder.applyPlacementState(state, selected: true, to: entity)
+            FurnitureEntityBuilder.applyPlacementState(state, selected: true, mode: mode, to: entity)
+            // Keep a shown realistic model fit to the new size.
+            if let visual = entity.findEntity(named: FurnitureEntityBuilder.realisticModelName) {
+                FurnitureEntityBuilder.scaleRealisticModel(visual, to: footprint.dimensions)
+            }
             furnitureSnapshots[id] = footprint
         }
 

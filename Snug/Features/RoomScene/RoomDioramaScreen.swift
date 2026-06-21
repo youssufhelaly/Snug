@@ -9,6 +9,8 @@ struct RoomDioramaScreen: View {
     let stored: StoredRoom
 
     @Environment(RoomStore.self) private var store
+    @Environment(CatalogService.self) private var catalog
+    @Environment(\.openURL) private var openURL
 
     @State private var mode: RoomRenderMode = .play
     @State private var resetToken = 0
@@ -101,7 +103,7 @@ struct RoomDioramaScreen: View {
                 unreadableRoom
             }
         }
-        .overlay(alignment: .bottom) { microPill }
+        .overlay(alignment: .bottom) { selectedItemOverlay }
         .overlay(alignment: .bottomTrailing) { addButton }
         .overlay(alignment: .bottom) { carousel }
         .overlay(alignment: .top) { limitToast }
@@ -149,18 +151,63 @@ struct RoomDioramaScreen: View {
         }
     }
 
-    // MARK: - Micro-pill (selected furniture)
+    // MARK: - Selected furniture overlay (fit badge + pill + retailer link)
 
-    @ViewBuilder private var microPill: some View {
+    /// Stacked above the bottom controls when a piece is selected: the honest fit
+    /// badge on top, the action pill, and — for placed catalog products — a
+    /// "View at <retailer>" out-link with its disclosed price.
+    @ViewBuilder private var selectedItemOverlay: some View {
         if !showFineTune, !showCarousel, let footprint = selectedFootprint {
-            FurnitureMicroPill(
-                category: footprint.category,
-                onFineTune: { showFineTune = true },
-                onTrash: { trashSelected() }
-            )
+            VStack(spacing: 10) {
+                if let state = fitState(for: footprint) {
+                    FitBadge(state: state)
+                }
+                FurnitureMicroPill(
+                    category: footprint.category,
+                    onFineTune: { showFineTune = true },
+                    onTrash: { trashSelected() }
+                )
+                if let item = catalogItem(for: footprint) {
+                    retailerLink(item)
+                }
+            }
             .padding(.bottom, 120)
             .transition(.move(edge: .bottom).combined(with: .opacity))
         }
+    }
+
+    /// The user-facing four-state fit result for a placed piece, against the room
+    /// walls and every OTHER kept piece (it isn't its own obstacle).
+    private func fitState(for footprint: FurnitureFootprint) -> FitResult.State? {
+        guard let room else { return nil }
+        return room.fitResult(for: footprint, excluding: footprint.id).state
+    }
+
+    /// The catalog product a footprint was placed from, if any (detected/manual
+    /// pieces return nil and show no retailer link).
+    private func catalogItem(for footprint: FurnitureFootprint) -> CatalogItem? {
+        guard let id = footprint.catalogItemID else { return nil }
+        return catalog.items.first { $0.id == id }
+    }
+
+    private func retailerLink(_ item: CatalogItem) -> some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            openURL(item.outboundURL)
+        } label: {
+            HStack(spacing: 6) {
+                Text("\(item.formattedPrice) · View at \(item.retailerName)")
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                Image(systemName: "arrow.up.right")
+                    .font(.system(size: 12, weight: .bold))
+            }
+            .foregroundStyle(.white)
+            .padding(.horizontal, 16)
+            .frame(height: 40)
+            .background(SnugTheme.clay, in: Capsule())
+        }
+        .accessibilityLabel("View \(item.name) at \(item.retailerName), \(item.formattedPrice)")
+        .accessibilityHint("Opens the retailer's page. Snug may earn a commission.")
     }
 
     private func trashSelected() {
@@ -195,9 +242,9 @@ struct RoomDioramaScreen: View {
 
     @ViewBuilder private var carousel: some View {
         if showCarousel {
-            FurnitureCarouselOverlay(
-                onSelect: { category in
-                    addFurniture(category)
+            CatalogBrowseOverlay(
+                onSelect: { item in
+                    addCatalogItem(item)
                     showCarousel = false
                 },
                 onClose: { showCarousel = false }
@@ -228,24 +275,19 @@ struct RoomDioramaScreen: View {
         showCarousel = true
     }
 
-    /// Create a piece at the room centroid, clamped inside, select it, persist.
-    private func addFurniture(_ category: FurnitureCategory) {
+    /// Drop a catalog product at the room centroid, clamped fully inside, select
+    /// it, and persist. The product carries its real dimensions/color, so the
+    /// footprint is `.detected` (standard fit margin) — see `makeFootprint`.
+    private func addCatalogItem(_ item: CatalogItem) {
         guard let room else { return }
-        let dims = category.defaultDimensions
         let corners = room.floorCorners.map(\.simd2)
         let centroid = FurniturePlacementService.centroid(of: corners)
         let xz = FurniturePlacementService.clampToBoundary(
-            position: centroid, dimensions: SIMD2(dims.x, dims.y), rotation: 0,
+            position: centroid,
+            dimensions: SIMD2(item.dimensions.x, item.dimensions.y),
+            rotation: 0,
             room: RoomFootprint(corners: corners))
-        let footprint = FurnitureFootprint(
-            category: category,
-            worldPosition: SIMD3(xz.x, dims.z / 2, xz.y),
-            dimensions: dims,
-            yRotation: 0,
-            appearance: FurnitureAppearance(colorCategory: .other, materialClass: .inferred(for: category)),
-            detectionConfidence: .manual,
-            isKept: true
-        )
+        let footprint = item.makeFootprint(at: xz)
         footprints.append(footprint)
         selectedFurnitureID = footprint.id
         persistFurniture()

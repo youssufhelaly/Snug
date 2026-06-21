@@ -266,12 +266,6 @@ DATASET_CONFIGS = [
         "splits":    ["train", "valid"],
         "class_map": NIGHTSTAND_ROBOCUP_MAP,
     },
-    {
-        "name":      "desk_usthb",
-        "yaml":      Path("/Users/helaly/repos/datasets/raw/desk_usthb/data.yaml"),
-        "splits":    ["train", "valid"],
-        "class_map": DESK_USTHB_MAP,
-    },
 ]
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

@@ -81,7 +81,10 @@ enum FurnitureCategory: String, Codable, CaseIterable, Sendable {
     case desk
     case diningTable = "dining_table"
     case coffeeTable = "coffee_table"
+    case sideTable = "side_table"
     case dresser
+    case wardrobe
+    case nightstand
     case bookshelf
     case tvStand = "tv_stand"
     case unknown
@@ -99,7 +102,10 @@ enum FurnitureCategory: String, Codable, CaseIterable, Sendable {
         case .desk:         return SIMD3(1.20, 0.60, 0.75)
         case .diningTable:  return SIMD3(1.20, 0.80, 0.75)
         case .coffeeTable:  return SIMD3(1.10, 0.55, 0.45)
+        case .sideTable:    return SIMD3(0.45, 0.45, 0.55)
         case .dresser:      return SIMD3(0.90, 0.45, 1.20)
+        case .wardrobe:     return SIMD3(1.00, 0.60, 2.00)
+        case .nightstand:   return SIMD3(0.45, 0.40, 0.55)
         case .bookshelf:    return SIMD3(0.80, 0.30, 1.80)
         case .tvStand:      return SIMD3(1.40, 0.40, 0.50)
         case .unknown:      return SIMD3(0.80, 0.80, 0.80)
@@ -115,7 +121,10 @@ enum FurnitureCategory: String, Codable, CaseIterable, Sendable {
         case .desk:         return "Desk"
         case .diningTable:  return "Dining Table"
         case .coffeeTable:  return "Coffee Table"
+        case .sideTable:    return "Side Table"
         case .dresser:      return "Dresser"
+        case .wardrobe:     return "Wardrobe"
+        case .nightstand:   return "Nightstand"
         case .bookshelf:    return "Bookshelf"
         case .tvStand:      return "TV Stand"
         case .unknown:      return "Furniture"
@@ -132,7 +141,10 @@ enum FurnitureCategory: String, Codable, CaseIterable, Sendable {
         case .desk:         return "table.furniture.fill"
         case .diningTable:  return "table.furniture.fill"
         case .coffeeTable:  return "table.furniture"
+        case .sideTable:    return "table.furniture"
         case .dresser:      return "cabinet.fill"
+        case .wardrobe:     return "cabinet.fill"
+        case .nightstand:   return "cabinet"
         case .bookshelf:    return "books.vertical.fill"
         case .tvStand:      return "tv.fill"
         case .unknown:      return "shippingbox.fill"
@@ -160,6 +172,16 @@ struct FurnitureFootprint: Codable, Equatable, Sendable, Identifiable {
     var isCleared: Bool
     /// User explicitly kept it — feeds `FitService` as an obstacle.
     var isKept: Bool
+    /// Set when this footprint is a placed *catalog product* rather than detected
+    /// existing furniture; links back to `CatalogItem.id` for BUY-mode true-color
+    /// rendering and the retailer out-link. `nil` for detected/manual pieces.
+    ///
+    /// Optional, so Swift's synthesized decoder reads it as `decodeIfPresent` —
+    /// pre-catalog room blobs decode unchanged with no schema bump. A catalog
+    /// item carries `.detected` confidence (real manufacturer dimensions ⇒ the
+    /// standard fit margin); it is distinguished from a Vision detection by this
+    /// id being non-nil, not by a separate confidence case.
+    var catalogItemID: String?
 
     /// How the footprint's geometry was arrived at. Drives how much `FitService`
     /// widens its uncertainty band for this obstacle.
@@ -181,7 +203,8 @@ struct FurnitureFootprint: Codable, Equatable, Sendable, Identifiable {
         appearance: FurnitureAppearance,
         detectionConfidence: DetectionConfidence,
         isCleared: Bool = false,
-        isKept: Bool = false
+        isKept: Bool = false,
+        catalogItemID: String? = nil
     ) {
         self.id = id
         self.category = category
@@ -192,20 +215,33 @@ struct FurnitureFootprint: Codable, Equatable, Sendable, Identifiable {
         self.detectionConfidence = detectionConfidence
         self.isCleared = isCleared
         self.isKept = isKept
+        self.catalogItemID = catalogItemID
     }
 }
 
 // MARK: - Appearance
 
-/// Perceptual appearance — never hex codes or raw K-Means output, so it stays
-/// robust to lighting variation and honest about what we actually know.
+/// Perceptual appearance — for DETECTED furniture, never hex codes or raw K-Means
+/// output, so it stays robust to lighting variation and honest about what we
+/// actually know.
 struct FurnitureAppearance: Codable, Equatable, Sendable {
     var colorCategory: FurnitureColorCategory
     var materialClass: FurnitureMaterialClass
+    /// Exact sRGB color (0–1), set ONLY for catalog products whose color is a
+    /// known manufacturer spec — not a lighting-inferred detection. BUY mode
+    /// renders this true color directly (the BUY promise); when nil (every
+    /// detected/manual piece) the renderer falls back to `colorCategory`'s
+    /// representative color. Optional, so old room blobs decode it as nil.
+    var exactColorRGB: SIMD3<Float>?
 
-    init(colorCategory: FurnitureColorCategory, materialClass: FurnitureMaterialClass) {
+    init(
+        colorCategory: FurnitureColorCategory,
+        materialClass: FurnitureMaterialClass,
+        exactColorRGB: SIMD3<Float>? = nil
+    ) {
         self.colorCategory = colorCategory
         self.materialClass = materialClass
+        self.exactColorRGB = exactColorRGB
     }
 }
 

@@ -15,6 +15,10 @@ struct SnugApp: App {
     /// The room persistence service, the one writer of saved rooms.
     @State private var roomStore: RoomStore
 
+    /// The bundled furniture catalog (BUY mode). Loaded once on launch; read-only
+    /// over its items. Replaceable by a remote source later via `CatalogSource`.
+    @State private var catalog = CatalogService()
+
     init() {
         let schema = Schema(versionedSchema: SnugSchemaV1.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
@@ -56,6 +60,8 @@ struct SnugApp: App {
             MyRoomsView()
                 .environment(accuracyStore)
                 .environment(roomStore)
+                .environment(catalog)
+                .task { await catalog.load() }
         }
         .modelContainer(container)
     }
