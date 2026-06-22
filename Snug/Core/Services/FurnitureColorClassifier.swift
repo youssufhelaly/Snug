@@ -89,7 +89,8 @@ extension FurnitureMaterialClass {
         switch category {
         case .sofa, .chair, .bed:           return .fabric
         case .diningChair:                  return .wood
-        case .desk, .diningTable, .dresser, .bookshelf, .tvStand, .coffeeTable:
+        case .desk, .diningTable, .dresser, .bookshelf, .tvStand, .coffeeTable,
+             .sideTable, .wardrobe, .nightstand:
             return .wood
         case .unknown:                      return .other
         }

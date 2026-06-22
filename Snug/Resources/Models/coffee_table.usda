@@ -1,0 +1,52 @@
+#usda 1.0
+(
+    defaultPrim = "CoffeeTable"
+    metersPerUnit = 1
+    upAxis = "Y"
+)
+
+# Stylized placeholder table: a top slab on four legs. Rescaled to real dimensions
+# by CatalogModelLoader; shown in BUY mode only.
+def Xform "CoffeeTable" (kind = "component")
+{
+    def Cube "Top"
+    {
+        double size = 1
+        color3f[] primvars:displayColor = [(0.20, 0.18, 0.16)]
+        float3 xformOp:translate = (0, 0.40, 0)
+        float3 xformOp:scale = (1.10, 0.07, 0.55)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+    def Cube "LegFL"
+    {
+        double size = 1
+        color3f[] primvars:displayColor = [(0.17, 0.15, 0.13)]
+        float3 xformOp:translate = (-0.48, 0.18, 0.22)
+        float3 xformOp:scale = (0.06, 0.40, 0.06)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+    def Cube "LegFR"
+    {
+        double size = 1
+        color3f[] primvars:displayColor = [(0.17, 0.15, 0.13)]
+        float3 xformOp:translate = (0.48, 0.18, 0.22)
+        float3 xformOp:scale = (0.06, 0.40, 0.06)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+    def Cube "LegBL"
+    {
+        double size = 1
+        color3f[] primvars:displayColor = [(0.17, 0.15, 0.13)]
+        float3 xformOp:translate = (-0.48, 0.18, -0.22)
+        float3 xformOp:scale = (0.06, 0.40, 0.06)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+    def Cube "LegBR"
+    {
+        double size = 1
+        color3f[] primvars:displayColor = [(0.17, 0.15, 0.13)]
+        float3 xformOp:translate = (0.48, 0.18, -0.22)
+        float3 xformOp:scale = (0.06, 0.40, 0.06)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+}
