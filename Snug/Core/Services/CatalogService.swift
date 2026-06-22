@@ -35,8 +35,14 @@ struct BundledCatalogSource: CatalogSource {
         guard let url = bundle.url(forResource: resourceName, withExtension: "json") else {
             throw LoadError.missingResource(resourceName)
         }
-        let data = try Data(contentsOf: url)
-        return try JSONDecoder().decode([CatalogItem].self, from: data)
+        // `Data(contentsOf:)` is a synchronous, blocking read. Hop off the
+        // cooperative thread pool so it can't occupy a worker that other async
+        // work needs — negligible for today's bundled file, correct as the
+        // catalog grows or moves behind a remote `CatalogSource`.
+        return try await Task.detached(priority: .userInitiated) {
+            let data = try Data(contentsOf: url)
+            return try JSONDecoder().decode([CatalogItem].self, from: data)
+        }.value
     }
 }
 
@@ -75,7 +81,7 @@ final class CatalogService {
             isLoaded = true
             loadError = nil
         } catch {
-            loadError = "We couldn't load the catalog. Pull to retry."
+            loadError = "We couldn't load the catalog. Close and try again."
             items = []
         }
     }

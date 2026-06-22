@@ -173,13 +173,28 @@ struct CatalogBrowseOverlay: View {
 
 extension CatalogItem {
     /// Display price, e.g. "$1,199". Whole dollars — we never imply cent-level
-    /// precision on a retailer price that can shift.
-    var formattedPrice: String {
+    /// precision on a retailer price that can shift. Main-actor isolated: it's
+    /// only ever read from SwiftUI view bodies and uses a shared formatter cache.
+    @MainActor var formattedPrice: String {
+        let formatter = CatalogItem.priceFormatter(for: currencyCode)
+        let dollars = NSNumber(value: Double(priceCents) / 100.0)
+        return formatter.string(from: dollars) ?? "$\(priceCents / 100)"
+    }
+
+    /// Cached currency formatters keyed by currency code. `NumberFormatter` is
+    /// costly to build (it initializes locale state), and `formattedPrice` runs
+    /// once per product card on every render pass — so we reuse one per code
+    /// instead of allocating each call. Accessed on the main thread (SwiftUI
+    /// rendering), so the plain dictionary needs no extra synchronization.
+    @MainActor private static var priceFormatters: [String: NumberFormatter] = [:]
+
+    @MainActor private static func priceFormatter(for currencyCode: String) -> NumberFormatter {
+        if let cached = priceFormatters[currencyCode] { return cached }
         let formatter = NumberFormatter()
         formatter.numberStyle = .currency
         formatter.currencyCode = currencyCode
         formatter.maximumFractionDigits = 0
-        let dollars = NSNumber(value: Double(priceCents) / 100.0)
-        return formatter.string(from: dollars) ?? "$\(priceCents / 100)"
+        priceFormatters[currencyCode] = formatter
+        return formatter
     }
 }
