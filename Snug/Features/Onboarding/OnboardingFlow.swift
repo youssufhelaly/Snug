@@ -40,23 +40,21 @@ struct OnboardingFlow: View {
                 OnboardingSlidesView(onGetStarted: advanceFromSlides)
                     .transition(.opacity)
             case .primer:
-                if hasSupportedMethod {
-                    CameraPrimerView(onContinue: onFinished)
-                        .transition(.move(edge: .trailing).combined(with: .opacity))
-                } else {
-                    // Neither AR world tracking nor LiDAR is available — priming
-                    // the camera is pointless. Show the honest dead-end (the home
-                    // shows the same screen, so this stays consistent).
-                    UnsupportedDeviceView()
-                        .transition(.opacity)
-                }
+                CameraPrimerView(onContinue: onFinished)
+                    .transition(.move(edge: .trailing).combined(with: .opacity))
             }
         }
     }
 
     private func advanceFromSlides() {
-        // On an unsupported device there's no camera to prime — let the user read
-        // the slides, then land them on the honest unsupported screen.
+        // On an unsupported device there's no camera to prime, so skip the primer
+        // and finish onboarding now. The home shell shows the honest
+        // `UnsupportedDeviceView` itself, so the user lands on the same dead-end —
+        // and crucially `hasOnboarded` flips, so we never re-loop into onboarding.
+        guard hasSupportedMethod else {
+            onFinished()
+            return
+        }
         withAnimation(SnugTheme.spring) { phase = .primer }
     }
 }
