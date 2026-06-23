@@ -1,0 +1,200 @@
+<title>ML Detection Cheat-Sheet — Snug</title>
+<style>
+  :root{
+    --bg:#FAF7F2; --card:#FFFFFF; --ink:#2B2722; --subtle:#8A847C;
+    --clay:#E8714A; --sage:#7FA886; --line:#ECE6DD; --bad:#D9534F; --good:#5FA86E;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;
+    line-height:1.5;padding:32px 18px 80px}
+  .wrap{max-width:860px;margin:0 auto}
+  h1{font-size:30px;letter-spacing:-.5px;margin:0 0 4px;
+    font-family:-apple-system,"SF Pro Rounded",system-ui,sans-serif}
+  .sub{color:var(--subtle);font-size:15px;margin:0 0 28px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:1.5px;color:var(--clay);
+    margin:34px 0 12px;font-weight:700}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:16px;
+    padding:18px 20px;margin:0 0 14px;box-shadow:0 1px 2px rgba(0,0,0,.03)}
+  .card h3{margin:0 0 6px;font-size:17px;
+    font-family:-apple-system,"SF Pro Rounded",system-ui,sans-serif}
+  .formula{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-size:14px;
+    background:#FBF3EE;border-left:3px solid var(--clay);padding:10px 14px;
+    border-radius:8px;margin:10px 0;white-space:pre-wrap;overflow-x:auto}
+  .num{font-family:"SF Mono",ui-monospace,Menlo,monospace;font-weight:700}
+  .bad{color:var(--bad)} .good{color:var(--good)}
+  .pill{display:inline-block;font-size:12px;font-weight:600;padding:2px 10px;
+    border-radius:999px;background:#F0EAE1;color:var(--subtle);margin-right:6px}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+  @media(max-width:620px){.grid{grid-template-columns:1fr}}
+  table{width:100%;border-collapse:collapse;font-size:14px;margin-top:6px}
+  th,td{text-align:left;padding:7px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--subtle);font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.5px}
+  td.mono{font-family:"SF Mono",ui-monospace,Menlo,monospace}
+  .scroll{overflow-x:auto}
+  .bar{height:8px;border-radius:4px;background:var(--clay);display:inline-block;vertical-align:middle}
+  .key{background:#FFF6E9;border:1px solid #F0DCBB;border-radius:12px;padding:14px 18px;margin:8px 0 0}
+  .key b{color:var(--clay)}
+  .step{display:flex;gap:12px;align-items:flex-start;margin:8px 0}
+  .step .n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--sage);color:#fff;
+    font-weight:700;display:flex;align-items:center;justify-content:center;font-size:13px}
+  ol.lessons{padding-left:20px;margin:6px 0}
+  ol.lessons li{margin:7px 0}
+  .foot{color:var(--subtle);font-size:13px;margin-top:30px;text-align:center}
+</style>
+<div class="wrap">
+
+<h1>Object-Detection Cheat-Sheet</h1>
+<p class="sub">The metrics, the model, and the training loop — explained against Snug's own YOLO26n furniture detector. The running example is <b>nightstand</b>, the weakest class.</p>
+
+<h2>1 · What the model outputs</h2>
+<div class="card">
+  <p>Per image, the detector emits a list of predictions. Each row = a box + a label + a confidence:</p>
+  <div class="formula">[x1, y1, x2, y2,  score,  classIndex]
+ └── where ──┘    0.83    10 = nightstand</div>
+  <p style="margin-bottom:0">Everything below is just <b>bookkeeping on how often these rows are right.</b></p>
+</div>
+
+<h2>2 · Is a box correct? → IoU</h2>
+<div class="card">
+  <h3>Intersection over Union</h3>
+  <div class="formula">IoU = area of overlap ÷ area of union   (0 = miss … 1 = perfect)</div>
+  <p>A prediction "hits" a real box if <span class="num">IoU ≥ 0.5</span>. The <b>50</b> in <b>AP50</b> is that 0.5 bar.</p>
+  <p style="margin-bottom:0">Every prediction then falls into one bucket:</p>
+  <div class="grid" style="margin-top:10px">
+    <div class="key"><b>TP</b> — said nightstand, was one ✓</div>
+    <div class="key"><b>FP</b> — said nightstand, wasn't <span class="subtle">(hallucination)</span></div>
+    <div class="key"><b>FN</b> — was a nightstand, stayed silent <span class="subtle">(miss)</span></div>
+    <div class="key"><span class="subtle">TN — not meaningful in detection</span></div>
+  </div>
+</div>
+
+<h2>3 · Precision vs Recall — the core pair</h2>
+<div class="grid">
+  <div class="card">
+    <h3>Precision</h3>
+    <div class="formula">TP ÷ (TP + FP)</div>
+    <p>"Of what I <b>flagged</b>, how much was real?" Punishes <b>hallucinations</b>.</p>
+    <p style="margin:0">Nightstand: <span class="num good">0.768</span> — fine.</p>
+  </div>
+  <div class="card">
+    <h3>Recall</h3>
+    <div class="formula">TP ÷ (TP + FN)</div>
+    <p>"Of what <b>existed</b>, how much did I catch?" Punishes <b>misses</b>.</p>
+    <p style="margin:0">Nightstand: <span class="num bad">0.382</span> — caught &lt;4 of 10.</p>
+  </div>
+</div>
+<div class="key" style="margin-top:4px">
+  <b>The whole bug in one line:</b> high precision + low recall = a <b>shy, confused class</b>.
+  The model isn't lying about nightstands — it stays silent, hedging between nightstand / side_table / dresser.
+  <b>F1</b> = 2·P·R/(P+R) is the single score that's only high when both are.
+</div>
+
+<h2>4 · The confidence-threshold knob</h2>
+<div class="card">
+  <p>P and R aren't fixed — they slide as you move the score cutoff:</p>
+  <div class="formula">threshold LOW  → fires on everything → recall ↑  precision ↓
+threshold HIGH → fires only when sure → precision ↑  recall ↓   ← Snug app: 0.70</div>
+  <p style="margin-bottom:0">Snug gates at <span class="num">minimumConfidence = 0.70</span> — far right of the curve, where a shy class goes nearly silent. That's <b>why lowering the floor for nightstand recovers recall today.</b></p>
+</div>
+
+<h2>5 · AP50 · mAP — scoring across all thresholds</h2>
+<div class="card">
+  <p>Sweep the threshold high→low, trace precision vs recall = the <b>PR curve</b>. Area under it = <b>AP</b> (one class).</p>
+  <table>
+    <tr><th>Metric</th><th>Meaning</th></tr>
+    <tr><td class="mono">AP50</td><td>Area under PR curve, using IoU ≥ 0.50 as the hit bar</td></tr>
+    <tr><td class="mono">AP50-95</td><td>Average AP over IoU 0.50→0.95 — also demands <i>tight</i> boxes (always lower)</td></tr>
+    <tr><td class="mono">mAP</td><td><b>mean</b> AP across all 11 classes (the "m")</td></tr>
+  </table>
+</div>
+
+<h2>6 · Snug's report card (v4 checkpoint)</h2>
+<div class="card scroll">
+  <table>
+    <tr><th>Class</th><th>AP50</th><th></th><th>note</th></tr>
+    <tr><td>bed</td><td class="mono good">0.886</td><td><span class="bar" style="width:133px"></span></td><td class="subtle">big, unambiguous → best</td></tr>
+    <tr><td>dresser</td><td class="mono">0.835</td><td><span class="bar" style="width:125px"></span></td><td></td></tr>
+    <tr><td>sofa</td><td class="mono">0.823</td><td><span class="bar" style="width:123px"></span></td><td></td></tr>
+    <tr><td>bookshelf</td><td class="mono">0.772</td><td><span class="bar" style="width:116px"></span></td><td class="subtle">only 224 train imgs, still OK</td></tr>
+    <tr><td>desk</td><td class="mono">0.689</td><td><span class="bar" style="width:103px"></span></td><td class="subtle">180 train imgs, still beats nightstand</td></tr>
+    <tr><td>side_table</td><td class="mono">0.662</td><td><span class="bar" style="width:99px"></span></td><td class="subtle">confusable twin of nightstand</td></tr>
+    <tr><td><b>nightstand</b></td><td class="mono bad">0.554</td><td><span class="bar" style="width:83px;background:#D9534F"></span></td><td class="bad">worst — P .768 / R .382</td></tr>
+    <tr><td colspan="4" style="border:none;height:6px"></td></tr>
+    <tr><td><b>mAP50</b></td><td class="mono"><b>0.743</b></td><td></td><td class="subtle">avg of all 11 (bed lifts, nightstand drags)</td></tr>
+  </table>
+  <div class="key" style="margin-top:14px">
+    <b>Diagnosis:</b> desk (180 imgs) beats nightstand (568 imgs) → the problem is <b>class confusion, not data volume</b>.
+    Cheapest real fix = <b>merge nightstand + side_table</b> into one class. The product still shows the right thing; the model stops hedging.
+  </div>
+</div>
+
+<h2>7 · The model — YOLO26n</h2>
+<div class="card">
+  <p><span class="pill">YOLO</span>"You Only Look Once" — detects in a single forward pass → real-time on-device. <span class="pill">n = nano</span>~5 MB, smallest size (n&lt;s&lt;m&lt;l&lt;x), chosen for the offline live AR pan.</p>
+  <div class="formula">image 640×640
+   │
+[ BACKBONE ]  conv layers extract features (edges → parts → "cushion-like")
+   │
+[   NECK   ]  fuses scales (FPN/PAN) so big sofa AND small nightstand both seen
+   │
+[   HEAD   ]  outputs box coords + class scores per location</div>
+  <p style="margin-bottom:0"><b>anchor-free</b> (predicts geometry directly) · <b>end2end / NMS-free</b> export → clean <span class="mono">(1,300,6)</span> tensor, no in-app NMS · 640px input (small/far nightstands lose detail here).</p>
+</div>
+
+<h2>8 · How it trains</h2>
+<div class="card">
+  <div class="step"><div class="n">1</div><div><b>Forward</b> — run a batch of images → predictions</div></div>
+  <div class="step"><div class="n">2</div><div><b>Loss</b> — compare to labels → one error number = <span class="mono">box_loss</span> + <span class="mono">cls_loss</span> + <span class="mono">dfl_loss</span>. <span class="subtle">(cls_loss = where nightstand↔side_table confusion lives)</span></div></div>
+  <div class="step"><div class="n">3</div><div><b>Backward</b> — backprop computes the gradient (which way each weight should move)</div></div>
+  <div class="step"><div class="n">4</div><div><b>Step</b> — optimizer nudges every weight by learning-rate × gradient</div></div>
+  <p style="margin:12px 0 0">Repeat over batches × <b>epochs</b> (full passes). Snug ran <span class="num bad">10</span> — low; rare classes still improving when it stopped.</p>
+  <div class="key" style="margin-top:12px">
+    <b>Transfer learning:</b> you start from COCO-pretrained weights and adapt the head to 11 furniture classes — that's why ~28k images is enough. The backbone already knows "edges, legs, surfaces."
+  </div>
+</div>
+
+<h2>9 · Config + class imbalance</h2>
+<div class="grid">
+  <div class="card">
+    <h3>Hyperparameters</h3>
+    <table>
+      <tr><td>epochs</td><td class="mono">10 ↑raise</td></tr>
+      <tr><td>imgsz</td><td class="mono">640</td></tr>
+      <tr><td>warmup</td><td class="mono">3</td></tr>
+      <tr><td>LR (end)</td><td class="mono">5.4e-05</td></tr>
+      <tr><td>classes</td><td class="mono">11</td></tr>
+    </table>
+  </div>
+  <div class="card">
+    <h3>Train instances</h3>
+    <table>
+      <tr><td>chair</td><td class="mono">12491</td></tr>
+      <tr><td>sofa</td><td class="mono">4046</td></tr>
+      <tr><td>nightstand</td><td class="mono">568</td></tr>
+      <tr><td>desk</td><td class="mono bad">180</td></tr>
+    </table>
+    <p class="subtle" style="margin:8px 0 0;font-size:13px">Imbalance → rare classes get a weak training signal.</p>
+  </div>
+</div>
+
+<h2>10 · Training → your iPhone</h2>
+<div class="card">
+  <div class="formula">best.pt ──export──► YOLO26nFurniture.mlpackage ──Vision/CoreML──► Neural Engine</div>
+  <p><b>NMS</b> (Non-Max Suppression): a detector fires many overlapping boxes per object; NMS keeps the top-score one, drops the rest. Snug bakes it into the model (end2end) → in-app code just decodes the tensor.</p>
+  <p style="margin-bottom:0" class="subtle">Note: the app's runtime IoU "consensus" (≥3 frames) is a <i>different</i> use of IoU — across frames, to confirm a piece is real, not within one frame.</p>
+</div>
+
+<h2>11 · Think like an MLE</h2>
+<div class="card">
+  <ol class="lessons">
+    <li><b>Decompose every aggregate.</b> mAP50 0.743 looked fine; per-class exposed nightstand 0.554.</li>
+    <li><b>Low-precision ≠ low-recall.</b> Different diseases, different cures. Nightstand is a recall disease.</li>
+    <li><b>Volume vs confusion.</b> Desk beats nightstand with less data → confusion, not volume. This picks the fix.</li>
+    <li><b>Constraints pick the model.</b> Offline + real-time + on-device ⇒ nano + CoreML, not a giant open-vocab net.</li>
+    <li><b>Taxonomy is a design lever.</b> Splitting tables 5 ways created the confusion. Merging is the most underrated fix.</li>
+  </ol>
+</div>
+
+<p class="foot">Built from Snug's v4 eval · numbers = your real checkpoint · keep & re-read</p>
+</div>

@@ -9,6 +9,10 @@ struct MyRoomsView: View {
     @Environment(RoomStore.self) private var store
     @Query(sort: \StoredRoom.capturedAt, order: .reverse) private var rooms: [StoredRoom]
 
+    /// Flipping this back to `false` re-shows the onboarding flow (value slides +
+    /// camera primer). The gate itself lives in `SnugApp`.
+    @AppStorage("hasOnboarded") private var hasOnboarded = false
+
     @State private var activeCapture: ActiveCapture?
     @State private var openRoom: StoredRoom?
     @State private var showMethodDialog = false
@@ -131,6 +135,12 @@ struct MyRoomsView: View {
                     FitDebugView(room: .fitHarnessSample)
                 } label: {
                     Label("Fit harness (debug)", systemImage: "shippingbox")
+                }
+                Divider()
+                Button {
+                    hasOnboarded = false
+                } label: {
+                    Label("Show intro again", systemImage: "sparkles")
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")

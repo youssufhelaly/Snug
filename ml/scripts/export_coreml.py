@@ -11,7 +11,7 @@ Then copy that file into the Xcode project as YOLO26nFurniture.mlpackage
 from pathlib import Path
 from ultralytics import YOLO
 
-BEST_CHECKPOINT = Path.home() / "snug-training/runs/snug_furniture_v2/weights/best.pt"
+BEST_CHECKPOINT = Path.home() / "snug-training/runs/snug_furniture_v4/weights/best.pt"
 
 model = YOLO(str(BEST_CHECKPOINT))
 

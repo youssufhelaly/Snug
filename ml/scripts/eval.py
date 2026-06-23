@@ -10,9 +10,12 @@ Prints per-class AP50 and a summary table.
 from pathlib import Path
 from ultralytics import YOLO
 
-BEST_CHECKPOINT  = Path.home() / "snug-training/runs/snug_furniture_v2/weights/best.pt"
+BEST_CHECKPOINT  = Path.home() / "snug-training/runs/snug_furniture_v4/weights/best.pt"
 MERGED_DATA_YAML = Path.home() / "snug-training/datasets/merged/data.yaml"
 
+# v4 (bundled) is the 11-class model. A v5 that folded nightstand into side_table
+# (nc=10) was trained and REJECTED — the forced head reinit regressed every class
+# (mAP50 0.743→0.705). See the YOLO memory note. 11 classes:
 MASTER_CLASSES = [
     "sofa", "chair", "bed", "desk", "dining_table",
     "coffee_table", "side_table", "bookshelf", "dresser", "wardrobe", "nightstand",

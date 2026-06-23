@@ -81,6 +81,11 @@ struct RoomSceneView: View {
     var body: some View {
         GeometryReader { geo in
             RealityView { content in
+                // RealityKit enables per-object motion blur by DEFAULT, which smears
+                // the walls/floor into a blurry trail during a fast orbit/zoom. The
+                // diorama is a clean stylized scene, not a film camera — disable it
+                // (also cheaper to render). Only touches post-processing, never geometry.
+                content.renderingEffects.motionBlur = .disabled
                 controller.catalogModelAssetName = catalogModelResolver()
                 controller.makeEntities(room: room, mode: mode, editingFurniture: editableFurniture != nil, onThumbnail: onThumbnail)
                 content.add(controller.root)

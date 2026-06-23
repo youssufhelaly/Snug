@@ -24,8 +24,14 @@ SPLIT_RATIO = 0.9  # 90% train, 10% val
 SEED = 42
 
 # ── Master class list ──────────────────────────────────────────────────────────
-# These 11 classes are what the Snug app recognises.
-# Index order matters — must match FurnitureDetectionService in Swift.
+# These 11 classes are what the Snug app recognises (= the bundled v4 model's names).
+# Index order matters — Swift reads labels by NAME from the model's `names` metadata.
+#
+# REJECTED EXPERIMENT (2026-06-22): folding `nightstand` into `side_table` (nc=10) to
+# fix nightstand's low recall (0.382). It trained (v5) but the forced head reinit
+# (nc 11→10) REGRESSED every class — mAP50 0.743→0.705 — so v5 was NOT shipped; v4
+# (this 11-class taxonomy) stays bundled. If retried, keep nc=11 with nightstand as a
+# 0-instance class so the head is preserved. See the YOLO memory note.
 MASTER_CLASSES = {
     0:  "sofa",
     1:  "chair",
@@ -266,6 +272,12 @@ DATASET_CONFIGS = [
         "splits":    ["train", "valid"],
         "class_map": NIGHTSTAND_ROBOCUP_MAP,
     },
+    # NOTE: desk_usthb is intentionally NOT wired in. It was tried in v3 (the
+    # "expanded dataset") and measurably REGRESSED the model — notably tanked
+    # nightstand — so v4 dropped it. (Likely domain shift: it's office scenes with
+    # monitors/laptops/people, a narrow distribution far from real rooms, and only
+    # desk+chair are labeled.) DESK_USTHB_MAP is kept above for reference only.
+    # Don't re-add it without re-measuring. Fix desk→dining_table some other way.
 ]
 
 # ── Helpers ────────────────────────────────────────────────────────────────────

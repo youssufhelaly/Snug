@@ -50,6 +50,27 @@ final class FurnitureDetectionService {
 
     // MARK: - Configuration
     static let minimumConfidence: Float = 0.70
+    /// Per-category confidence floor, overriding `minimumConfidence` for classes the
+    /// model has high *precision* but low *recall* on. `nightstand` and `side_table`
+    /// confuse with each other (geometrically near-identical), so the model fires on
+    /// them rarely and weakly — most true detections score below 0.70 and get dropped.
+    /// Their precision is good (~0.77 for nightstand), so admitting them lower turns
+    /// otherwise-wasted precision into real detections without loosening the confident
+    /// classes. The consensus gate still suppresses single-frame flicker. This is a
+    /// stopgap for the recall ceiling; the durable fix is collapsing the confusable
+    /// classes at train time.
+    static let perCategoryConfidence: [FurnitureCategory: Float] = [
+        .nightstand: 0.45,
+        .sideTable: 0.45,
+    ]
+    /// The confidence threshold a raw detection of `category` must clear.
+    static func confidenceFloor(for category: FurnitureCategory) -> Float {
+        perCategoryConfidence[category] ?? minimumConfidence
+    }
+    /// Lowest floor across all categories — used as a coarse early reject before the
+    /// class index is decoded, so no real detection is dropped prematurely.
+    static let lowestConfidenceFloor: Float = min(minimumConfidence,
+        perCategoryConfidence.values.min() ?? minimumConfidence)
     static let minimumConsecutiveFrames: Int = 3
     static let minimumTrackDuration: TimeInterval = 1.5
     static let totalDetectionFrames: Int = 10
@@ -293,7 +314,9 @@ final class FurnitureDetectionService {
             func value(_ col: Int) -> Double { array[[0, row, col] as [NSNumber]].doubleValue }
 
             let score = Float(value(4))
-            guard score >= minimumConfidence else { continue }
+            // Coarse early-out at the lowest floor any category uses; the exact
+            // per-category threshold is applied once the class is resolved below.
+            guard score >= Self.lowestConfidenceFloor else { continue }
 
             var x1 = value(0), y1 = value(1), x2 = value(2), y2 = value(3)
             // Normalize pixel-space coords if needed (VALIDATE on device).
@@ -309,6 +332,8 @@ final class FurnitureDetectionService {
             // Generic COCO export: drop anything that isn't furniture rather than
             // surfacing it as a phantom `.unknown` piece in the de-clutter UI.
             guard category != .unknown else { continue }
+            // Apply the category's confidence floor (lower for low-recall classes).
+            guard score >= Self.confidenceFloor(for: category) else { continue }
 
             // Top-left image box → Vision bottom-left normalized box.
             let visionBox = CGRect(x: x1, y: 1 - y2, width: x2 - x1, height: y2 - y1)
