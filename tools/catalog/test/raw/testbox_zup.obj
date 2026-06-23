@@ -1,0 +1,21 @@
+# Synthetic pipeline test fixture.
+# A box with three DISTINCT edge lengths so any axis permutation or
+# non-uniform distortion introduced by the conversion is obvious:
+#   X extent = 1.0   Y extent = 2.0   Z extent = 3.0
+# Authored Z-up (the "tall" 3.0 axis is Z) to exercise axis correction:
+# a correct Y-up output must end up with the 3.0 extent on Y.
+o testbox
+v -0.5 -1.0 -1.5
+v  0.5 -1.0 -1.5
+v  0.5  1.0 -1.5
+v -0.5  1.0 -1.5
+v -0.5 -1.0  1.5
+v  0.5 -1.0  1.5
+v  0.5  1.0  1.5
+v -0.5  1.0  1.5
+f 1 2 3 4
+f 5 8 7 6
+f 1 5 6 2
+f 2 6 7 3
+f 3 7 8 4
+f 4 8 5 1

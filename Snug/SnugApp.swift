@@ -19,6 +19,11 @@ struct SnugApp: App {
     /// over its items. Replaceable by a remote source later via `CatalogSource`.
     @State private var catalog = CatalogService()
 
+    /// First-run gate. Shows the onboarding flow (value slides + camera primer)
+    /// once, then the home. Re-triggerable from the home's More menu by flipping
+    /// this back to `false`.
+    @AppStorage("hasOnboarded") private var hasOnboarded = false
+
     init() {
         let schema = Schema(versionedSchema: SnugSchemaV1.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
@@ -57,11 +62,19 @@ struct SnugApp: App {
 
     var body: some Scene {
         WindowGroup {
-            MyRoomsView()
-                .environment(accuracyStore)
-                .environment(roomStore)
-                .environment(catalog)
-                .task { await catalog.load() }
+            Group {
+                if hasOnboarded {
+                    MyRoomsView()
+                } else {
+                    // Prime camera permission with context before the home (and
+                    // its capture flow) can ever cold-prompt for it.
+                    OnboardingFlow(onFinished: { hasOnboarded = true })
+                }
+            }
+            .environment(accuracyStore)
+            .environment(roomStore)
+            .environment(catalog)
+            .task { await catalog.load() }
         }
         .modelContainer(container)
     }

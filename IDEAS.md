@@ -78,3 +78,5 @@ Every "while we're at it..." idea lands here instead of in the build.
   bundled JSON to a remote feed for hundreds of honest, buyable, dimension-accurate
   items without a code rewrite. The trustworthy way to scale catalog size; the
   natural backing index for the reverse-search idea above. Network → out of V1.
+
+- Feature where you are able to describe and ai generate furniture which deos not exist in catlog, you can even ai generate a whole room after describing style and vibe of room and what you want 
