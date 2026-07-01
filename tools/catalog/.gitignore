@@ -1,0 +1,7 @@
+# Generated conversion artifacts — only source tooling + test fixture are tracked.
+test/out/
+out/
+staging/
+*.usdc
+out-quaternius
+Quaternius_Ultimate_Furniture Pack/

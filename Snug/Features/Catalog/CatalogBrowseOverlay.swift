@@ -10,26 +10,38 @@ import UIKit
 /// message rather than a blank sheet (CLAUDE.md: errors are never blank).
 struct CatalogBrowseOverlay: View {
     @Environment(CatalogService.self) private var catalog
+    @Environment(SandboxLibrary.self) private var sandbox
 
+    /// Pick a real, buyable product (Shop tab).
     let onSelect: (CatalogItem) -> Void
+    /// Pick a generic "digital clay" shape to sketch with (Ideas tab).
+    let onSelectSandbox: (SandboxAsset) -> Void
     let onClose: () -> Void
 
+    /// The two isolated tracks, surfaced as one picker. "Shop" = Verified products
+    /// (price, fit, buy); "Ideas" = elastic sandbox shapes (sketch, then find real
+    /// matches). The split makes "real & buyable" vs "ideation" unmistakable.
+    private enum BrowseTab: String, CaseIterable, Identifiable {
+        case shop, ideas
+        var id: String { rawValue }
+        var title: String { self == .shop ? "Shop" : "Ideas" }
+    }
+
+    @State private var tab: BrowseTab = .shop
     @State private var category: FurnitureCategory?
 
-    private var visibleItems: [CatalogItem] {
-        catalog.items(in: category)
-    }
+    private var visibleItems: [CatalogItem] { catalog.items(in: category) }
+    private var visibleAssets: [SandboxAsset] { sandbox.assets(in: category) }
 
     var body: some View {
         VStack(spacing: 0) {
             Spacer()
             VStack(alignment: .leading, spacing: 14) {
                 header
-                if catalog.items.isEmpty {
-                    emptyState
-                } else {
-                    categoryChips
-                    productScroller
+                tabPicker
+                switch tab {
+                case .shop:  shopContent
+                case .ideas: ideasContent
                 }
                 disclosure
             }
@@ -40,6 +52,34 @@ struct CatalogBrowseOverlay: View {
         }
         .ignoresSafeArea(edges: .bottom)
         .task { await catalog.load() }
+        .task { await sandbox.load() }
+        // A category chosen on one tab may not exist on the other; reset on switch.
+        .onChange(of: tab) { category = nil }
+    }
+
+    private var tabPicker: some View {
+        Picker("Browse", selection: $tab) {
+            ForEach(BrowseTab.allCases) { Text($0.title).tag($0) }
+        }
+        .pickerStyle(.segmented)
+    }
+
+    @ViewBuilder private var shopContent: some View {
+        if catalog.items.isEmpty {
+            emptyState
+        } else {
+            categoryChips(catalog.availableCategories)
+            productScroller
+        }
+    }
+
+    @ViewBuilder private var ideasContent: some View {
+        if sandbox.assets.isEmpty {
+            sandboxEmptyState
+        } else {
+            categoryChips(sandbox.availableCategories)
+            sandboxScroller
+        }
     }
 
     private var header: some View {
@@ -57,11 +97,11 @@ struct CatalogBrowseOverlay: View {
         }
     }
 
-    private var categoryChips: some View {
+    private func categoryChips(_ categories: [FurnitureCategory]) -> some View {
         ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 8) {
                 chip(title: "All", isOn: category == nil) { category = nil }
-                ForEach(catalog.availableCategories, id: \.self) { c in
+                ForEach(categories, id: \.self) { c in
                     chip(title: c.displayName, isOn: category == c) { category = c }
                 }
             }
@@ -119,6 +159,78 @@ struct CatalogBrowseOverlay: View {
         .accessibilityHint("Adds it to your room")
     }
 
+    // MARK: - Ideas tab (sandbox shapes)
+
+    private var sandboxScroller: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 12) {
+                ForEach(visibleAssets) { asset in
+                    sandboxCard(asset)
+                }
+            }
+            .padding(.vertical, 4)
+        }
+    }
+
+    /// A clay-shape card: stylized swatch + glyph and the STYLE name, with a
+    /// "Sketch" tag instead of a price — it makes no purchase claim.
+    private func sandboxCard(_ asset: SandboxAsset) -> some View {
+        Button { onSelectSandbox(asset) } label: {
+            VStack(alignment: .leading, spacing: 8) {
+                ZStack {
+                    swatch(asset.colorCategory)
+                    Image(systemName: asset.category.symbolName)
+                        .font(.system(size: 26))
+                        .foregroundStyle(.white.opacity(0.9))
+                        .shadow(radius: 1)
+                }
+                .frame(width: 132, height: 92)
+                .clipShape(RoundedRectangle(cornerRadius: 12))
+
+                Text(asset.name)
+                    .font(.system(size: 13, weight: .semibold, design: .rounded))
+                    .foregroundStyle(SnugTheme.ink)
+                    .lineLimit(1)
+                HStack(spacing: 6) {
+                    Text(asset.style.displayName)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(SnugTheme.subtle)
+                    Spacer(minLength: 4)
+                    Text("Sketch")
+                        .font(.system(size: 10, weight: .bold, design: .rounded))
+                        .foregroundStyle(SnugTheme.subtle)
+                        .padding(.horizontal, 7).padding(.vertical, 2)
+                        .background(SnugTheme.surface, in: Capsule())
+                }
+                .frame(width: 132)
+            }
+        }
+        .buttonStyle(.plain)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(asset.name), \(asset.style.displayName) sketch shape")
+        .accessibilityHint("Adds an elastic shape you can resize to fit your space")
+    }
+
+    /// A perceptual-category swatch (no true color — sandbox makes no color claim).
+    private func swatch(_ category: FurnitureColorCategory) -> Color {
+        let rgb = category.representativeRGB
+        return Color(red: Double(rgb.x), green: Double(rgb.y), blue: Double(rgb.z))
+    }
+
+    private var sandboxEmptyState: some View {
+        VStack(spacing: 8) {
+            Image(systemName: "scribble.variable")
+                .font(.system(size: 28))
+                .foregroundStyle(SnugTheme.subtle)
+            Text(sandbox.loadError ?? "No design shapes available yet.")
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .foregroundStyle(SnugTheme.subtle)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 28)
+    }
+
     /// Bundled product art when `thumbnailAssetName` resolves to a real asset;
     /// otherwise the product's true color as a swatch with its category glyph. The
     /// `UIImage(named:)` guard means a missing/placeholder asset name degrades to
@@ -163,8 +275,11 @@ struct CatalogBrowseOverlay: View {
 
     /// Affiliate / out-link disclosure (CLAUDE.md hard rule: relationships are
     /// disclosed in UI copy, no hidden costs).
-    private var disclosure: some View {
-        Text("Prices and links go to the retailer. Snug may earn a commission, at no extra cost to you.")
+    @ViewBuilder private var disclosure: some View {
+        let copy = tab == .shop
+            ? "Prices and links go to the retailer. Snug may earn a commission, at no extra cost to you."
+            : "Sketch shapes are for planning only — resize one to fit your space, then find real, buyable furniture that matches."
+        Text(copy)
             .font(.system(size: 10, weight: .medium))
             .foregroundStyle(SnugTheme.subtle)
             .fixedSize(horizontal: false, vertical: true)

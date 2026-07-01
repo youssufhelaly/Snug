@@ -16,6 +16,12 @@ struct FineTuneSheet: View {
 
     private let haptic = UIImpactFeedbackGenerator(style: .light)
 
+    /// Measured intrinsic height of the slider stack, fed back into a `.height`
+    /// detent so the sheet is exactly as tall as its content (dynamic) instead of a
+    /// fixed fraction — no dead space, no clipped controls. Seeded with a sensible
+    /// value so the first frame isn't zero-height.
+    @State private var contentHeight: CGFloat = 320
+
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
             if let footprint = selected {
@@ -28,12 +34,16 @@ struct FineTuneSheet: View {
             slider("Height", value: dimensionBinding(\.z), range: 0.30...2.50, step: 0.05, unit: "m")
             Divider()
             slider("Rotation", value: rotationDegreesBinding, range: -180...180, step: 5, unit: "°")
-            Spacer(minLength: 0)
         }
         .padding(20)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .presentationDetents([.fraction(0.4)])
+        // Measure the content and drive the detent off it (dynamic height).
+        .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { contentHeight = $0 }
+        .presentationDetents([.height(contentHeight)])
         .presentationDragIndicator(.visible)
+        // Keep the diorama visible and orbitable behind the sheet, so you can see
+        // the piece you're tuning instead of it dimming out.
+        .presentationBackgroundInteraction(.enabled(upThrough: .height(contentHeight)))
         .onDisappear { onCommit() }
     }
 

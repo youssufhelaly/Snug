@@ -1,0 +1,240 @@
+[
+  {
+    "id": "sbx-beddouble",
+    "name": "Double Bed",
+    "category": "bed",
+    "style": "minimalist",
+    "baseDimensions": [
+      1.33,
+      2.0,
+      0.73
+    ],
+    "colorCategory": "warmBrown",
+    "material": "wood",
+    "modelAssetName": "quaternius_BedDouble"
+  },
+  {
+    "id": "sbx-bedtwin",
+    "name": "Twin Bed",
+    "category": "bed",
+    "style": "scandinavian",
+    "baseDimensions": [
+      0.97,
+      2.0,
+      0.73
+    ],
+    "colorCategory": "warmBrown",
+    "material": "wood",
+    "modelAssetName": "quaternius_BedTwin"
+  },
+  {
+    "id": "sbx-bookcase",
+    "name": "Open Bookcase",
+    "category": "bookshelf",
+    "style": "minimalist",
+    "baseDimensions": [
+      0.98,
+      0.35,
+      1.8
+    ],
+    "colorCategory": "black",
+    "material": "metal",
+    "modelAssetName": "quaternius_Bookcase"
+  },
+  {
+    "id": "sbx-bookcase_books",
+    "name": "Stocked Bookcase",
+    "category": "bookshelf",
+    "style": "traditional",
+    "baseDimensions": [
+      0.98,
+      0.35,
+      1.8
+    ],
+    "colorCategory": "black",
+    "material": "metal",
+    "modelAssetName": "quaternius_Bookcase_Books"
+  },
+  {
+    "id": "sbx-chair",
+    "name": "Accent Chair",
+    "category": "chair",
+    "style": "scandinavian",
+    "baseDimensions": [
+      0.43,
+      0.53,
+      0.9
+    ],
+    "colorCategory": "tan",
+    "material": "fabric",
+    "modelAssetName": "quaternius_Chair"
+  },
+  {
+    "id": "sbx-closet",
+    "name": "Tall Wardrobe",
+    "category": "wardrobe",
+    "style": "minimalist",
+    "baseDimensions": [
+      1.04,
+      0.58,
+      2.0
+    ],
+    "colorCategory": "lightGrey",
+    "material": "wood",
+    "modelAssetName": "quaternius_Closet"
+  },
+  {
+    "id": "sbx-desk",
+    "name": "Writing Desk",
+    "category": "desk",
+    "style": "mid_century",
+    "baseDimensions": [
+      1.2,
+      0.56,
+      0.61
+    ],
+    "colorCategory": "white",
+    "material": "wood",
+    "modelAssetName": "quaternius_Desk"
+  },
+  {
+    "id": "sbx-nightstand",
+    "name": "Nightstand",
+    "category": "nightstand",
+    "style": "scandinavian",
+    "baseDimensions": [
+      0.55,
+      0.47,
+      0.48
+    ],
+    "colorCategory": "warmBrown",
+    "material": "wood",
+    "modelAssetName": "quaternius_NightStand"
+  },
+  {
+    "id": "sbx-officechair",
+    "name": "Office Chair",
+    "category": "chair",
+    "style": "industrial",
+    "baseDimensions": [
+      0.58,
+      0.64,
+      0.9
+    ],
+    "colorCategory": "tan",
+    "material": "fabric",
+    "modelAssetName": "quaternius_OfficeChair"
+  },
+  {
+    "id": "sbx-shortcloset",
+    "name": "Short Wardrobe",
+    "category": "wardrobe",
+    "style": "minimalist",
+    "baseDimensions": [
+      1.37,
+      0.8,
+      2.0
+    ],
+    "colorCategory": "lightGrey",
+    "material": "wood",
+    "modelAssetName": "quaternius_ShortCloset"
+  },
+  {
+    "id": "sbx-sofa",
+    "name": "3-Seat Sofa",
+    "category": "sofa",
+    "style": "mid_century",
+    "baseDimensions": [
+      2.2,
+      0.93,
+      0.78
+    ],
+    "colorCategory": "warmBrown",
+    "material": "fabric",
+    "modelAssetName": "quaternius_Sofa"
+  },
+  {
+    "id": "sbx-sofa2",
+    "name": "Boxy Sofa",
+    "category": "sofa",
+    "style": "industrial",
+    "baseDimensions": [
+      2.2,
+      0.85,
+      0.8
+    ],
+    "colorCategory": "warmBrown",
+    "material": "fabric",
+    "modelAssetName": "quaternius_Sofa2"
+  },
+  {
+    "id": "sbx-sofa3",
+    "name": "Lounge Sofa",
+    "category": "sofa",
+    "style": "bohemian",
+    "baseDimensions": [
+      2.2,
+      1.54,
+      0.8
+    ],
+    "colorCategory": "warmBrown",
+    "material": "fabric",
+    "modelAssetName": "quaternius_Sofa3"
+  },
+  {
+    "id": "sbx-sofa_individual",
+    "name": "Armchair",
+    "category": "chair",
+    "style": "mid_century",
+    "baseDimensions": [
+      0.9,
+      0.79,
+      0.75
+    ],
+    "colorCategory": "tan",
+    "material": "fabric",
+    "modelAssetName": "quaternius_Sofa_individual"
+  },
+  {
+    "id": "sbx-stool",
+    "name": "Stool",
+    "category": "chair",
+    "style": "industrial",
+    "baseDimensions": [
+      0.79,
+      0.83,
+      0.9
+    ],
+    "colorCategory": "tan",
+    "material": "fabric",
+    "modelAssetName": "quaternius_Stool"
+  },
+  {
+    "id": "sbx-table",
+    "name": "Dining Table",
+    "category": "dining_table",
+    "style": "scandinavian",
+    "baseDimensions": [
+      0.61,
+      1.2,
+      0.36
+    ],
+    "colorCategory": "white",
+    "material": "wood",
+    "modelAssetName": "quaternius_Table"
+  },
+  {
+    "id": "sbx-table2",
+    "name": "Coffee Table",
+    "category": "coffee_table",
+    "style": "minimalist",
+    "baseDimensions": [
+      0.56,
+      1.1,
+      0.33
+    ],
+    "colorCategory": "cream",
+    "material": "wood",
+    "modelAssetName": "quaternius_Table2"
+  }
+]

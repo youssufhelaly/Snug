@@ -194,10 +194,22 @@ final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOv
     /// Set true the first time the running session delivers a frame. Used by the
     /// black-feed watchdog to tell "still starting up" from "started but stuck".
     @ObservationIgnored private var hasReceivedFrame = false
+    /// Most recent camera light estimate (lux), from the live frame stream. The
+    /// render-verification step needs it to tell a wedged black PASSTHROUGH (a lit
+    /// room rendering near-black) from a legitimately dark room — without it we'd
+    /// false-fail anyone scanning in the dark.
+    @ObservationIgnored private var lastAmbientIntensity: Double?
     /// How many times the watchdog has re-run a black session. Capped so a truly
     /// dead camera ends in an honest failure instead of an infinite kick loop.
     @ObservationIgnored private var blackFeedRecoveryAttempts = 0
     private let maxBlackFeedRecoveryAttempts = 3
+    /// A lit room rendering below this average luminance (0…1) means the passthrough
+    /// is wedged black, not just dim. Kept low so a few overlay markers can't lift a
+    /// genuinely black frame past it.
+    private static let renderedBlackLuminanceThreshold: CGFloat = 0.04
+    /// Only treat a black render as anomalous when the camera reports at least this
+    /// much ambient light (lux). Below it the room may genuinely be dark.
+    private static let litRoomLuxThreshold: Double = 100
     @ObservationIgnored private var floorY: Float?
     @ObservationIgnored private var cornerMarkers: [AnchorEntity] = []
     private let edgeContainer = AnchorEntity(world: .zero)
@@ -417,50 +429,98 @@ final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOv
         UIImpactFeedbackGenerator(style: .medium).prepare()
     }
 
-    /// Begin watching for the first camera frame after a fresh `session.run`.
-    /// Resets the per-attach counters; the actual check is rescheduled by
-    /// `scheduleBlackFeedCheck` until a frame arrives, the view tears down, or we
-    /// exhaust the retry budget.
+    /// Begin watching the freshly-run session. It covers TWO distinct failures:
+    /// (1) NO camera frame ever arrives — a dead/held camera; and (2) frames DO
+    /// arrive but the passthrough renders BLACK — the iOS 26 RealityView→ARView
+    /// render contention. For (2) `hasReceivedFrame` is useless (the camera is
+    /// fine; only the on-screen compositing is wedged), so we VERIFY the rendered
+    /// output instead. Resets the per-attach counters; `scheduleBlackFeedCheck`
+    /// reschedules itself until the feed is verified live, the view tears down, or
+    /// the retry budget is spent.
     private func startBlackFeedWatchdog() {
         hasReceivedFrame = false
         blackFeedRecoveryAttempts = 0
         scheduleBlackFeedCheck()
     }
 
-    /// Re-checks ~1.5s out: a healthy session has delivered a frame by then. If it
-    /// hasn't, re-run the session to jog the iOS 26 capture stack — up to a small
-    /// cap, after which we surface an honest failure rather than a silent black view.
+    /// Re-checks ~1.5s out, by which point a healthy session has both delivered a
+    /// frame AND drawn it. Two paths:
+    ///   • No frame at all → the capture stack didn't start; re-run to jog it.
+    ///   • Frames arrived → confirm they're actually on screen. We can't read this
+    ///     from the ARFrame (the camera buffer is fine even when the passthrough is
+    ///     black), so we snapshot the COMPOSITED ARView and compare its brightness
+    ///     to the camera's own light estimate: a lit room rendering near-black means
+    ///     the passthrough is wedged → re-run to clear it and re-verify.
+    /// A healthy feed (the cold-launch common case) passes untouched. Both paths are
+    /// capped; past the cap we surface an honest failure, never a silent black view.
     private func scheduleBlackFeedCheck() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
             guard let self, let arView = self.arView else { return }
-            // A real frame arrived: camera is live, nothing to recover.
-            if self.hasReceivedFrame { return }
             // The scan already finished; the live feed is no longer on screen.
             if self.step == .review { return }
 
-            if self.blackFeedRecoveryAttempts < self.maxBlackFeedRecoveryAttempts {
-                self.blackFeedRecoveryAttempts += 1
-                print("⚠️ Snug: no camera frame after session.run — re-running session (attempt \(self.blackFeedRecoveryAttempts))")
-                arView.session.run(
-                    self.makeConfiguration(),
-                    options: [.resetTracking, .removeExistingAnchors]
-                )
-                self.scheduleBlackFeedCheck()
-            } else {
-                // Loud, never silent (CLAUDE.md): a camera that never delivers a
-                // frame ends on the failure screen with a rescan, not a frozen view.
-                print("⚠️ Snug: camera never delivered a frame after \(self.maxBlackFeedRecoveryAttempts) restarts")
-                self.onFailure?(.processingFailed("The camera didn't start. Try scanning again."))
+            // Path 1: the camera never started — no frame has landed.
+            if !self.hasReceivedFrame {
+                self.recoverBlackFeed(arView, reason: "no camera frame after session.run")
+                return
+            }
+
+            // Path 2: frames arrive — is the passthrough actually rendering them?
+            // Only meaningful when the room is genuinely lit; without a usable light
+            // estimate we trust the live feed rather than risk a false failure on a
+            // legitimately dark room.
+            guard let lux = self.lastAmbientIntensity, lux > Self.litRoomLuxThreshold else { return }
+            arView.snapshot(saveToHDR: false) { [weak self] image in
+                // No image, or it's bright enough → the passthrough is live, done.
+                guard let image, Self.isRenderedBlack(image) else { return }
+                // `snapshot`'s completion queue isn't contractually main, but the
+                // recovery re-runs the session — hop to main to be safe.
+                DispatchQueue.main.async {
+                    guard let self, self.arView != nil, self.step != .review else { return }
+                    self.recoverBlackFeed(arView, reason: "passthrough rendered black in a lit room")
+                }
             }
         }
     }
 
-    /// Recovery for the RealityView→ARView black-passthrough contention. A BLIND
-    /// re-kick is wrong here: each `pause()`+`run()` merely TOGGLES the wedged
-    /// state (live↔black), so a fixed number of kicks lands on black every other
-    /// scan. Instead we VERIFY whether the passthrough is actually rendering and
-    /// re-kick only until it is (or give up honestly). Runs once per capture, only
-    /// after a diorama has rendered this session — cold-launch capture is untouched.
+    /// Re-run the session to clear a wedged or dead feed, then re-verify — capped.
+    /// Past the cap we end on the honest failure screen (CLAUDE.md: loud, never
+    /// silent) rather than leaving the user staring at black.
+    private func recoverBlackFeed(_ arView: ARView, reason: String) {
+        guard blackFeedRecoveryAttempts < maxBlackFeedRecoveryAttempts else {
+            print("⚠️ Snug: camera never recovered (\(reason)) after \(maxBlackFeedRecoveryAttempts) restarts")
+            onFailure?(.processingFailed("The camera didn't start. Try scanning again."))
+            return
+        }
+        blackFeedRecoveryAttempts += 1
+        print("⚠️ Snug: \(reason) — re-running session (attempt \(blackFeedRecoveryAttempts))")
+        // Reset so the re-kicked session is re-evaluated from scratch on the next check.
+        hasReceivedFrame = false
+        arView.session.run(makeConfiguration(), options: [.resetTracking, .removeExistingAnchors])
+        scheduleBlackFeedCheck()
+    }
+
+    /// Average luminance of `image` (Rec. 601 luma, 0…1) by downsampling to a single
+    /// pixel; true when it is below the near-black threshold. A wedged passthrough
+    /// composites to ~0, so this cleanly separates "rendering black" from "dim".
+    private static func isRenderedBlack(_ image: UIImage) -> Bool {
+        guard let cg = image.cgImage else { return false }
+        var pixel: [UInt8] = [0, 0, 0, 0]
+        guard let ctx = CGContext(
+            data: &pixel, width: 1, height: 1, bitsPerComponent: 8, bytesPerRow: 4,
+            space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return false }
+        ctx.interpolationQuality = .medium
+        ctx.draw(cg, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let luma = (0.299 * CGFloat(pixel[0]) + 0.587 * CGFloat(pixel[1]) + 0.114 * CGFloat(pixel[2])) / 255
+        return luma < renderedBlackLuminanceThreshold
+    }
+
+    /// The capture session configuration: horizontal + vertical plane detection and
+    /// no scene reconstruction. The manual flow only needs plane raycasts plus
+    /// feature points for the one-time ceiling look-up, and meshing adds meaningful
+    /// startup load on LiDAR devices for no benefit here.
     private func makeConfiguration() -> ARWorldTrackingConfiguration {
         let config = ARWorldTrackingConfiguration()
         // Horizontal planes anchor the floor; vertical planes help when marking
@@ -1398,6 +1458,9 @@ final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOv
         // First frame = the camera feed is genuinely live; defuses the black-feed
         // watchdog. (Callbacks are pinned to the main queue — see `attach`.)
         hasReceivedFrame = true
+        // Keep the latest light estimate so the render-verification step can tell a
+        // wedged black passthrough (lit room, black render) from a truly dark room.
+        lastAmbientIntensity = frame.lightEstimate.map { Double($0.ambientIntensity) }
         collectPassiveCeiling(frame)
         if isLookingUp { collectActiveCeiling(frame) }
     }

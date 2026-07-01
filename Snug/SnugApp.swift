@@ -19,6 +19,11 @@ struct SnugApp: App {
     /// over its items. Replaceable by a remote source later via `CatalogSource`.
     @State private var catalog = CatalogService()
 
+    /// The bundled Ideation-Sandbox library (generic "digital clay" shapes). Loaded
+    /// once on launch; isolated from the Verified `catalog` so the two tracks never
+    /// share a source or a type. See `SandboxLibrary` / `sandbox_assets.json`.
+    @State private var sandbox = SandboxLibrary()
+
     /// First-run gate. Shows the onboarding flow (value slides + camera primer)
     /// once, then the home. Re-triggerable from the home's More menu by flipping
     /// this back to `false`.
@@ -74,7 +79,9 @@ struct SnugApp: App {
             .environment(accuracyStore)
             .environment(roomStore)
             .environment(catalog)
+            .environment(sandbox)
             .task { await catalog.load() }
+            .task { await sandbox.load() }
         }
         .modelContainer(container)
     }
