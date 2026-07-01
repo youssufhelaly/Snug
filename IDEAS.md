@@ -29,11 +29,13 @@ Every "while we're at it..." idea lands here instead of in the build.
 - **Drag-to-correct for RoomPlan captures (V2?)** — the editor is gated to
   `.manualAR` provenance. LiDAR geometry is trusted straight to review. If real
   RoomPlan scans also bulge around furniture, open the editor to them too.
-- **Furniture snap-to-wall (V2)** — direct drag positions furniture freely with
+- **Furniture snap-to-wall** — ~~direct drag positions furniture freely with
   red/amber/green fit feedback, but does not snap a piece flush to the nearest wall.
-  Auto-snapping (and auto-resolving overlaps) is deliberately out of V1 — the user
-  nudges and the feedback guides them. (Direct drag-to-move + pinch-to-resize SHIPPED
-  in the interaction-redesign PR; snap remains parked.)
+  Auto-snapping is deliberately out of V1.~~ SUPERSEDED 2026-06: pulled forward as a
+  DELIBERATE one-tap action (micro-pill "snap to wall" button → `WallSnapService`
+  glides the piece flush to the nearest wall, back-to-wall yaw). Drag-time *magnetism*
+  stays out (it fights precise placement); the user still nudges, the button snaps.
+  What remains parked: **auto-resolving overlaps** between pieces.
 - **Furniture undo/redo (V2)** — placement auto-saves on every gesture end with no
   history stack. An undo/redo of moves/resizes/adds/removes is a V2 nicety.
 - **Multi-select furniture (V2)** — selection is single-piece. Selecting and
@@ -74,9 +76,55 @@ Every "while we're at it..." idea lands here instead of in the build.
   invariant for whoever builds this: the four-state fit badge must ALWAYS reflect
   real numbers (user-chosen size, then real-product size) — never a proxy's size.
 
+  - **Refinement 2026-06-23 — two named catalogs + a splittable bridge.** Model the
+    above as TWO isolated data tracks sharing one renderer:
+    - **Verified Catalog** (commerce/trust): real manufacturer USDZ placed **1:1,
+      zero scaling** — `fitTransform` degenerates to the identity (native dims ≈
+      target dims), so nothing warps. Retailers publish AR Quick Look USDZ
+      (`Snug/Resources/Models/README.md`), so this is populatable with permission.
+      A Verified SKU with NO real USDZ yet must render the **honest stylized box**,
+      NOT a dressed-up generic asset — stretching a generic shape to impersonate a
+      real product is the exact anti-pattern this whole idea rejects.
+    - **Ideation Sandbox** (engagement/design): generic CC0 shapes, **deliberately
+      elastic**. The per-axis stretch we feared is a FEATURE here — the user sculpts
+      digital clay, making no purchase claim. The `tools/catalog/` pipeline
+      (Quaternius/Kenney/ITHappy → ARKit USDZ + the aspect-ratio guardrail) feeds
+      THIS track, not Verified.
+    - **The bridge splits by network dependency:**
+      - ✅ V1-feasible, LOCAL, offline: *dimensional* reverse-search — the
+        resized Sandbox piece's bounding box filters the bundled Verified catalog
+        within ± a tolerance that SHOULD be the same constant as `FitService`'s
+        error margin ("3 real sofas match this footprint"). No backend, on-thesis.
+      - 🚫 V2/V3, remote: *style/visual* ranking — embeddings, image→product search,
+        affiliate feeds. This is the backend bet already described above.
+    - **Trust-boundary UX hazard:** a stretched Sandbox piece must never read as
+      buyable-and-fitting. The named split makes "ideation" vs "real & fits"
+      unmistakable; the moment elastic geometry touches a price/fit claim, the brand
+      promise breaks.
+
 - **Remote retailer/affiliate-feed catalog (V2)** — flip `CatalogSource` from the
   bundled JSON to a remote feed for hundreds of honest, buyable, dimension-accurate
   items without a code rewrite. The trustworthy way to scale catalog size; the
   natural backing index for the reverse-search idea above. Network → out of V1.
 
 - Feature where you are able to describe and ai generate furniture which deos not exist in catlog, you can even ai generate a whole room after describing style and vibe of room and what you want 
+
+- **First-person walkthrough mode (V2)** — a "step inside your room" *preview*, not an
+  editor. The iso "Isometric Cozy Minimalism" diorama answers *"is it arranged right?"*;
+  first-person at human eye height (~1.6m) answers the question a renter actually has:
+  *"what will it feel like to walk in?"* Cheap to build on what exists — geometry is
+  already shared (PLAY↔BUY identical-geometry invariant) and it's a RealityKit scene, so
+  this is fundamentally a **camera pose change**: drop the camera to standing height, swap
+  orbit gestures for look-around. Design guardrails:
+  - **Preview, not edit.** Dragging furniture from eye level is bad (depth is ambiguous,
+    near objects occlude far). Keep arranging in iso; "step inside" to experience it; step
+    back out to adjust. Do NOT try to make it the primary editor.
+  - **Constrained navigation, not free-roam.** A few preset vantage points (doorway, bed,
+    desk) you tap between + look-around gets ~90% of the value and dodges the collision/
+    clipping/WASD rabbit hole. Full free-roam is the scope trap.
+  - **It's a trust moment (on-thesis).** Standing in the doorway seeing a true-to-scale
+    piece at eye level in real color (BUY mode) is a more honest "will this work" gut-check
+    than a top-down toy — a natural home for the fit badge.
+  - **Distinct from AR passthrough.** This is *virtual* first-person (inside the rendered
+    room). Holding the phone up in your real room to composite furniture in is the AR
+    fit-check path — a different feature. Do the virtual one first; it reuses everything.

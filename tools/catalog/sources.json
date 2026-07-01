@@ -1,0 +1,34 @@
+{
+  "_comment": "Per-source import config for the catalog conversion pipeline. The app's CatalogModelLoader.fitTransform re-centers and per-axis-stretches every model to the catalog's real dimensions, so ABSOLUTE scale here is informational only — what matters is correct UP-AXIS (model Y must be up) and sane proportions. Prefer glTF input wherever a source ships it: glTF is Y-up by spec, which removes all axis ambiguity. The 'axis' block is only consulted for obj/fbx inputs; the bbox report from convert_to_usdz.py is the ground-truth check that orientation came out right.",
+
+  "sources": {
+    "quaternius": {
+      "license": "CC0",
+      "url": "https://quaternius.com/",
+      "prefer_format": "gltf",
+      "axis": { "obj": { "up": "Y", "forward": "-Z" }, "fbx": { "up": "Y", "forward": "-Z" } },
+      "scale_note": "Modeled in arbitrary game units; app re-scales so this does not matter. Validate proportions only."
+    },
+    "kenney": {
+      "license": "CC0",
+      "url": "https://kenney.nl/assets",
+      "prefer_format": "gltf",
+      "axis": { "obj": { "up": "Y", "forward": "-Z" }, "fbx": { "up": "Y", "forward": "-Z" } },
+      "scale_note": "Small kit-bash scale; app re-scales. Validate proportions only."
+    },
+    "ithappy": {
+      "license": "check-per-pack",
+      "url": "https://www.ithappy.studio/",
+      "prefer_format": "fbx",
+      "axis": { "obj": { "up": "Z", "forward": "-Y" }, "fbx": { "up": "Z", "forward": "-Y" } },
+      "scale_note": "Advertised real-world scale; useful as the proportion reference even though the app re-scales."
+    },
+    "_test": {
+      "license": "n/a",
+      "url": "",
+      "prefer_format": "obj",
+      "axis": { "obj": { "up": "Z", "forward": "-Y" }, "fbx": { "up": "Z", "forward": "-Y" } },
+      "scale_note": "Synthetic testbox_zup.obj: X=1 Y=2 Z=3 authored Z-up. Correct output bbox must read X=1.0, Y=3.0, Z=2.0 (the 3.0 tall axis moved Z->Y)."
+    }
+  }
+}

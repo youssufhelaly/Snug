@@ -109,23 +109,38 @@ enum FurnitureEntityBuilder {
         guard let model = entity as? ModelEntity, var component = model.model,
               let tag = entity.components[FurnitureTagComponent.self] else { return }
 
-        // BUY mode showing a realistic product model: the box mesh stays invisible
-        // so the true model reads through, EXCEPT an `.invalid` overflow flashes a
-        // translucent red so a piece that won't fit is still obvious. Selection is
-        // signaled by the Clay outline + scale-pop, not box opacity. (valid /
-        // tooClose lean on the 2D FitBadge — the honest state is always on screen.)
-        if mode == .buy, hasRealisticModel(entity) {
-            var box = PhysicallyBasedMaterial()
-            if state == .invalid {
+        // A piece showing a realistic model (BUY catalog product, or a Sandbox clay
+        // shape in EITHER mode): the box mesh stays invisible so the model reads
+        // through, EXCEPT an `.invalid` overflow flashes a translucent red so a piece
+        // that won't fit is still obvious. Selection is signaled by the Clay outline +
+        // scale-pop, not box opacity. (valid / tooClose lean on the 2D FitBadge — the
+        // honest state is always on screen.)
+        if hasRealisticModel(entity) {
+            switch state {
+            case .invalid:
                 let red = UIColor(rgb: 0xB85450)
+                var box = PhysicallyBasedMaterial()
                 box.baseColor = .init(tint: red)
                 box.emissiveColor = .init(color: red)
                 box.emissiveIntensity = 0.4
                 box.blending = .transparent(opacity: .init(floatLiteral: 0.5))
-            } else {
-                box.blending = .transparent(opacity: .init(floatLiteral: 0))
+                component.materials = [box]
+            case .tooClose:
+                // Amber "too close to call" wash — the same honest uncertain-fit cue
+                // the stylized box shows, at a lighter opacity so the model's true
+                // color still reads through in BUY. Without it a too-close model/clay
+                // piece was visually identical to a comfortably-fitting one (the 2D
+                // FitBadge alone carried the state), quietly softening the very signal
+                // we promise never to round to OK.
+                var box = PhysicallyBasedMaterial()
+                box.baseColor = .init(tint: keptOutlineColor)         // amber #BA7517
+                box.emissiveColor = .init(color: keptOutlineColor)
+                box.emissiveIntensity = 0.3
+                box.blending = .transparent(opacity: .init(floatLiteral: 0.28))
+                component.materials = [box]
+            case .valid:
+                component.materials = [invisibleBoxMaterial()]
             }
-            component.materials = [box]
             model.model = component
             applySelectionBorder(selected, to: entity, size: component.mesh.bounds.extents)
             return
@@ -216,6 +231,184 @@ enum FurnitureEntityBuilder {
         for child in entity.children { applyModelTint(color, to: child) }
     }
 
+    // MARK: - Per-part coloring (Sandbox clay only)
+
+    /// A colorable part of a clay model: a stable `key` (the part's resolved name,
+    /// used in `FurnitureAppearance.partColors`) and a friendly `displayName` for
+    /// the chip UI. Discovered by walking the model's named `ModelEntity` descendants.
+    struct ColorablePart: Equatable, Sendable {
+        let key: String
+        let displayName: String
+    }
+
+    /// The distinct colorable parts of an attached clay model, in a deterministic
+    /// order (depth-first, first-seen). Each part is one or more meshes that share a
+    /// resolved part name (e.g. a bed's `BedFrame`, `Mattress`, `Pillow`). USD import
+    /// order is stable, so the same asset yields the same parts/keys across clones.
+    static func colorableParts(of model: Entity) -> [ColorablePart] {
+        var seen = Set<String>()
+        var parts: [ColorablePart] = []
+        forEachColorableMesh(in: model, root: model) { _, key in
+            if seen.insert(key).inserted {
+                parts.append(ColorablePart(key: key, displayName: humanizePartName(key)))
+            }
+        }
+        return parts
+    }
+
+    /// Flatten ONE part's materials to a solid tint, leaving every other part on its
+    /// original library material. In-place (no reload) — used for a live swatch/wheel
+    /// change. Reverting a part to its ORIGINAL color can't be done in place (the tint
+    /// overwrote the material), so the caller reloads a fresh clone for that.
+    static func applyPartColor(_ color: UIColor, toPart key: String, in model: Entity) {
+        forEachColorableMesh(in: model, root: model) { mesh, partKey in
+            guard partKey == key else { return }
+            tintMesh(mesh, to: color)
+        }
+    }
+
+    /// Apply a whole per-part color map onto a (presumed fresh) clone: each keyed
+    /// part is flattened to its tint; parts absent from the map keep their ORIGINAL
+    /// library materials. Use right after attaching a fresh model clone.
+    static func applyPartColors(_ colors: [String: SIMD3<Float>], to model: Entity) {
+        forEachColorableMesh(in: model, root: model) { mesh, key in
+            guard let rgb = colors[key] else { return }
+            tintMesh(mesh, to: UIColor(red: CGFloat(rgb.x), green: CGFloat(rgb.y), blue: CGFloat(rgb.z), alpha: 1))
+        }
+    }
+
+    /// The colorable part whose actual geometry a world-space ray hits nearest, or
+    /// nil if the ray misses every part.
+    ///
+    /// EXACT per-triangle, not a bounding box: a bed frame's AABB (low base + tall
+    /// headboard) encloses the mattress and pillows, so box/convex colliders always
+    /// report the frame. Testing the real triangles lets a tap on the pillow pick the
+    /// pillow even though it sits inside the frame's bounds. Clay models are low-poly,
+    /// so a per-tap triangle sweep is cheap. `origin`/`direction` are in world space.
+    static func partKey(forRayOrigin origin: SIMD3<Float>,
+                        direction: SIMD3<Float>, in model: Entity) -> String? {
+        let dir = normalize(direction)
+        var bestT = Float.greatestFiniteMagnitude
+        var bestKey: String?
+        forEachColorableMesh(in: model, root: model) { mesh, key in
+            guard let resource = mesh.model?.mesh else { return }
+            let meshWorld = mesh.transformMatrix(relativeTo: nil)
+            let contents = resource.contents
+            for instance in contents.instances {
+                guard let geometry = contents.models[instance.model] else { continue }
+                let world = meshWorld * instance.transform
+                for part in geometry.parts {
+                    let positions = part.positions.elements
+                    guard let indices = part.triangleIndices?.elements else { continue }
+                    var i = 0
+                    while i + 2 < indices.count {
+                        let a = transformPoint(world, positions[Int(indices[i])])
+                        let b = transformPoint(world, positions[Int(indices[i + 1])])
+                        let c = transformPoint(world, positions[Int(indices[i + 2])])
+                        if let t = rayTriangleDistance(origin: origin, direction: dir, a, b, c),
+                           t < bestT {
+                            bestT = t
+                            bestKey = key
+                        }
+                        i += 3
+                    }
+                }
+            }
+        }
+        return bestKey
+    }
+
+    private static func transformPoint(_ m: simd_float4x4, _ p: SIMD3<Float>) -> SIMD3<Float> {
+        let v = m * SIMD4<Float>(p, 1)
+        return SIMD3(v.x, v.y, v.z)
+    }
+
+    /// Möller–Trumbore ray/triangle intersection (double-sided). Returns the ray
+    /// parameter `t` (distance along `direction`) of a forward hit, or nil.
+    private static func rayTriangleDistance(
+        origin: SIMD3<Float>, direction: SIMD3<Float>,
+        _ v0: SIMD3<Float>, _ v1: SIMD3<Float>, _ v2: SIMD3<Float>
+    ) -> Float? {
+        let eps: Float = 1e-7
+        let edge1 = v1 - v0, edge2 = v2 - v0
+        let pvec = cross(direction, edge2)
+        let det = dot(edge1, pvec)
+        if abs(det) < eps { return nil }                 // ray parallel to triangle
+        let invDet = 1 / det
+        let tvec = origin - v0
+        let u = dot(tvec, pvec) * invDet
+        if u < 0 || u > 1 { return nil }
+        let qvec = cross(tvec, edge1)
+        let v = dot(direction, qvec) * invDet
+        if v < 0 || u + v > 1 { return nil }
+        let t = dot(edge2, qvec) * invDet
+        return t > eps ? t : nil
+    }
+
+    /// Walk every `ModelEntity` with materials, handing the closure each mesh and its
+    /// resolved part key (the nearest meaningful ancestor name, or its own name).
+    private static func forEachColorableMesh(
+        in entity: Entity, root: Entity, _ body: (ModelEntity, String) -> Void
+    ) {
+        if let mesh = entity as? ModelEntity, let component = mesh.model, !component.materials.isEmpty {
+            body(mesh, partKey(for: entity, root: root))
+        }
+        for child in entity.children { forEachColorableMesh(in: child, root: root, body) }
+    }
+
+    /// Overwrite a mesh's materials with one solid clay PBR tint.
+    private static func tintMesh(_ mesh: ModelEntity, to color: UIColor) {
+        guard var component = mesh.model else { return }
+        var m = PhysicallyBasedMaterial()
+        m.baseColor = .init(tint: color)
+        m.roughness = .init(floatLiteral: 0.85)
+        m.metallic = .init(floatLiteral: 0)
+        component.materials = component.materials.map { _ in m }
+        mesh.model = component
+    }
+
+    /// The colorable-part key for a mesh: the nearest ancestor (including itself, up
+    /// to but excluding `root`) with a meaningful name, so sibling meshes of one
+    /// logical part (e.g. several `Mattress` submeshes) share a key. Falls back to
+    /// the mesh's own name, or `"Part"`.
+    private static func partKey(for entity: Entity, root: Entity) -> String {
+        var node: Entity? = entity
+        while let n = node, n !== root {
+            if isMeaningfulPartName(n.name) { return n.name }
+            node = n.parent
+        }
+        return entity.name.isEmpty ? "Part" : entity.name
+    }
+
+    /// Names USD import assigns to anonymous group/mesh prims, which carry no
+    /// product meaning and should never become a part key on their own.
+    private static func isMeaningfulPartName(_ name: String) -> Bool {
+        if name.isEmpty || name == realisticModelName { return false }
+        let lower = name.lowercased()
+        return !(lower == "mesh" || lower == "geom" || lower == "rootnode"
+            || lower == "scene" || lower.hasPrefix("qgeom"))
+    }
+
+    /// Turn a raw part key (`"BedFrame_Cube_001"`) into a friendly label
+    /// (`"Bed Frame"`): split camelCase + underscores, drop primitive/index tokens.
+    static func humanizePartName(_ raw: String) -> String {
+        // camelCase → spaced, underscores → spaces.
+        var spaced = ""
+        for (i, ch) in raw.enumerated() {
+            if ch == "_" { spaced.append(" "); continue }
+            if ch.isUppercase, i > 0, let last = spaced.last, !last.isUppercase, last != " " {
+                spaced.append(" ")
+            }
+            spaced.append(ch)
+        }
+        let drop: Set<String> = ["cube", "mesh", "sphere", "plane", "object", "geo", "geom"]
+        let tokens = spaced.split(separator: " ").map(String.init).filter { t in
+            !drop.contains(t.lowercased()) && Int(t) == nil
+        }
+        let label = tokens.joined(separator: " ").trimmingCharacters(in: .whitespaces)
+        return label.isEmpty ? raw : label.capitalized
+    }
+
     /// Re-fit an already-attached model to new `dimensions` (called on resize). Safe
     /// to call when no model is attached.
     static func scaleRealisticModel(_ model: Entity, to dimensions: SIMD3<Float>) {
@@ -229,17 +422,41 @@ enum FurnitureEntityBuilder {
         model.position = fit.position
     }
 
+    /// The model's intrinsic bounding-box extents (meters), measured with its own
+    /// transform reset — i.e. the raw authored size, before any fit. Used by the
+    /// Verified-track zero-scaling guard to confirm a real product USDZ is modeled at
+    /// true catalog scale before it's allowed to render.
+    static func nativeExtents(of model: Entity) -> SIMD3<Float> {
+        model.transform = .identity
+        return model.visualBounds(relativeTo: model).extents
+    }
+
     /// Hide or show the box's own mesh by swapping its materials' opacity, WITHOUT
     /// touching its `CollisionComponent` (so hit-testing is unaffected). Used to
     /// reveal the realistic model child while the box stays the interactive proxy.
     static func setBoxMeshHidden(_ hidden: Bool, on entity: Entity) {
         guard let model = entity as? ModelEntity, var component = model.model else { return }
-        component.materials = component.materials.map { _ in
-            var clear = PhysicallyBasedMaterial()
-            clear.blending = .transparent(opacity: .init(floatLiteral: hidden ? 0 : 1))
-            return clear
+        if hidden {
+            component.materials = component.materials.map { _ in invisibleBoxMaterial() }
+        } else {
+            component.materials = component.materials.map { _ in
+                var clear = PhysicallyBasedMaterial()
+                clear.blending = .transparent(opacity: .init(floatLiteral: 1))
+                return clear
+            }
         }
         model.model = component
+    }
+
+    /// A genuinely non-rendering material for a box hidden beneath a realistic model.
+    /// Uses `UnlitMaterial`, NOT a transparent `PhysicallyBasedMaterial`: a PBR
+    /// surface at opacity 0 still catches specular highlights / IBL reflections and
+    /// leaves a faint "glass box" ghost framing the model (worst in PLAY mode, which
+    /// has image-based lighting). Unlit ignores lighting, so opacity 0 is truly invisible.
+    private static func invisibleBoxMaterial() -> UnlitMaterial {
+        var m = UnlitMaterial(color: .clear)
+        m.blending = .transparent(opacity: .init(floatLiteral: 0))
+        return m
     }
 
     /// Whether a box currently shows its realistic model child (BUY + catalog).
@@ -311,11 +528,10 @@ enum FurnitureEntityBuilder {
     /// `applyPlacementState` (which also carries the fit-state coloring).
     static func retint(_ entity: Entity, footprint: FurnitureFootprint, mode: RoomRenderMode) {
         guard let model = entity as? ModelEntity, var component = model.model else { return }
-        // A shown realistic model keeps the box mesh invisible (BUY catalog piece).
-        if mode == .buy, hasRealisticModel(entity) {
-            var clear = PhysicallyBasedMaterial()
-            clear.blending = .transparent(opacity: .init(floatLiteral: 0))
-            component.materials = [clear]
+        // A shown realistic model keeps the box mesh invisible (BUY catalog product
+        // or a Sandbox clay shape in either mode).
+        if hasRealisticModel(entity) {
+            component.materials = [invisibleBoxMaterial()]
             model.model = component
             return
         }

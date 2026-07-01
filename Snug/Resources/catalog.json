@@ -14,7 +14,7 @@
     "productURL": "https://www.article.com/product/lina-3seat-sofa",
     "affiliateTag": null,
     "thumbnailAssetName": null,
-    "modelAssetName": "sofa",
+    "modelAssetName": null,
     "inStock": true,
     "isRemovable": true
   },
@@ -33,7 +33,7 @@
     "productURL": "https://burrow.com/products/koble-loveseat",
     "affiliateTag": null,
     "thumbnailAssetName": null,
-    "modelAssetName": "sofa",
+    "modelAssetName": null,
     "inStock": true,
     "isRemovable": true
   },
@@ -52,7 +52,7 @@
     "productURL": "https://www.ikea.com/us/en/p/strandmon-wing-chair",
     "affiliateTag": null,
     "thumbnailAssetName": null,
-    "modelAssetName": "chair",
+    "modelAssetName": null,
     "inStock": true,
     "isRemovable": true
   },
@@ -71,7 +71,7 @@
     "productURL": "https://www.ikea.com/us/en/p/lack-coffee-table",
     "affiliateTag": null,
     "thumbnailAssetName": null,
-    "modelAssetName": "coffee_table",
+    "modelAssetName": null,
     "inStock": true,
     "isRemovable": true
   },
@@ -90,7 +90,7 @@
     "productURL": "https://www.ikea.com/us/en/p/malm-bed-frame-queen",
     "affiliateTag": null,
     "thumbnailAssetName": null,
-    "modelAssetName": "bed",
+    "modelAssetName": null,
     "inStock": true,
     "isRemovable": true
   },
@@ -128,7 +128,7 @@
     "productURL": "https://www.ikea.com/us/en/p/billy-bookcase",
     "affiliateTag": null,
     "thumbnailAssetName": null,
-    "modelAssetName": "bookshelf",
+    "modelAssetName": null,
     "inStock": true,
     "isRemovable": true
   },
@@ -204,7 +204,7 @@
     "productURL": "https://www.ikea.com/us/en/p/odger-chair",
     "affiliateTag": null,
     "thumbnailAssetName": null,
-    "modelAssetName": "chair",
+    "modelAssetName": null,
     "inStock": true,
     "isRemovable": true
   },
@@ -223,7 +223,7 @@
     "productURL": "https://www.ikea.com/us/en/p/vittsjo-coffee-table",
     "affiliateTag": null,
     "thumbnailAssetName": null,
-    "modelAssetName": "coffee_table",
+    "modelAssetName": null,
     "inStock": false,
     "isRemovable": true
   }

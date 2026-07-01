@@ -31,8 +31,16 @@ struct OrientedFootprint: Equatable {
         self.rotation = rotation
     }
 
-    /// The four corners in world space, counter-clockwise from the local
-    /// (-x,-z) corner.
+    /// The four corners in world space, from the local (-x,-z) corner.
+    ///
+    /// `rotation` is a yaw about +Y, matching RealityKit's
+    /// `simd_quatf(angle: yRotation, axis: [0,1,0])` — the convention the diorama
+    /// renders with (`FurnitureEntityBuilder`) and `WallSnapService` snaps to. A
+    /// +Y yaw maps the local depth axis (+Z, our `size.y`) to `(sin θ, cos θ)` in
+    /// world (x, z) and the width axis (+X, `size.x`) to `(cos θ, -sin θ)`. Getting
+    /// this sign wrong mirrors the fit footprint relative to the on-screen box, so
+    /// a piece that *looks* flush/inside reads as askew and poking through a wall —
+    /// a divergence that only appears at non-90° yaws, i.e. against tilted walls.
     var corners: [SIMD2<Float>] {
         let half = size / 2
         let c = cos(rotation)
@@ -44,17 +52,18 @@ struct OrientedFootprint: Equatable {
             SIMD2(-half.x, half.y),
         ]
         return local.map { p in
-            SIMD2(center.x + p.x * c - p.y * s,
-                  center.y + p.x * s + p.y * c)
+            SIMD2(center.x + p.x * c + p.y * s,
+                  center.y - p.x * s + p.y * c)
         }
     }
 
-    /// The two outward edge normals (separating-axis candidates for SAT). The
+    /// The two edge normals (separating-axis candidates for SAT) — the rotated
+    /// width and depth axes under the same +Y convention as `corners`. The
     /// rectangle's other two edges are parallel, so two axes suffice.
     var separatingAxes: [SIMD2<Float>] {
         let c = cos(rotation)
         let s = sin(rotation)
-        return [SIMD2(c, s), SIMD2(-s, c)]
+        return [SIMD2(c, -s), SIMD2(s, c)]
     }
 }
 

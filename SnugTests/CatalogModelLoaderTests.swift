@@ -56,4 +56,40 @@ struct CatalogModelLoaderTests {
         #expect(fit.scale.x.isFinite)
         #expect(fit.scale.x == 1.0)   // safe() falls back to /1
     }
+
+    // MARK: - Verified-track zero-scaling guard
+
+    @Test func nativeSizeDeviation_exactMatchIsZero() {
+        // Model extents (x: width, y: height, z: depth) exactly equal the catalog
+        // dims (x: width, y: depth, z: height) under the axis mapping.
+        let d = CatalogModelLoader.nativeSizeDeviation(
+            modelExtents: SIMD3(2.18, 0.84, 0.91),     // w, h, d
+            targetDimensions: SIMD3(2.18, 0.91, 0.84)) // w, d, h
+        #expect(d == 0)
+    }
+
+    @Test func nativeSizeDeviation_returnsLargestPerAxisGap() {
+        // Height off by 0.05 (model Y 0.89 vs target height 0.84); width/depth exact.
+        let d = CatalogModelLoader.nativeSizeDeviation(
+            modelExtents: SIMD3(2.18, 0.89, 0.91),
+            targetDimensions: SIMD3(2.18, 0.91, 0.84))
+        #expect(abs(d - 0.05) < 1e-6)
+    }
+
+    @Test func nativeSizeDeviation_subCentimeterIsWithinTolerance() {
+        // Every axis off by 0.005 m — a real asset's authoring rounding. Must pass.
+        let d = CatalogModelLoader.nativeSizeDeviation(
+            modelExtents: SIMD3(2.185, 0.845, 0.905),
+            targetDimensions: SIMD3(2.18, 0.91, 0.84))
+        #expect(d <= CatalogModelLoader.verifiedModelTolerance)
+    }
+
+    @Test func nativeSizeDeviation_axisSwapIsCaughtNotMasked() {
+        // A model authored with depth/height transposed (a real mis-export) must
+        // read as a large deviation, not slip through.
+        let d = CatalogModelLoader.nativeSizeDeviation(
+            modelExtents: SIMD3(2.18, 0.91, 0.84),      // h and d swapped vs below
+            targetDimensions: SIMD3(2.18, 0.91, 0.84))  // w, d=0.91, h=0.84
+        #expect(d > CatalogModelLoader.verifiedModelTolerance)
+    }
 }

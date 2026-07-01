@@ -183,6 +183,18 @@ struct FurnitureFootprint: Codable, Equatable, Sendable, Identifiable {
     /// id being non-nil, not by a separate confidence case.
     var catalogItemID: String?
 
+    /// Set when this footprint is a placed *Ideation-Sandbox* shape (digital clay)
+    /// rather than a detected piece or a Verified product; links back to
+    /// `SandboxAsset.id`. Mutually exclusive with `catalogItemID` in practice — a
+    /// sandbox piece is elastic and makes NO purchase claim, so the diorama renders
+    /// it as the stylized box (never the verified realistic-model path) and the
+    /// selection UI shows the "find real matches" bridge instead of a retailer link.
+    /// `nil` for detected/manual pieces and Verified products.
+    ///
+    /// Optional, so Swift's synthesized decoder reads it as `decodeIfPresent` —
+    /// pre-sandbox room blobs decode unchanged with no schema bump.
+    var sandboxAssetID: String?
+
     /// How the footprint's geometry was arrived at. Drives how much `FitService`
     /// widens its uncertainty band for this obstacle.
     enum DetectionConfidence: String, Codable, Sendable {
@@ -204,7 +216,8 @@ struct FurnitureFootprint: Codable, Equatable, Sendable, Identifiable {
         detectionConfidence: DetectionConfidence,
         isCleared: Bool = false,
         isKept: Bool = false,
-        catalogItemID: String? = nil
+        catalogItemID: String? = nil,
+        sandboxAssetID: String? = nil
     ) {
         self.id = id
         self.category = category
@@ -216,6 +229,7 @@ struct FurnitureFootprint: Codable, Equatable, Sendable, Identifiable {
         self.isCleared = isCleared
         self.isKept = isKept
         self.catalogItemID = catalogItemID
+        self.sandboxAssetID = sandboxAssetID
     }
 }
 
@@ -234,14 +248,25 @@ struct FurnitureAppearance: Codable, Equatable, Sendable {
     /// representative color. Optional, so old room blobs decode it as nil.
     var exactColorRGB: SIMD3<Float>?
 
+    /// Per-part sRGB overrides for an Ideation-Sandbox clay model, keyed by the
+    /// model's part name (a named `ModelEntity` descendant, e.g. `"Mattress"`).
+    /// A clay model ships multiple materials (frame / mattress / pillow); this lets
+    /// the user repaint each part independently. A part absent from the map keeps
+    /// its ORIGINAL library material; an empty/nil map means the whole piece is
+    /// original. Sandbox-only — Verified products keep their single `exactColorRGB`
+    /// true color and never per-part. Optional, so pre-sandbox blobs decode as nil.
+    var partColors: [String: SIMD3<Float>]?
+
     init(
         colorCategory: FurnitureColorCategory,
         materialClass: FurnitureMaterialClass,
-        exactColorRGB: SIMD3<Float>? = nil
+        exactColorRGB: SIMD3<Float>? = nil,
+        partColors: [String: SIMD3<Float>]? = nil
     ) {
         self.colorCategory = colorCategory
         self.materialClass = materialClass
         self.exactColorRGB = exactColorRGB
+        self.partColors = partColors
     }
 }
 

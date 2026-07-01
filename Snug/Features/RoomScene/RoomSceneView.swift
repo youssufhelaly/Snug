@@ -2,6 +2,10 @@ import SwiftUI
 import RealityKit
 import UIKit
 import simd
+import os
+
+/// Logs Verified-track product-model loading (the zero-scaling guard).
+private let catalogModelLogger = Logger(subsystem: "com.helaly.Snug", category: "CatalogModel")
 
 /// The Phase 1 diorama: a `RoomModel` rendered in RealityKit as a cozy, stylized
 /// "play mode" world, with an instant PLAY/BUY material toggle, orbit/zoom/pan
@@ -44,6 +48,17 @@ struct RoomSceneView: View {
     var onSelectFurniture: ((UUID?) -> Void)? = nil
     /// Called when a drag/pinch ends with the mutated footprints, for persistence.
     var onFurnitureChanged: (([FurnitureFootprint]) -> Void)? = nil
+    /// "Snap to wall" pick mode: when true, the floor is tappable and a tap reports
+    /// its world floor point via `onPickWallPoint` (instead of selecting/deselecting).
+    var isPickingWall: Bool = false
+    /// Fires with the tapped floor point (world x, z) while `isPickingWall`.
+    var onPickWallPoint: ((SIMD2<Float>) -> Void)? = nil
+    /// Reports a sandbox clay piece's colorable parts once its model loads, so the
+    /// selection UI can offer a per-part recolor chip row.
+    var onSandboxParts: ((UUID, [FurnitureEntityBuilder.ColorablePart]) -> Void)? = nil
+    /// Fires with a part key when the user taps a specific part of the already-selected
+    /// clay piece, so the color row can target that part. Nil → no per-part tapping.
+    var onSelectSandboxPart: ((String) -> Void)? = nil
 
     /// The scene/camera/culling engine. Held in `@State` so the single instance
     /// survives `body` re-evaluations (mode toggle, reset) — `RealityView`'s `make`
@@ -64,9 +79,11 @@ struct RoomSceneView: View {
     @State private var furnitureDragID: UUID?
     @State private var furnitureDragIsMove = false
     @State private var furnitureResizeActive = false
+    @State private var furnitureRotateActive = false
 
     @Environment(\.displayScale) private var displayScale
     @Environment(CatalogService.self) private var catalog
+    @Environment(SandboxLibrary.self) private var sandbox
 
     /// Maps a placed footprint's `catalogItemID` to its bundled USDZ asset name, so
     /// the controller can load the realistic product model for BUY mode without
@@ -75,6 +92,14 @@ struct RoomSceneView: View {
     private func catalogModelResolver() -> (String) -> String? {
         { [catalog] catalogID in
             catalog.items.first { $0.id == catalogID }?.modelAssetName
+        }
+    }
+
+    /// Maps a footprint's `sandboxAssetID` to its bundled generic USDZ — the
+    /// elastic "digital clay" shape, shown in BOTH modes and stretched freely.
+    private func sandboxModelResolver() -> (String) -> String? {
+        { [sandbox] sandboxID in
+            sandbox.assets.first { $0.id == sandboxID }?.modelAssetName
         }
     }
 
@@ -87,6 +112,8 @@ struct RoomSceneView: View {
                 // (also cheaper to render). Only touches post-processing, never geometry.
                 content.renderingEffects.motionBlur = .disabled
                 controller.catalogModelAssetName = catalogModelResolver()
+                controller.sandboxModelAssetName = sandboxModelResolver()
+                controller.onSandboxParts = onSandboxParts
                 controller.makeEntities(room: room, mode: mode, editingFurniture: editableFurniture != nil, onThumbnail: onThumbnail)
                 content.add(controller.root)
                 content.add(controller.cameraAnchor)
@@ -103,6 +130,9 @@ struct RoomSceneView: View {
                 }
             } update: { _ in
                 controller.catalogModelAssetName = catalogModelResolver()
+                controller.sandboxModelAssetName = sandboxModelResolver()
+                controller.onSandboxParts = onSandboxParts
+                controller.setWallPicking(isPickingWall)
                 controller.applyExternalState(mode: mode, resetToken: resetToken)
                 if let editableFurniture {
                     controller.syncFurniture(editableFurniture, states: placementStates, selectedID: selectedFurnitureID)
@@ -129,7 +159,7 @@ struct RoomSceneView: View {
             // empty-space deselect), and taps are discrete so they don't stall.
             .highPriorityGesture(furnitureTapGesture)
             .gesture(furnitureDragGesture)
-            .gesture(furnitureMagnifyGesture)
+            .gesture(furniturePinchTwistGesture)
             .gesture(deselectTapGesture)
             .simultaneousGesture(cameraOrbitGesture)
             .simultaneousGesture(cameraZoomGesture)
@@ -151,6 +181,11 @@ struct RoomSceneView: View {
                 }
                 syncPixelSize(geo.size)
             }
+            // Release the live RealityKit render context the instant we navigate
+            // away, so it never contends with the capture ARView's session on the
+            // next scan (the black-passthrough-every-other-scan bug). See
+            // `RoomSceneController.teardown()`.
+            .onDisappear { controller.teardown() }
         }
     }
 
@@ -174,8 +209,32 @@ struct RoomSceneView: View {
     /// entity (correct unprojection for the ortho camera), so no manual ray.
     private var furnitureTapGesture: some Gesture {
         SpatialTapGesture().targetedToAnyEntity().onEnded { value in
+            // "Snap to wall" pick mode: a tap (on the now-tappable floor or any piece)
+            // reports its world floor point so the host can snap to the nearest wall.
+            if isPickingWall {
+                if let hit = value.unproject(value.location, from: .local,
+                                             to: value.entity.parent ?? value.entity,
+                                             ontoPlane: Self.horizontalPlane(atHeight: 0)) {
+                    onPickWallPoint?(SIMD2(hit.x, hit.z))
+                }
+                return
+            }
             if let (_, id) = taggedFurnitureRoot(for: value.entity) {
+                // Tapping a part of the ALREADY-selected clay piece targets that part
+                // for recoloring (instead of a no-op re-select). The tap resolved to
+                // the box; we raycast the camera ray against the part colliders to find
+                // which part. First tap selects the piece; a second tap picks a part.
+                if id == selectedFurnitureID, onSelectSandboxPart != nil,
+                   let through = value.unproject(value.location, from: .local, to: controller.root,
+                                                 ontoPlane: Self.horizontalPlane(atHeight: 0)),
+                   let partKey = controller.sandboxPartKey(forTapThrough: through, pieceID: id) {
+                    onSelectSandboxPart?(partKey)
+                    return
+                }
                 onSelectFurniture?(id)
+            } else {
+                // Tapped the (tappable-in-pick-mode) floor outside pick mode → deselect.
+                onSelectFurniture?(nil)
             }
         }
     }
@@ -210,9 +269,15 @@ struct RoomSceneView: View {
                     if id == selectedFurnitureID {
                         furnitureDragIsMove = true
 
-                        if let start = value.unproject(value.startLocation, from: .local,
-                                                       to: parent, ontoPlane: floorPlane) {
-                            controller.beginFurnitureDrag(id, grabWorldXZ: SIMD2(start.x, start.z))
+                        // Anchor the grab at the finger's CURRENT location, not
+                        // `startLocation`. DragGesture's ~10pt minimumDistance deadzone
+                        // means the finger has already traveled before this first tick
+                        // fires; anchoring at startLocation would make the piece lurch
+                        // by that gap on frame one (the "initial hard push"). Using the
+                        // same point we feed to `dragFurniture` below yields zero jump.
+                        if let grab = value.unproject(value.location, from: .local,
+                                                      to: parent, ontoPlane: floorPlane) {
+                            controller.beginFurnitureDrag(id, grabWorldXZ: SIMD2(grab.x, grab.z))
                         }
                     } else {
                         furnitureDragIsMove = false
@@ -236,19 +301,46 @@ struct RoomSceneView: View {
             }
     }
 
-    /// Pinch on the selected furniture entity → resize width/depth (height fixed).
-    private var furnitureMagnifyGesture: some Gesture {
+    /// Two-finger pinch-AND-twist on the selected furniture entity: resize
+    /// (width/depth, height fixed) and rotate about the vertical (yaw) AT ONCE —
+    /// the standard iOS pinch-and-twist combo.
+    ///
+    /// `MagnifyGesture` and `RotateGesture` are composed with `.simultaneously(with:)`
+    /// so SwiftUI recognizes BOTH from the same two-finger touch. Attaching them as
+    /// two separate `.gesture()` modifiers (the previous shape) made them arbitrate
+    /// exclusively — only one would ever win, so resize and rotate could never run
+    /// together and twist-to-rotate was effectively unreachable once the pinch
+    /// recognizer claimed the touches. As one composed gesture it stays mutually
+    /// exclusive with the one-finger drag and is gated against the camera
+    /// orbit/zoom `.simultaneousGesture`s via the `furnitureResizeActive` /
+    /// `furnitureRotateActive` flags. The accessible path is the Fine Tune sheet's
+    /// resize/rotate controls (VoiceOver users can't pinch-twist).
+    private var furniturePinchTwistGesture: some Gesture {
         MagnifyGesture().targetedToAnyEntity()
+            .simultaneously(with: RotateGesture().targetedToAnyEntity())
             .onChanged { value in
-                guard let (_, id) = taggedFurnitureRoot(for: value.entity),
+                // Either sub-gesture may be the one that fired this frame; both
+                // carry the same targeted entity.
+                guard let entity = value.first?.entity ?? value.second?.entity,
+                      let (_, id) = taggedFurnitureRoot(for: entity),
                       id == selectedFurnitureID else { return }
-                if !furnitureResizeActive { controller.beginFurnitureResize(id); furnitureResizeActive = true }
-                controller.resizeFurniture(scale: Float(value.magnification))
+                if let magnify = value.first {
+                    if !furnitureResizeActive { controller.beginFurnitureResize(id); furnitureResizeActive = true }
+                    controller.resizeFurniture(scale: Float(magnify.magnification))
+                }
+                if let rotate = value.second {
+                    if !furnitureRotateActive { controller.beginFurnitureRotation(id); furnitureRotateActive = true }
+                    controller.rotateFurniture(by: Float(rotate.rotation.radians))
+                }
             }
             .onEnded { _ in
                 if furnitureResizeActive {
                     onFurnitureChanged?(controller.endFurnitureResize())
                     furnitureResizeActive = false
+                }
+                if furnitureRotateActive {
+                    onFurnitureChanged?(controller.endFurnitureRotation())
+                    furnitureRotateActive = false
                 }
             }
     }
@@ -278,10 +370,10 @@ struct RoomSceneView: View {
     private var cameraZoomGesture: some Gesture {
         MagnifyGesture()
             .onChanged { value in
-                // Gate: a pinch on the selected piece sets `furnitureResizeActive`;
-                // while it's active this simultaneous zoom no-ops so resizing furniture
-                // doesn't also zoom the camera.
-                guard !furnitureResizeActive else { return }
+                // Gate: a pinch/twist on the selected piece sets `furnitureResizeActive`
+                // / `furnitureRotateActive`; while either is active this simultaneous
+                // zoom no-ops so manipulating furniture doesn't also zoom the camera.
+                guard !furnitureResizeActive, !furnitureRotateActive else { return }
                 controller.zoomContinuous(magnification: value.magnification)
             }
             .onEnded { _ in controller.endZoom() }
@@ -403,9 +495,42 @@ final class RoomSceneController {
     /// the view from `CatalogService`). Nil-returning for non-catalog pieces / items
     /// with no model → the stylized box is kept. The realistic model is BUY-only.
     var catalogModelAssetName: ((String) -> String?)?
+    /// Resolves a footprint's `sandboxAssetID` to its bundled generic USDZ (the
+    /// elastic "digital clay" shape). Shown in BOTH modes and stretched freely.
+    var sandboxModelAssetName: ((String) -> String?)?
     /// Footprint ids whose product model is currently loading, so a re-sync doesn't
     /// kick off a duplicate async load.
     private var modelLoadingIDs: Set<UUID> = []
+    /// The per-part tint currently baked into each piece's sandbox clay model, keyed
+    /// by part name. Absent/empty = the model's original library materials. Lets a
+    /// re-sync detect which parts changed (re-tint in place) or were reset to original
+    /// (reload a fresh clone, since a flattened material can't be un-tinted).
+    private var modelPartColors: [UUID: [String: SIMD3<Float>]] = [:]
+    /// Reports the colorable parts of a sandbox clay model once it loads, so the
+    /// selection UI can offer a per-part chip row. Keyed by footprint id.
+    var onSandboxParts: ((UUID, [FurnitureEntityBuilder.ColorablePart]) -> Void)?
+
+    /// A solid `UIColor` from an sRGB triple (0–1) — for tinting sandbox clay.
+    private static func uiColor(_ rgb: SIMD3<Float>) -> UIColor {
+        UIColor(red: CGFloat(rgb.x), green: CGFloat(rgb.y), blue: CGFloat(rgb.z), alpha: 1)
+    }
+
+    /// The per-part color map to bake into a sandbox piece's clay model. Prefers the
+    /// explicit `partColors`; falls back to the legacy whole-piece `exactColorRGB`
+    /// (applied to every discovered part) so pre-per-part rooms still render tinted.
+    /// `[:]` means fully original.
+    private func sandboxDesiredColors(
+        _ footprint: FurnitureFootprint, model: Entity
+    ) -> [String: SIMD3<Float>] {
+        guard footprint.sandboxAssetID != nil else { return [:] }
+        if let parts = footprint.appearance.partColors, !parts.isEmpty { return parts }
+        if let rgb = footprint.appearance.exactColorRGB {
+            var map: [String: SIMD3<Float>] = [:]
+            for part in FurnitureEntityBuilder.colorableParts(of: model) { map[part.key] = rgb }
+            return map
+        }
+        return [:]
+    }
 
     /// The piece a single-finger drag is currently moving (nil when not dragging).
     private var draggingFurnitureID: UUID?
@@ -471,6 +596,10 @@ final class RoomSceneController {
     var onThumbnail: ((Data) -> Void)?
     private var didSnapshot = false
     private var frameCount = 0
+    /// Frames elapsed since the last pending realistic-model load finished. The
+    /// thumbnail waits a few of these so freshly-attached models render into a frame
+    /// before the offscreen snapshot, instead of capturing the stylized boxes.
+    private var framesSinceModelsLoaded = 0
     /// Retained per-frame subscription (set by the view from `RealityViewContent`).
     var updateSub: EventSubscription?
     /// Pushes a cross-fade freeze frame up to the SwiftUI view. Set by the view.
@@ -478,6 +607,28 @@ final class RoomSceneController {
     /// The view's drawable size in PIXELS (points × display scale), kept current by
     /// the view; the offscreen snapshot renders at this resolution.
     var pixelSize: CGSize = .zero
+
+    // MARK: - Teardown
+
+    /// Deterministically release the diorama's live RealityKit render context when
+    /// the view navigates away, instead of leaving it to lazy `@State` dealloc.
+    ///
+    /// This is load-bearing for the AR capture flow: on iOS 26 a still-live
+    /// `RealityView` render context contends with the capture `ARView`'s session,
+    /// wedging the camera passthrough black on the NEXT scan (it toggled live↔black
+    /// every other scan — view a room, scan, black; view a room, scan, fine). Tearing
+    /// the diorama's per-frame loop and scene anchors down here, the moment we leave,
+    /// means no diorama renderer is alive when capture re-opens. Idempotent.
+    func teardown() {
+        updateSub?.cancel()
+        updateSub = nil
+        crossfade = nil
+        root.children.removeAll()
+        cameraAnchor.children.removeAll()
+        root.removeFromParent()
+        cameraAnchor.removeFromParent()
+        environment = nil
+    }
 
     // MARK: - Setup
 
@@ -584,9 +735,21 @@ final class RoomSceneController {
             if simd_dot(outward, mid - centroidXZ) < 0 { outward = -outward }
             outward = simd_normalize(outward)
 
+            // `floorCorners` is where the floor meets the wall — the wall's INNER
+            // face, and the exact line FitService measures clearance against. So the
+            // slab is pushed fully OUTWARD by half its depth, putting its inner face
+            // on the polygon line instead of straddling it. A centered slab used to
+            // intrude `wallDepth/2` (4 cm) into the interior, so a piece reported as
+            // "Fits" (5 cm clear of the line) sat only ~1 cm off the visible wall and
+            // read as grazing/inside it. Now the visible interior == the fit
+            // reference, so the badge matches what's on screen. Changes geometry
+            // identically in PLAY and BUY, so the mode invariant holds.
+            let outwardShift = outward * (wallDepth / 2)
+            let slabMid = mid + outwardShift
+
             let mesh = MeshResource.generateBox(width: length, height: height, depth: wallDepth)
             let entity = ModelEntity(mesh: mesh, materials: [placeholderMaterial()])
-            entity.position = SIMD3(mid.x, height / 2, mid.y)
+            entity.position = SIMD3(slabMid.x, height / 2, slabMid.y)
             entity.orientation = orientation
             root.addChild(entity)
 
@@ -603,15 +766,15 @@ final class RoomSceneController {
             let capMesh = MeshResource.generateBox(size: [length + 0.04, capHeight, wallDepth + 0.05],
                                                    cornerRadius: 0.02)
             let cap = ModelEntity(mesh: capMesh, materials: [placeholderMaterial()])
-            cap.position = SIMD3(mid.x, height + capHeight / 2 - 0.005, mid.y)
+            cap.position = SIMD3(slabMid.x, height + capHeight / 2 - 0.005, slabMid.y)
             cap.orientation = orientation
             root.addChild(cap)
 
-            // Warm emissive cornice strip tucked just inside the top inner edge —
-            // the hidden light-cove glow. Material set in `applyPalette`.
+            // Warm emissive cornice strip tucked just inside the top inner edge (now
+            // the polygon line) — the hidden light-cove glow. Material set in `applyPalette`.
             let corniceMesh = MeshResource.generateBox(size: [length * 0.94, 0.03, 0.03], cornerRadius: 0.012)
             let cornice = ModelEntity(mesh: corniceMesh, materials: [placeholderMaterial()])
-            let innerNudge = -outward * (wallDepth / 2 + 0.02)
+            let innerNudge = -outward * 0.02
             cornice.position = SIMD3(mid.x + innerNudge.x, height - 0.05, mid.y + innerNudge.y)
             cornice.orientation = orientation
             root.addChild(cornice)
@@ -1202,6 +1365,7 @@ final class RoomSceneController {
             entity.removeFromParent()
             furnitureEntities[id] = nil
             furnitureSnapshots[id] = nil
+            modelPartColors[id] = nil
         }
 
         for footprint in active {
@@ -1240,19 +1404,26 @@ final class RoomSceneController {
         }
     }
 
-    // MARK: - Realistic catalog model (BUY only)
+    // MARK: - Realistic model (Verified products, BUY only) + Sandbox clay (both modes)
 
-    /// Show the realistic product model (BUY + a catalog item with a bundled USDZ)
-    /// or restore the stylized box (PLAY, non-catalog, or no asset). The USDZ loads
-    /// asynchronously on first need; the box shows until it arrives, then the box
-    /// mesh is hidden beneath it. Visual only — collision/fit/gestures stay on the box.
+    /// Show a USDZ model over the stylized box, or restore the box. Two model
+    /// tracks share this one path:
+    /// - **Sandbox** ("digital clay"): a generic USDZ, shown in BOTH modes and
+    ///   per-axis stretched to the sketch's size — distortion is the *feature*, so
+    ///   it skips the Verified zero-scaling guard and renders a uniform clay tone so
+    ///   it never reads as a real product.
+    /// - **Verified product**: a real USDZ, BUY only, placed 1:1 behind the guard,
+    ///   keeping its own materials.
+    /// The USDZ loads asynchronously; the box shows until it arrives, then its mesh
+    /// is hidden beneath the model. Visual only — collision/fit/gestures stay on the box.
     private func updateRealisticModel(for footprint: FurnitureFootprint, on box: Entity) {
-        let assetName = (mode == .buy)
-            ? footprint.catalogItemID.flatMap { catalogModelAssetName?($0) }
-            : nil
+        let isSandbox = footprint.sandboxAssetID != nil
+        let assetName: String? = isSandbox
+            ? footprint.sandboxAssetID.flatMap { sandboxModelAssetName?($0) }
+            : (mode == .buy ? footprint.catalogItemID.flatMap { catalogModelAssetName?($0) } : nil)
 
         guard let assetName else {
-            // PLAY / non-catalog / no bundled model → ensure the stylized box shows.
+            // PLAY verified / non-catalog / no bundled model → ensure the box shows.
             if FurnitureEntityBuilder.hasRealisticModel(box) {
                 FurnitureEntityBuilder.removeRealisticModel(from: box)
                 reapplyFurnitureState(for: footprint.id, on: box)
@@ -1260,32 +1431,89 @@ final class RoomSceneController {
             return
         }
 
-        if FurnitureEntityBuilder.hasRealisticModel(box) {
-            // Already showing: keep it fit to the current dimensions (covers resize).
-            if let model = box.findEntity(named: FurnitureEntityBuilder.realisticModelName) {
+        if FurnitureEntityBuilder.hasRealisticModel(box),
+           let model = box.findEntity(named: FurnitureEntityBuilder.realisticModelName) {
+            let baked = modelPartColors[footprint.id] ?? [:]
+            let desired = isSandbox ? sandboxDesiredColors(footprint, model: model) : [:]
+            // A part reset to its ORIGINAL color can't be un-tinted in place (the
+            // flat tint overwrote the library material) → reload a fresh clone. That
+            // is exactly when a previously-baked part key is no longer desired.
+            let needsReload = isSandbox && !Set(baked.keys).isSubset(of: Set(desired.keys))
+            if !needsReload {
+                // Keep it fit to the current dimensions (covers resize)…
                 FurnitureEntityBuilder.scaleRealisticModel(model, to: footprint.dimensions)
+                // …and re-tint only the parts whose color was added or changed
+                // (in place, no reload — smooth for a live swatch/wheel drag).
+                if isSandbox {
+                    for (key, rgb) in desired where baked[key] != rgb {
+                        FurnitureEntityBuilder.applyPartColor(Self.uiColor(rgb), toPart: key, in: model)
+                    }
+                    modelPartColors[footprint.id] = desired
+                }
+                return
             }
-            return
+            // Falls through to reload the original-colored model. Restore the box
+            // mesh now (it was hidden under the tinted model) so the piece stays
+            // visible as the stylized box during the async reload, instead of
+            // flashing invisible until the fresh model attaches.
+            FurnitureEntityBuilder.removeRealisticModel(from: box)
+            modelPartColors[footprint.id] = nil
+            reapplyFurnitureState(for: footprint.id, on: box)
         }
 
         guard !modelLoadingIDs.contains(footprint.id) else { return }
         modelLoadingIDs.insert(footprint.id)
         let id = footprint.id
-        // The product's true color, applied to the (untextured placeholder) model so
-        // BUY shows real color — identical source to the box's BUY tint, so model and
-        // box never disagree. (Real product USDZ would pass nil to keep their materials.)
-        let tint = FurnitureEntityBuilder.tint(
-            footprint.appearance.colorCategory, exact: footprint.appearance.exactColorRGB, mode: .buy)
         Task { [weak self] in
             let model = await CatalogModelLoader.shared.model(named: assetName)
             guard let self else { return }
             self.modelLoadingIDs.remove(id)
-            // The piece / mode may have changed while loading; re-validate.
-            guard self.mode == .buy,
-                  let box = self.furnitureEntities[id],
+            guard let box = self.furnitureEntities[id],
                   let model,
                   let dims = self.furnitureSnapshots[id]?.dimensions else { return }
-            FurnitureEntityBuilder.attachRealisticModel(model, to: box, dimensions: dims, tint: tint)
+
+            if isSandbox {
+                // The piece may have been swapped to a real product while loading.
+                guard let snapshot = self.furnitureSnapshots[id],
+                      snapshot.sandboxAssetID != nil else { return }
+                // Elastic clay: NO zero-scaling guard (per-axis stretch is intended).
+                // Attach with the model's ORIGINAL library materials, then flatten
+                // only the parts the user has recolored — others stay original, so a
+                // clay bed reads frame/mattress/pillow as distinct colors like the asset.
+                FurnitureEntityBuilder.attachRealisticModel(model, to: box, dimensions: dims, tint: nil)
+                let desired = self.sandboxDesiredColors(snapshot, model: model)
+                if !desired.isEmpty { FurnitureEntityBuilder.applyPartColors(desired, to: model) }
+                self.modelPartColors[id] = desired
+                // Publish the model's parts so the selection UI can offer per-part chips.
+                // (Tap-to-pick uses exact ray/triangle testing — no colliders needed.)
+                self.onSandboxParts?(id, FurnitureEntityBuilder.colorableParts(of: model))
+                self.reapplyFurnitureState(for: id, on: box)
+                return
+            }
+
+            // Verified product: BUY-only; re-validate mode since it may have changed.
+            guard self.mode == .buy else { return }
+            // Verified-track zero-scaling guard: a real product USDZ must already be
+            // authored at its true catalog size (placed 1:1, never warped). Measure
+            // its native extents and refuse anything off by > 1 cm — fall back to the
+            // honest box rather than let fitTransform silently squash/stretch a
+            // mis-authored asset. Logs loudly (Console error, all builds) and recovers
+            // to the box — deliberately NOT assertionFailure, which would trap every
+            // DEBUG/QA build the moment a real product deviates and make the documented
+            // box fallback unreachable off-release.
+            let extents = FurnitureEntityBuilder.nativeExtents(of: model)
+            let deviation = CatalogModelLoader.nativeSizeDeviation(
+                modelExtents: extents, targetDimensions: dims)
+            guard deviation <= CatalogModelLoader.verifiedModelTolerance else {
+                catalogModelLogger.error(
+                    "Verified model '\(assetName, privacy: .public)' native \(extents.x)×\(extents.y)×\(extents.z) m deviates \(deviation) m from catalog dims (> \(CatalogModelLoader.verifiedModelTolerance) m). Refusing — re-author the asset to true 1:1 scale, do not patch the transform. Showing honest box.")
+                return   // box stays (modelLoadingIDs already cleared above)
+            }
+
+            // Real product USDZ ship their own correct PBR materials → tint nil
+            // (never recolor a verified asset). fitTransform degenerates to identity
+            // here because native dims ≈ target dims within tolerance.
+            FurnitureEntityBuilder.attachRealisticModel(model, to: box, dimensions: dims, tint: nil)
             self.reapplyFurnitureState(for: id, on: box)   // box → transparent (red if invalid)
         }
     }
@@ -1304,6 +1532,28 @@ final class RoomSceneController {
         } else if let footprint = furnitureSnapshots[id] {
             FurnitureEntityBuilder.retint(box, footprint: footprint, mode: mode)
         }
+    }
+
+    /// Which colorable part of a sandbox piece sits under a tap, or nil. `throughPoint`
+    /// is the tapped surface point in `root` space; we cast the camera ray through it
+    /// and test the model's actual triangles (exact — so a pillow inside the frame's
+    /// bounding box is still picked, which AABB/convex colliders can't do). Returns nil
+    /// for verified/non-clay pieces (no loaded model) or a tap through empty space.
+    func sandboxPartKey(forTapThrough throughPoint: SIMD3<Float>, pieceID id: UUID) -> String? {
+        // Sandbox clay only. Verified products ALSO attach a `realisticModelName`
+        // child in BUY, so finding the model isn't enough to prove this is clay — a
+        // re-tap on a verified product would otherwise route into part-picking and
+        // swallow the re-select. Gate on the footprint carrying a `sandboxAssetID`.
+        guard currentFootprints.first(where: { $0.id == id })?.sandboxAssetID != nil,
+              let box = furnitureEntities[id],
+              let model = box.findEntity(named: FurnitureEntityBuilder.realisticModelName)
+        else { return nil }
+        let originWorld = camera.position(relativeTo: nil)
+        let throughWorld = root.convert(position: throughPoint, to: nil)
+        let direction = throughWorld - originWorld
+        guard length(direction) > 1e-5 else { return nil }
+        return FurnitureEntityBuilder.partKey(
+            forRayOrigin: originWorld, direction: direction, in: model)
     }
 
     // MARK: - Live drag-to-move (driven by native targeted gestures)
@@ -1347,7 +1597,14 @@ final class RoomSceneController {
 
         if let entity = furnitureEntities[id] {
             entity.position = footprint.worldPosition
-            FurnitureEntityBuilder.applyPlacementState(state, selected: true, mode: mode, to: entity)
+            // Only rebuild/reassign the material when the placement state actually
+            // changes. `applyPlacementState` allocates a fresh PhysicallyBasedMaterial
+            // and reassigns `model.model` — doing that every frame is a per-tick hitch,
+            // and the tint is identical across frames sharing a state. Position still
+            // updates every frame for 1:1 finger tracking.
+            if state != lastDragState {
+                FurnitureEntityBuilder.applyPlacementState(state, selected: true, mode: mode, to: entity)
+            }
             furnitureSnapshots[id] = footprint   // keep snapshot in sync so the post-drag re-sync won't rebuild
         }
 
@@ -1431,6 +1688,88 @@ final class RoomSceneController {
         return currentFootprints
     }
 
+    // MARK: - Live two-finger rotation (yaw)
+
+    private var rotatingFurnitureID: UUID?
+    /// Yaw captured at twist start, so the cumulative gesture angle applies to a
+    /// stable base rather than compounding each callback.
+    private var rotateBaseYaw: Float = 0
+
+    func beginFurnitureRotation(_ id: UUID) {
+        guard let footprint = currentFootprints.first(where: { $0.id == id }) else { return }
+        rotatingFurnitureID = id
+        rotateBaseYaw = footprint.yRotation
+        lastDragState = nil
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+    }
+
+    /// Rotate the piece about the vertical axis by the cumulative gesture `angle`
+    /// (radians) from the twist start. Position and size are untouched; only the
+    /// entity's orientation and the footprint's `yRotation` change. Re-validates fit
+    /// (a rotated piece can clear or hit a wall) and re-tints. The sign is negated so
+    /// a clockwise on-screen twist reads as a clockwise yaw under the top-down camera.
+    func rotateFurniture(by angle: Float) {
+        guard let id = rotatingFurnitureID,
+              let room = editingRoom,
+              let index = currentFootprints.firstIndex(where: { $0.id == id }) else { return }
+
+        let yaw = rotateBaseYaw - angle
+        currentFootprints[index].yRotation = yaw
+        let footprint = currentFootprints[index]
+
+        let state = FurniturePlacementValidator.validate(
+            footprint: footprint, against: room, existingFootprints: currentFootprints)
+
+        if let entity = furnitureEntities[id] {
+            entity.orientation = simd_quatf(angle: yaw, axis: [0, 1, 0])
+            // Orientation updates every frame for 1:1 tracking, but the fit tint only
+            // when the state actually flips — `applyPlacementState` allocates a fresh
+            // material and rebuilds the selection border, a per-tick hitch across the
+            // (nearly always) identical-state frames of a twist. Mirrors `dragFurniture`.
+            if state != lastDragState {
+                FurnitureEntityBuilder.applyPlacementState(state, selected: true, mode: mode, to: entity)
+            }
+            furnitureSnapshots[id] = footprint
+        }
+
+        if state == .invalid && lastDragState != .invalid {
+            UINotificationFeedbackGenerator().notificationOccurred(.warning)
+        }
+        lastDragState = state
+    }
+
+    func endFurnitureRotation() -> [FurnitureFootprint] {
+        // Wrap the accumulated twist into [0, 2π) before persisting, matching the
+        // discrete quarter-turn path. Without this a big pinch-twist leaves yRotation
+        // at e.g. 7.8 rad, and FineTuneSheet's rotation slider (−180…180°) clamps it,
+        // snapping the piece to a different angle than the one on screen.
+        if let id = rotatingFurnitureID,
+           let index = currentFootprints.firstIndex(where: { $0.id == id }) {
+            let twoPi = Float.pi * 2
+            let wrapped = currentFootprints[index].yRotation.truncatingRemainder(dividingBy: twoPi)
+            currentFootprints[index].yRotation = wrapped < 0 ? wrapped + twoPi : wrapped
+        }
+        rotatingFurnitureID = nil
+        lastDragState = nil
+        return currentFootprints
+    }
+
+    // MARK: - Snap-to-wall pick mode
+
+    /// Toggle the floor's tappability for "snap to wall": with an
+    /// `InputTargetComponent` + collision the base hit-tests, so a tap can be
+    /// unprojected to a floor point. Removed when picking ends, so normal tap/drag
+    /// behavior (deselect on empty, orbit) is byte-identical outside the mode.
+    func setWallPicking(_ picking: Bool) {
+        guard let base = baseEntity else { return }
+        if picking {
+            if base.collision == nil { base.generateCollisionShapes(recursive: false) }
+            base.components.set(InputTargetComponent())
+        } else {
+            base.components.remove(InputTargetComponent.self)
+        }
+    }
+
     // MARK: - Per-frame loop
 
     func onSceneUpdate(deltaTime: TimeInterval) {
@@ -1479,6 +1818,18 @@ final class RoomSceneController {
         // to load) before grabbing the thumbnail. Wait, too, until the view's pixel
         // size is known so the offscreen render is correctly sized.
         guard frameCount >= 8 else { return }
+        // Don't snapshot while realistic furniture models are still loading: the
+        // pieces are translucent stylized boxes until their async USDZ attaches, and
+        // a thumbnail taken now would show those boxes instead of the real furniture.
+        // Wait for all pending loads to finish, then a few more frames so the
+        // freshly-attached models actually render. A hard frame cap (~4s at 60fps)
+        // is the safety valve so a hung load can never block the thumbnail forever.
+        if !modelLoadingIDs.isEmpty && frameCount < 240 {
+            framesSinceModelsLoaded = 0
+            return
+        }
+        framesSinceModelsLoaded += 1
+        guard framesSinceModelsLoaded >= 3 || frameCount >= 240 else { return }
         let size = pixelSize
         guard size.width > 0, size.height > 0 else { return }
         didSnapshot = true
