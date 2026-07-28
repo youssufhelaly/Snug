@@ -1,0 +1,422 @@
+[
+  {
+    "asin": "B0GTZ6JFQ9",
+    "category": "chair",
+    "title": "DUMOS Mid Century Modern Accent Chair, Upholstered Armchair with Lumbar Pillow and Solid Wood Frame, Comfy Reading Chair",
+    "brand": "DUMOS",
+    "priceCents": 7696,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      0.5646,
+      0.7595,
+      0.729
+    ],
+    "rawDims": "29.9\"D x 22.23\"W x 28.7\"H",
+    "colorCategory": "lightGrey",
+    "trueColorRGB": [
+      0.709,
+      0.7,
+      0.682
+    ],
+    "material": "fabric",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/814GevLMtVL.jpg",
+    "productURL": "https://www.amazon.com/DUMOS-Century-Upholstered-Armchair-Reading/dp/B0GTZ6JFQ9",
+    "archetype": "quaternius_OfficeChair",
+    "archetypeSpread": 1.46,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B0GXKG8QHW",
+    "category": "chair",
+    "title": "DUMOS Dark Grey Modern Accent Chairs for Living Room, Corner Chairs for Adults, Reading Armchair with Armrest and Backre",
+    "brand": "DUMOS",
+    "priceCents": 9998,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      0.7874,
+      0.762,
+      0.8636
+    ],
+    "rawDims": "30\"D x 31\"W x 34\"H",
+    "colorCategory": "black",
+    "trueColorRGB": [
+      0.243,
+      0.218,
+      0.215
+    ],
+    "material": "fabric",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/810urbPXlSL.jpg",
+    "productURL": "https://www.amazon.com/DUMOS-Reading-Armchair-Backrest-Reception/dp/B0GXKG8QHW",
+    "archetype": "quaternius_Sofa_individual",
+    "archetypeSpread": 1.32,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B07DZT2SZ3",
+    "category": "bed",
+    "title": "Mellow Naturalista Classic - 12 Inch Solid Wood Platform Bed with Wooden Slats, No Box Spring Needed, Easy Assembly, Que",
+    "brand": "Mellow",
+    "priceCents": 13999,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      1.5113,
+      2.0193,
+      0.3048
+    ],
+    "rawDims": "79.5\"L x 59.5\"W x 12\"H",
+    "colorCategory": "lightGrey",
+    "trueColorRGB": [
+      0.819,
+      0.814,
+      0.791
+    ],
+    "material": "wood",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/7159ToXsBTL.jpg",
+    "productURL": "https://www.amazon.com/Mellow-Naturalista-Classic-Platform-Assembly/dp/B07DZT2SZ3",
+    "archetype": "quaternius_BedDouble",
+    "archetypeSpread": 2.73,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B0F596KXP2",
+    "category": "bed",
+    "title": "zunatu Queen Size Metal Platform Bed Frame/Victorian Style Headboard and Footboard/Steel Slat Support/Easy Assembly/No B",
+    "brand": "zunatu",
+    "priceCents": 9099,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      1.524,
+      2.0861,
+      1.0084
+    ],
+    "rawDims": "82.13\"L x 60\"W x 39.7\"H",
+    "colorCategory": "cream",
+    "trueColorRGB": [
+      0.908,
+      0.898,
+      0.88
+    ],
+    "material": "metal",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/915TfRUFMtL.jpg",
+    "productURL": "https://www.amazon.com/zunatu-Platform-Victorian-Headboard-Footboard/dp/B0F596KXP2",
+    "archetype": "quaternius_BedDouble",
+    "archetypeSpread": 1.32,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B086M58PQ3",
+    "category": "bed",
+    "title": "Allewie Queen Size Platform Bed Frame with Fabric Upholstered Headboard and Wooden Slats Support, Fully Upholstered Matt",
+    "brand": "Allewie",
+    "priceCents": 15468,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      1.5451,
+      2.0701,
+      1.1049
+    ],
+    "rawDims": "81.5\"L x 60.83\"W x 43.5\"H",
+    "colorCategory": "lightGrey",
+    "trueColorRGB": [
+      0.796,
+      0.797,
+      0.792
+    ],
+    "material": "fabric",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/813gSrd4K2L.jpg",
+    "productURL": "https://www.amazon.com/Allewie-Platform-Upholstered-Headboard-Foundation/dp/B086M58PQ3",
+    "archetype": "quaternius_BedDouble",
+    "archetypeSpread": 1.46,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B0CS3K9CWC",
+    "category": "desk",
+    "title": "Huuger Computer Desk, 55 Inch Home Office Desk, Gaming Writing Work from Home Study Desk, Large Legroom, Sturdy Metal Fr",
+    "brand": "Huuger",
+    "priceCents": 5999,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      1.3716,
+      0.5004,
+      0.7493
+    ],
+    "rawDims": "19.7\"D x 54\"W x 29.5\"H",
+    "colorCategory": "warmBrown",
+    "trueColorRGB": [
+      0.609,
+      0.438,
+      0.327
+    ],
+    "material": "metal",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/81WuudMU+0L.jpg",
+    "productURL": "https://www.amazon.com/Huuger-Computer-Storage-Writing-Legroom/dp/B0CS3K9CWC",
+    "archetype": "quaternius_Desk",
+    "archetypeSpread": 1.37,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B0CQC3RVMV",
+    "category": "desk",
+    "title": "HUANUO 48\u2033 x 24\u2033 Electric Standing Desk with 2 Drawers, C-Clamp Mount Compatible, Height Adjustable Computer Desk, Home ",
+    "brand": "HUANUO",
+    "priceCents": 13998,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      1.2192,
+      0.6096,
+      0.701
+    ],
+    "rawDims": "24\"D x 48\"W x 27.6\"H",
+    "colorCategory": "navy",
+    "trueColorRGB": [
+      0.228,
+      0.226,
+      0.236
+    ],
+    "material": "metal",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/71CfxsqVXmL.jpg",
+    "productURL": "https://www.amazon.com/HUANUO-Electric-Standing-Compatible-Adjustable/dp/B0CQC3RVMV",
+    "archetype": "quaternius_Desk",
+    "archetypeSpread": 1.14,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B0GMW7FQ83",
+    "category": "dresser",
+    "title": "Furniway 63\" Mid-Century Modern Dresser for Bedroom, 9 Drawer Wide Chest of Drawers with Wood Legs, Large Storage Bedroo",
+    "brand": "Furniway",
+    "priceCents": 29999,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      1.6027,
+      0.3988,
+      0.7798
+    ],
+    "rawDims": "15.7\"D x 63.1\"W x 30.7\"H",
+    "colorCategory": "warmBrown",
+    "trueColorRGB": [
+      0.516,
+      0.331,
+      0.218
+    ],
+    "material": "wood",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/810HTveD89L.jpg",
+    "productURL": "https://www.amazon.com/Furniway-Mid-Century-Dresser-Bedroom-Drawers/dp/B0GMW7FQ83",
+    "archetype": "quaternius_ShortCloset",
+    "archetypeSpread": 3.0,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B0FJLT8YMZ",
+    "category": "dresser",
+    "title": "Sweetcrispy 7 Drawer Dresser with Fabric Bins Fabric Storage Tower Organizer for Bedroom Closet Hallway Entryway Tall Ch",
+    "brand": "Sweetcrispy",
+    "priceCents": 3938,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      0.9982,
+      0.2997,
+      0.7696
+    ],
+    "rawDims": "11.8\"D x 39.3\"W x 30.3\"H",
+    "colorCategory": "black",
+    "trueColorRGB": [
+      0.224,
+      0.224,
+      0.224
+    ],
+    "material": "fabric",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/81xcHhG-wWL.jpg",
+    "productURL": "https://www.amazon.com/Sweetcrispy-Dresser-Storage-Organizer-Entryway/dp/B0FJLT8YMZ",
+    "archetype": "quaternius_ShortCloset",
+    "archetypeSpread": 1.95,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B0F48KPZXD",
+    "category": "dresser",
+    "title": "Aitjunz Modern 7 Drawers Dresser for Bedroom, 55\" Tall Dressers & Chest of Drawers w/Curved Profile Design, Wood Mid Cen",
+    "brand": "Aitjunz",
+    "priceCents": 25999,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      0.8001,
+      0.3937,
+      1.4097
+    ],
+    "rawDims": "15.5\"D x 31.5\"W x 55.5\"H",
+    "colorCategory": "tan",
+    "trueColorRGB": [
+      0.792,
+      0.708,
+      0.616
+    ],
+    "material": "wood",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/715zoNKvNPL.jpg",
+    "productURL": "https://www.amazon.com/Aitjunz-Drawers-Dressers-Vertical-Organizer/dp/B0F48KPZXD",
+    "archetype": "quaternius_ShortCloset",
+    "archetypeSpread": 1.43,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B0H2MK55L6",
+    "category": "wardrobe",
+    "title": "72\" Armoire Wardrobe Closet with 3 Door Wooden Bedroom Armoire with LED Light 3 Drawers Large Modern Wardrobe Cabinet wi",
+    "brand": "AXCIGOC",
+    "priceCents": 34999,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      1.1938,
+      0.4572,
+      1.8288
+    ],
+    "rawDims": "18\"D x 47\"W x 72\"H",
+    "colorCategory": "white",
+    "trueColorRGB": [
+      0.907,
+      0.904,
+      0.903
+    ],
+    "material": "wood",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/81oLsMejk3L.jpg",
+    "productURL": "https://www.amazon.com/AXCIGOC-Armoire-Wardrobe-Removable-White/dp/B0H2MK55L6",
+    "archetype": "quaternius_Closet",
+    "archetypeSpread": 1.46,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B0FXGMKD2T",
+    "category": "wardrobe",
+    "title": "Arched Armoire Wardrobe Closet with 4 Doors, 71\" H Wooden Large Capacity Wardrobe Cabinet with 2 Hanging Rods and 8 Shel",
+    "brand": "NDOHCUO",
+    "priceCents": 38999,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      1.6002,
+      0.4572,
+      1.7907
+    ],
+    "rawDims": "18\"D x 63\"W x 70.5\"H",
+    "colorCategory": "cream",
+    "trueColorRGB": [
+      0.896,
+      0.891,
+      0.883
+    ],
+    "material": "fabric",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/71FNjjDooHL.jpg",
+    "productURL": "https://www.amazon.com/Armoire-Wardrobe-Closet-Capacity-Freestanding/dp/B0FXGMKD2T",
+    "archetype": "quaternius_Closet",
+    "archetypeSpread": 1.96,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B0CJMBZ6GJ",
+    "category": "nightstand",
+    "title": "Huuger Nightstand with Charging Station, 27.6 Inch Bedside Table with Fabric Drawers, End Table with USB Ports and Outle",
+    "brand": "Huuger",
+    "priceCents": 3998,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      0.3988,
+      0.2997,
+      0.701
+    ],
+    "rawDims": "11.8\"D x 15.7\"W x 27.6\"H",
+    "colorCategory": "black",
+    "trueColorRGB": [
+      0.138,
+      0.137,
+      0.13
+    ],
+    "material": "fabric",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/81rNo-5HTTL.jpg",
+    "productURL": "https://www.amazon.com/Huuger-Nightstand-Charging-Station-Bedside/dp/B0CJMBZ6GJ",
+    "archetype": "quaternius_NightStand",
+    "archetypeSpread": 2.32,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B0D2ZQ3M2H",
+    "category": "nightstand",
+    "title": "Fixwal Night Stand with Charging Station, LED Nightstand with U-S-B Ports and Outlets for Small Spaces, 2 Fabric Storage",
+    "brand": "Fixwal",
+    "priceCents": 3329,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      0.2997,
+      0.3988,
+      0.5994
+    ],
+    "rawDims": "15.7\"D x 11.8\"W x 23.6\"H",
+    "colorCategory": "coolBrown",
+    "trueColorRGB": [
+      0.296,
+      0.297,
+      0.299
+    ],
+    "material": "fabric",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/713n+vQZmCL.jpg",
+    "productURL": "https://www.amazon.com/Fixwal-Night-Stand-Charging-Nightstand/dp/B0D2ZQ3M2H",
+    "archetype": "quaternius_NightStand",
+    "archetypeSpread": 2.3,
+    "_review": false,
+    "_reviewReasons": []
+  },
+  {
+    "asin": "B0BCJDN979",
+    "category": "bookshelf",
+    "title": "AY-AOYUAN 5 Tier Industrial Solid Wood Bookshelf, Open Etagere Bookcase with Metal Frame, Vintage Industrial Style Bookc",
+    "brand": "AY-AOYUAN",
+    "priceCents": 21700,
+    "currencyCode": "USD",
+    "dimensionsMeters": [
+      0.8001,
+      0.3048,
+      1.6002
+    ],
+    "rawDims": "12\"D x 31.5\"W x 63\"H",
+    "colorCategory": "lightGrey",
+    "trueColorRGB": [
+      0.805,
+      0.767,
+      0.726
+    ],
+    "material": "metal",
+    "isRemovable": true,
+    "mainImageUrl": "https://m.media-amazon.com/images/I/71iOGncUMJL.jpg",
+    "productURL": "https://www.amazon.com/Industrial-Bookshelf-Bookcase-Furniture-AY01-5tier/dp/B0BCJDN979",
+    "archetype": "quaternius_Bookcase",
+    "archetypeSpread": 1.09,
+    "_review": false,
+    "_reviewReasons": []
+  }
+]

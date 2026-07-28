@@ -25,10 +25,13 @@ does that with `usdzip --arkitAsset` + `usdchecker --arkit`.
 """
 
 import bpy
+import bmesh
 import sys
 import os
 import json
 import glob
+from collections import deque
+import numpy as np
 from mathutils import Matrix, Vector
 
 # --- arg parsing (everything after the literal "--") ---------------------------
@@ -69,17 +72,31 @@ def mesh_objects():
     return [o for o in bpy.context.scene.objects if o.type == "MESH"]
 
 def world_bbox():
-    """Combined world-space AABB of all mesh objects, in Blender (Z-up) coords."""
+    """Combined world-space AABB of all mesh objects, in Blender (Z-up) coords.
+
+    Measured from actual vertices, NOT obj.bound_box: Blender does not refresh
+    the cached bound_box after a bmesh vertex delete (remove_side_clutter), so a
+    bound_box read post-crop would return the stale pre-crop extent — silently
+    feeding the old, inflated footprint into the reported dims and the normalize
+    scale. For an unmodified mesh this returns exactly what bound_box would."""
     mins = Vector((float("inf"),) * 3)
     maxs = Vector((float("-inf"),) * 3)
     found = False
     for obj in mesh_objects():
-        for corner in obj.bound_box:                       # 8 local-space corners
-            wc = obj.matrix_world @ Vector(corner)
-            for k in range(3):
-                mins[k] = min(mins[k], wc[k])
-                maxs[k] = max(maxs[k], wc[k])
-            found = True
+        n = len(obj.data.vertices)
+        if n == 0:
+            continue
+        arr = np.empty(n * 3, dtype=np.float64)
+        obj.data.vertices.foreach_get("co", arr)
+        local = arr.reshape(-1, 3)
+        mw = np.array(obj.matrix_world, dtype=np.float64)
+        world = local @ mw[:3, :3].T + mw[:3, 3]
+        wmin = world.min(axis=0)
+        wmax = world.max(axis=0)
+        for k in range(3):
+            mins[k] = min(mins[k], wmin[k])
+            maxs[k] = max(maxs[k], wmax[k])
+        found = True
     if not found:
         return None, None
     return mins, maxs
@@ -99,6 +116,115 @@ def uniform_normalize(longest_target=1.0):
     for obj in mesh_objects():
         obj.matrix_world = S @ obj.matrix_world
     return s
+
+# --- clutter removal (tripo meshes only) ----------------------------------------
+
+def remove_side_clutter(res=64, dilate=1, footprint_margin=0.08, keep_frac=0.5):
+    """
+    Delete staged props that Tripo fuses BESIDE a product (e.g. a stool next to a
+    dresser, a second unit in frame) while preserving anything sitting ON TOP of
+    it (lamps, vases, a mirror standing on the surface).
+
+    Tripo emits the product and each detached prop as separate geometry islands
+    with small empty gaps between them. We voxelize (Blender Z-up, so the
+    footprint plane is X-Y), find connected components (a light dilation bridges
+    the product's own surface fragmentation), and treat the largest component as
+    the product body. A separate component is KEPT when most of it lies within
+    the body's X-Y footprint (it's on top) and REMOVED when it lies beside the
+    body (it would inflate the footprint the fit check depends on). Props resting
+    on the surface are welded into the body component and are never touched.
+
+    Runs before world_bbox()/uniform_normalize() so the reported dims and the
+    normalization reflect the de-cluttered footprint. Returns verts removed.
+    """
+    objs = mesh_objects()
+    if not objs:
+        return 0
+    # Collapse to one object so components are found across the whole mesh.
+    bpy.ops.object.select_all(action="DESELECT")
+    for o in objs:
+        o.select_set(True)
+    bpy.context.view_layer.objects.active = objs[0]
+    if len(objs) > 1:
+        bpy.ops.object.join()
+    obj = bpy.context.view_layer.objects.active
+
+    co = np.array([(obj.matrix_world @ v.co)[:] for v in obj.data.vertices],
+                  dtype=np.float64)
+    n = len(co)
+    if n == 0:
+        return 0
+    mn = co.min(axis=0)
+    ext = np.maximum(co.max(axis=0) - mn, 1e-9)
+    idx = np.clip(np.floor((co - mn) / ext * (res - 1e-6)).astype(np.int32), 0, res - 1)
+
+    occ = np.zeros((res, res, res), dtype=bool)
+    occ[idx[:, 0], idx[:, 1], idx[:, 2]] = True
+
+    def _dilate(grid):
+        g = grid.copy()
+        for ax in range(3):
+            g |= np.roll(grid, 1, axis=ax) | np.roll(grid, -1, axis=ax)
+        return g
+    docc = occ.copy()
+    for _ in range(dilate):
+        docc = _dilate(docc)
+
+    labels = np.zeros((res, res, res), dtype=np.int32)
+    neigh = [(dx, dy, dz) for dx in (-1, 0, 1) for dy in (-1, 0, 1)
+             for dz in (-1, 0, 1) if (dx, dy, dz) != (0, 0, 0)]
+    cur = 0
+    for cell in zip(*np.where(docc)):
+        if labels[cell]:
+            continue
+        cur += 1
+        q = deque([cell]); labels[cell] = cur
+        while q:
+            x, y, z = q.popleft()
+            for dx, dy, dz in neigh:
+                nc = (x + dx, y + dy, z + dz)
+                if (0 <= nc[0] < res and 0 <= nc[1] < res and 0 <= nc[2] < res
+                        and docc[nc] and not labels[nc]):
+                    labels[nc] = cur
+                    q.append(nc)
+
+    vert_label = labels[idx[:, 0], idx[:, 1], idx[:, 2]]
+    counts = np.bincount(vert_label, minlength=cur + 1)
+    counts[0] = 0
+    body = int(counts.argmax())
+    if cur <= 1:
+        return 0
+
+    # Body footprint in the X-Y (horizontal) plane, with a small margin.
+    body_xy = co[vert_label == body][:, :2]
+    bmin = body_xy.min(axis=0); bmax = body_xy.max(axis=0)
+    span = np.maximum(bmax - bmin, 1e-9)
+    lo = bmin - span * footprint_margin
+    hi = bmax + span * footprint_margin
+
+    del_mask = np.zeros(n, dtype=bool)
+    for lab in range(1, cur + 1):
+        if lab == body or counts[lab] == 0:
+            continue
+        m = vert_label == lab
+        xy = co[m][:, :2]
+        inside = ((xy >= lo) & (xy <= hi)).all(axis=1).mean()
+        # Mostly within the footprint => it's on top => keep. Otherwise it sits
+        # beside the product => remove.
+        if inside < keep_frac:
+            del_mask |= m
+
+    removed = int(del_mask.sum())
+    if removed:
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bm.verts.ensure_lookup_table()
+        bmesh.ops.delete(bm, geom=[bm.verts[i] for i in np.where(del_mask)[0]],
+                         context="VERTS")
+        bm.to_mesh(obj.data)
+        bm.free()
+    return removed
+
 
 # --- import ---------------------------------------------------------------------
 
@@ -182,6 +308,16 @@ def main():
             print(f"SKIP {path}: imported no mesh")
             continue
 
+        # Tripo image-to-3D bakes staged props (a stool beside, a second unit)
+        # into the mesh; cut the ones that sit BESIDE the product before we
+        # measure the footprint. Top clutter (on-surface props) is preserved.
+        # Archetype sources (quaternius/kenney) are clean kits — never touched.
+        clutter_removed = 0
+        if args["source"] == "tripo":
+            clutter_removed = remove_side_clutter()
+            if clutter_removed:
+                print(f"CLUTTER {asset_name}: removed {clutter_removed} side-clutter verts")
+
         # Native (pre-normalization) bbox in Blender Z-up coords...
         mins, maxs = world_bbox()
         ext_b = maxs - mins
@@ -211,6 +347,7 @@ def main():
                 "depth_height": ratio(depth, height),
             },
             "normalizeFactorApplied": round(norm_factor, 6),
+            "clutterRemovedVerts": clutter_removed,
             "triCount": tri_count(),
             "license": src_cfg.get("license"),
             "sourceURL": src_cfg.get("url"),

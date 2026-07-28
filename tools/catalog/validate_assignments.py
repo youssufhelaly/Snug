@@ -35,6 +35,31 @@ def fmt_ratio(dims):
     return ":".join(f"{d / lo:.2f}" for d in dims)
 
 
+# The app renders APPROXIMATE assets (photo-generated Tripo meshes, Quaternius
+# archetypes) with CatalogModelLoader.approximateFitTransform: footprint (w×d)
+# locked 1:1 with an automatic 0°/90° yaw, height 1:1-or-proportionally-taller.
+# So the honest gate for them is FOOTPRINT spread (best over rotation), not the
+# 3-axis spread — height never squashes and so can't distort the piece.
+APPROX_PREFIXES = ("tripo_", "quaternius_")
+# Kept in sync with generate_3d.py's FOOTPRINT_TOLERANCE (bumped 1.25->1.4
+# 2026-07-03) — this is the SAME gate re-checked at ingest time.
+FOOTPRINT_TOLERANCE = 1.4
+
+
+def footprint_spread(target, native):
+    """Best (smallest) w×d fit spread over the two ground-plane orientations,
+    or None when the asset footprint is degenerate."""
+    best = None
+    for wi, di in ((0, 1), (1, 0)):
+        nw, nd = native[wi], native[di]
+        if nw <= 1e-6 or nd <= 1e-6:
+            continue
+        f = [target[0] / nw, target[1] / nd]
+        spread = max(f) / min(f)
+        best = spread if best is None else min(best, spread)
+    return best
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--catalog", required=True)
@@ -61,15 +86,29 @@ def main():
 
         target = item["dimensions"]        # (width, depth, height)
         native = model["nativeDimsWDH"]    # (width, depth, height)
-        factors = [target[i] / native[i] for i in range(3) if native[i] > 1e-6]
-        spread = max(factors) / min(factors)
+
+        if name.startswith(APPROX_PREFIXES):
+            # Approximate track: footprint-only, rotation-aware (mirrors the app).
+            spread = footprint_spread(target, native)
+            tolerance = FOOTPRINT_TOLERANCE
+            metric = "footprint"
+        else:
+            factors = [target[i] / native[i] for i in range(3) if native[i] > 1e-6]
+            spread = (max(factors) / min(factors)) if factors else None
+            tolerance = args.tolerance
+            metric = "stretch"
+        if spread is None:
+            # Degenerate asset: bounding box flat -> nothing to fit.
+            errors.append(f"PIPELINE ERROR: asset '{name}' has a zero-size "
+                          f"bounding box {native}; cannot back SKU '{item['id']}'.")
+            continue
 
         line = (f"{item['id']:<32} <- {name:<24} "
                 f"SKU {fmt_ratio(target):<14} asset {fmt_ratio(native):<14} "
-                f"stretch {spread:.2f}x")
-        if spread > args.tolerance:
+                f"{metric} {spread:.2f}x")
+        if spread > tolerance:
             errors.append("PIPELINE ERROR: " + line)
-        elif spread > 1.0 + (args.tolerance - 1.0) * 0.6:
+        elif spread > 1.0 + (tolerance - 1.0) * 0.6:
             warnings.append("near-tolerance:  " + line)
         else:
             ok.append("ok:              " + line)
