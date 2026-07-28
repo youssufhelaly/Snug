@@ -2,19 +2,34 @@
 
 ## What this app is
 Snug is a native iOS app for renters furnishing a new apartment.
-The core loop: scan your room (10-second LiDAR sweep) → clear out
-detected furniture → redesign in a playful stylized 3D view →
-toggle to a true-to-scale, true-color "buy mode" → purchase real
-furniture with an honest, uncertainty-aware fit check.
+The core loop: scan your room → make the 3D model match reality
+(editable walls/floor/openings) → search a real, buyable catalog →
+place true-to-scale 3D products in your room → judge whether it
+**looks good and fits** → buy through an affiliate link.
+
+The heart of it is "try before you buy": not just *does it fit* but
+*does it look good in my room, with my other stuff.* The honest,
+uncertainty-aware fit check is the trust floor; seeing real products
+in your real room is the reason to open the app.
+
+The full product vision (final target + feature roadmap) lives in
+`VISION.md` — read it for the "why" and "where this is going." This
+file holds the engineering rules.
 
 The product thesis in one line: **trust is the foundation, fun is
-the brand.** Accurate geometry underneath, playful rendering on top.
+the brand.** Accurate geometry and true color everywhere; the
+playfulness lives in the frame, motion, and haptics — never in a
+stylized rendering of the user's room (the old PLAY/BUY render-mode
+toggle was removed in July 2026; there is ONE truthful rendering,
+and "buy info" — dimension labels, fit states, prices — is an
+additive overlay, not a different look).
 
 ## Who it's for (V1)
-Urban renters, age 22–35, with a LiDAR-capable iPhone, furnishing
-a first or new apartment on a budget of roughly $500–$2,000.
-Everything in the catalog must be no-drill, no-paint, removable,
-deposit-safe.
+Urban renters, age 22–35, on any modern iPhone (AR corner-tapping is
+the default capture path; LiDAR is an optional higher-accuracy path,
+not a requirement), furnishing a first or new apartment on a budget
+of roughly $500–$2,000. Everything in the catalog must be no-drill,
+no-paint, removable, deposit-safe.
 
 ## Subsystem rules — auto-loaded by path
 Deep, subsystem-specific knowledge lives in `.claude/rules/*.md` and
@@ -31,8 +46,8 @@ frontmatter is the trigger). Don't duplicate that content here. The map:
   full impl status. Triggers on `*Furniture*` files + `RoomDioramaScreen`.
 - **catalog-buymode.md** — the commerce loop, catalog spine, realistic models.
   Triggers on `Features/Catalog/**`, `CatalogItem*`, `CatalogService`, `Resources/**`.
-- **rendering-modes.md** — PLAY↔BUY diorama, the identical-geometry invariant.
-  Triggers on `Features/RoomScene/**`, `Core/Rendering/**`.
+- **rendering-modes.md** — the single truthful diorama rendering + the
+  buy-info overlay. Triggers on `Features/RoomScene/**`, `Core/Rendering/**`.
 - **design-system.md** — colors, typography, motion, haptics, accessibility.
   Triggers on `Features/**`, `Core/DesignSystem/**`, `Core/UI/**`.
 - **swift.md** — always use the `swiftui-expert-skill` for Swift/SwiftUI work.
@@ -61,9 +76,14 @@ frontmatter is the trigger). Don't duplicate that content here. The map:
   pre-approved: the V1.1 video-export module may use a vetted
   Swift Package if offscreen RealityKit→AVFoundation composition
   proves too fragile by hand. Ask before adding it.
-- No backend in V1. Everything local. Catalog ships as a bundled
-  JSON + USDZ asset pack. Design models so a remote catalog can
-  replace the bundled one later.
+- Thin backend, not backend-free. The user's rooms/designs are local
+  (SwiftData). The *catalog* is networked (Amazon-sourced ingest →
+  catalog DB → app fetches + caches), degrading to the last-cached
+  catalog on a network blip. The catalog may still ship a bundled
+  JSON + USDZ seed pack, and `CatalogSource` stays a swappable protocol
+  so a remote feed drops in without a rewrite. (This supersedes the
+  original "No backend in V1 / everything local" rule, which predated
+  the Amazon catalog pivot — see `VISION.md` and `FounderPivot.md`.)
 
 ## Architecture rules
 - MVVM. Views are dumb. ViewModels are @Observable classes.
@@ -72,7 +92,7 @@ frontmatter is the trigger). Don't duplicate that content here. The map:
   via environment. `RoomStore` (Phase 1) owns saved-room
   persistence; `DesignStore` (Phase 4) will own saved layouts.
 - One feature = one folder under /Features. Present: Capture, Fit,
-  RoomScene (the 3D diorama, incl. the BUY-mode realistic-model path),
+  RoomScene (the 3D diorama, incl. the realistic product-model path),
   Rooms (the "My rooms" home), Catalog (the buy-mode shop), Onboarding
   (first-run value slides + camera-permission primer, gated by
   `@AppStorage("hasOnboarded")` in `SnugApp`). Planned: Editor, Saved, Share.
@@ -93,7 +113,12 @@ frontmatter is the trigger). Don't duplicate that content here. The map:
   presented as exact truth.
 - No dark patterns: no fake urgency, no hidden costs. Affiliate
   relationships disclosed in UI copy.
-- Build offline-first. Fully usable with no network in V1.
+- Local-first, not offline-only. The user's rooms and designs live
+  locally (SwiftData) and stay fully usable/editable with no network.
+  The *catalog* is networked (Amazon-sourced): a network blip degrades
+  to the last-cached catalog, never a broken app. (This supersedes the
+  original "fully usable with no network in V1" rule, which predated the
+  Amazon catalog pivot — see `VISION.md` and `FounderPivot.md`.)
 
 ## Out of scope for V1 — do NOT build these even if tempted
 Creator marketplace, accounts/auth, co-living multiplayer, room

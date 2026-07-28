@@ -2,6 +2,15 @@
 
 Every "while we're at it..." idea lands here instead of in the build.
 
+> **Note (2026-07-06):** Several items once parked here have GRADUATED into the
+> core product vision and now live in `VISION.md` as the real roadmap, not the
+> "don't build" list: the creative-proxy → resize → fit → **reverse-search for
+> real furniture that fits** loop, the **two-catalog** (Verified vs. Ideation
+> Sandbox) model, **paste-a-link → 3D**, **snap-a-photo → reverse-search → 3D**,
+> **describe-a-room → AI preset layout**, and **first-person walkthrough**. Read
+> `VISION.md` for how they sequence. What stays below is genuinely deferred
+> polish and the truly-out-of-V1 stuff.
+
 ## Seeded from the v2 prompt pack
 - **Orbit reveal video export (V1.1)** — separately budgeted ~1-week project,
   after TestFlight. Offscreen RealityKit → AVFoundation composition. The one
@@ -128,3 +137,16 @@ Every "while we're at it..." idea lands here instead of in the build.
   - **Distinct from AR passthrough.** This is *virtual* first-person (inside the rendered
     room). Holding the phone up in your real room to composite furniture in is the AR
     fit-check path — a different feature. Do the virtual one first; it reuses everything.
+# Take a pictiure of a furniture you like  in a store or somewhere and have a 3d version of it in you app
+# you enter an link of. aproduct you wanna see in you rworl. we make an api call get images convert to 3d goive it to you 
+# The core idea is an "Infinite Catalog Sandbox"—transforming Snug from a curated boutique app into an unrestricted e-commerce engine where users can search for and place any real-world Amazon furniture item directly into their space. 
+To keep it from destroying your margins or tanking your UX, the idea relies on a strict split:
+
+The Browse Layer: Free, lightning-fast, and dirt-cheap keyword searching powered by third-party product data APIs.
+
+The Generation Layer: High-cost, high-latency 3D conversion that is heavily guarded by global cloud caching (so you only pay to generate an item once) and locked behind a premium paywall (Snug Pro).
+
+# Cache the full raw Canopy response per ASIN to disk (raw_cache/<asin>.json in tools/catalog/), at the moment lookup() is called — regardless of which fields we currently parse. That way any field we didn't think to use today (galleries, bullets, specs, and rating/reviews once added) is sitting on disk forever, and a future "oh we need X" never costs another API call for ASINs we've already looked up.
+Persist imageUrls (full gallery) into asins_draft.json/asins.json entries, not just mainImageUrl.
+Add rating + review count to the query — but I don't want to guess Canopy's actual field names (their docs drift from the live schema, per the warning already in canopy.py). This needs one live --introspect call against the schema first to confirm the real field names before I wire them in.
+Update seed_catalog.py's resume logic so re-runs check the raw cache before calling lookup() again (skip the network call entirely if already cached).

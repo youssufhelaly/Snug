@@ -1,3 +1,12 @@
+> ⚠️ **HISTORICAL / SUPERSEDED (2026-07-06).** This is the original founding
+> prompt pack. It got Snug built, but it is now **out of date** as a spec:
+> the embedded CLAUDE.md below still describes the removed PLAY/BUY mode toggle,
+> LiDAR-only capture, and offline-first-with-no-network — all of which have
+> since changed. For the current product see `VISION.md`; for current
+> engineering rules see the real `CLAUDE.md` in the repo root. Kept only for
+> history (phase structure, the Phase 0 accuracy-gate reasoning). Safe to delete
+> if you don't want the history.
+
 # Claude Code Prompt Pack v2 — "Snug" (working name)
 ### The renter-first room design app: scan → de-clutter → play → buy
 
