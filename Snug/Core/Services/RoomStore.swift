@@ -52,19 +52,24 @@ final class RoomStore {
     }
 
     /// Renames a room. Empty/whitespace names fall back to the auto-name so the
-    /// list never shows a blank row.
-    func rename(_ stored: StoredRoom, to name: String) {
+    /// list never shows a blank row. Propagates the save error (like
+    /// `save`/`update`/`delete`) so a failed write can't silently leave the
+    /// in-memory name ahead of disk.
+    func rename(_ stored: StoredRoom, to name: String) throws {
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         stored.name = trimmed.isEmpty
             ? (stored.roomModel.map(Self.defaultName) ?? "Room")
             : trimmed
-        try? context.save()
+        try context.save()
     }
 
     /// Stores a freshly rendered diorama thumbnail (PNG data) for a room.
-    func setThumbnail(_ data: Data, for stored: StoredRoom) {
+    /// Throws on a failed write; callers may choose to ignore it (a thumbnail
+    /// is cosmetic and regenerated on the next open), but that choice belongs
+    /// at the call site, not silently here.
+    func setThumbnail(_ data: Data, for stored: StoredRoom) throws {
         stored.thumbnailData = data
-        try? context.save()
+        try context.save()
     }
 
     /// Deletes a saved room. Propagates the save error (like `save`/`update`) so
@@ -73,6 +78,32 @@ final class RoomStore {
     func delete(_ stored: StoredRoom) throws {
         context.delete(stored)
         try context.save()
+    }
+
+    /// Forks a saved room into a brand-new one. Geometry, openings, and the
+    /// surface style always come along; the furniture is opt-in — `keepingFurnitureIDs`
+    /// selects which pieces (none, some, or all) ride into the copy, so you can spin
+    /// off a bare shell of the same room or a full clone.
+    ///
+    /// The copy gets a fresh `id`/`capturedAt` (it's a distinct room, newest in the
+    /// list) and no thumbnail (regenerated on first open). Cleared pieces are never
+    /// carried over — they're already hidden and a fresh copy has no de-clutter
+    /// history to preserve, so an id in the set that points at a cleared piece is
+    /// simply ignored. Throws if the source blob can't be read (never fabricates a
+    /// room — CLAUDE.md), or on a failed write.
+    @discardableResult
+    func duplicate(_ stored: StoredRoom, keepingFurnitureIDs ids: Set<UUID>) throws -> StoredRoom {
+        guard let source = stored.roomModel else { throw DuplicationError.unreadableSource }
+        let kept = source.detectedFurniture.filter { !$0.isCleared && ids.contains($0.id) }
+        let copy = RoomModel(
+            provenance: source.provenance,
+            floorCorners: source.floorCorners,
+            ceilingHeight: source.ceilingHeight,
+            openings: source.openings,
+            detectedFurniture: kept,
+            surfaceStyle: source.surfaceStyle
+        )
+        return try save(copy, name: Self.copyName(for: stored.name))
     }
 
     // MARK: - Reads (non-reactive; views prefer @Query)
@@ -94,5 +125,27 @@ final class RoomStore {
         let area = room.floorArea
         guard area > 0 else { return "New room" }
         return String(format: "Room · %.0f m²", area)
+    }
+
+    /// The name for a duplicated room: the source name with a " copy" suffix so the
+    /// two are distinguishable in the list. Falls back to "Room" for a blank source
+    /// name (the list never shows a blank row). Repeated duplication reads as
+    /// "Room copy copy", matching Finder — the user can rename either.
+    static func copyName(for name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        return "\(trimmed.isEmpty ? "Room" : trimmed) copy"
+    }
+}
+
+/// Errors from a room duplication that can't proceed honestly.
+enum DuplicationError: LocalizedError {
+    /// The source room's saved blob couldn't be decoded, so there's nothing
+    /// trustworthy to copy.
+    case unreadableSource
+
+    var errorDescription: String? {
+        switch self {
+        case .unreadableSource: "The room's saved data couldn't be read."
+        }
     }
 }

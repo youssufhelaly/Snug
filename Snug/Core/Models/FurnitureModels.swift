@@ -173,7 +173,7 @@ struct FurnitureFootprint: Codable, Equatable, Sendable, Identifiable {
     /// User explicitly kept it — feeds `FitService` as an obstacle.
     var isKept: Bool
     /// Set when this footprint is a placed *catalog product* rather than detected
-    /// existing furniture; links back to `CatalogItem.id` for BUY-mode true-color
+    /// existing furniture; links back to `CatalogItem.id` for true-color
     /// rendering and the retailer out-link. `nil` for detected/manual pieces.
     ///
     /// Optional, so Swift's synthesized decoder reads it as `decodeIfPresent` —
@@ -242,8 +242,8 @@ struct FurnitureAppearance: Codable, Equatable, Sendable {
     var colorCategory: FurnitureColorCategory
     var materialClass: FurnitureMaterialClass
     /// Exact sRGB color (0–1), set ONLY for catalog products whose color is a
-    /// known manufacturer spec — not a lighting-inferred detection. BUY mode
-    /// renders this true color directly (the BUY promise); when nil (every
+    /// known manufacturer spec — not a lighting-inferred detection. The room
+    /// renders this true color directly (the honesty promise); when nil (every
     /// detected/manual piece) the renderer falls back to `colorCategory`'s
     /// representative color. Optional, so old room blobs decode it as nil.
     var exactColorRGB: SIMD3<Float>?
@@ -301,7 +301,7 @@ enum FurnitureColorCategory: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    /// The stylized PLAY-mode tint for this color category, pulled into the same
+    /// The display tint for this color category, pulled into the same
     /// warm Snug palette so detected furniture reads on-brand in the diorama.
     var playModeColor: Color {
         switch self {
@@ -323,7 +323,7 @@ enum FurnitureColorCategory: String, Codable, CaseIterable, Sendable {
         }
     }
 
-    /// The representative sRGB color (0–1 components) used both as the PLAY tint
+    /// The representative sRGB color (0–1 components) used both as the display tint
     /// source of truth and as the anchor each category is matched against in
     /// `FurnitureColorClassifier`. Keeping one definition prevents the display
     /// color and the classification anchor from drifting apart.

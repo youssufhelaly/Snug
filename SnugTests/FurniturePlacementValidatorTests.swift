@@ -88,6 +88,25 @@ struct FurniturePlacementValidatorTests {
         #expect(state == .valid)
     }
 
+    /// Regression: an item bridging the two arms of a U-shaped room has all
+    /// four corners on real floor but spans the cut-out notch — the red/amber/
+    /// green feedback must call it invalid, matching FitService's containment.
+    @Test func footprintSpanningUShapedNotchIsInvalid() {
+        let state = FurniturePlacementValidator.validate(
+            footprint: footprint(3.0, 3.5, 3.0, 0.5),
+            against: FitFixtures.uShapedLounge,
+            existingFootprints: [])
+        #expect(state == .invalid)
+    }
+
+    @Test func footprintInsideOneArmOfUShapedRoomIsValid() {
+        let state = FurniturePlacementValidator.validate(
+            footprint: footprint(1.0, 3.0, 1.2, 1.2),
+            against: FitFixtures.uShapedLounge,
+            existingFootprints: [])
+        #expect(state == .valid)
+    }
+
     @Test func usesPhase0RoomFixture() {
         // A 1.0 × 0.9 m piece centered in the ~3.6 × 3.0 m bedroom fixture fits.
         let state = FurniturePlacementValidator.validate(

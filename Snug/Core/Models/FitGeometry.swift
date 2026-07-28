@@ -177,6 +177,84 @@ enum Geometry2D {
         return simd_distance(point, projection)
     }
 
+    /// Whether a convex footprint (an item box) lies entirely inside a simple,
+    /// possibly non-convex polygon (the room). Corner containment alone is NOT
+    /// enough: a wall edge can pass clean through the box with no vertex of
+    /// either shape inside the other — e.g. an item spanning the notch gap of a
+    /// U-shaped room, all four corners resting in the two arms. So this checks,
+    /// in order: every box corner inside the polygon, no polygon vertex inside
+    /// the box, and no box edge properly crossing a polygon edge. The crossing
+    /// test is strict (touching/collinear contact doesn't count) so a piece
+    /// flush against a wall still reads as inside — the margin logic, not this
+    /// predicate, owns the "too close" call.
+    static func isConvexFootprint(_ box: [SIMD2<Float>], insidePolygon polygon: [SIMD2<Float>]) -> Bool {
+        guard polygon.count >= 3, box.count >= 3 else { return false }
+        guard box.allSatisfy({ isPoint($0, insidePolygon: polygon) }) else { return false }
+        guard !polygon.contains(where: { isPoint($0, insidePolygon: box) }) else { return false }
+        for k in box.indices {
+            let a = box[k]
+            let b = box[(k + 1) % box.count]
+            for j in polygon.indices {
+                if segmentsProperlyCross(a, b, polygon[j], polygon[(j + 1) % polygon.count]) {
+                    return false
+                }
+            }
+        }
+        return true
+    }
+
+    /// Signed clearance between two oriented rectangles: positive is the true
+    /// gap, negative is the penetration depth when they overlap. The single
+    /// implementation shared by `FitService` (fit results) and
+    /// `FurniturePlacementValidator` (red/amber/green), so the two placement
+    /// feedback systems can never drift apart on the same geometry.
+    static func clearance(_ a: OrientedFootprint, _ b: OrientedFootprint) -> Float {
+        let cornersA = a.corners
+        let cornersB = b.corners
+        // Face normals of both boxes are the complete separating-axis set for
+        // two convex rectangles (SAT).
+        let axes = a.separatingAxes + b.separatingAxes
+
+        var separated = false
+        var minOverlap = Float.greatestFiniteMagnitude
+        for axis in axes {
+            let pa = projectionInterval(of: cornersA, onto: axis)
+            let pb = projectionInterval(of: cornersB, onto: axis)
+            // Positive on an axis means a gap on that axis -> separated.
+            let gap = max(pa.min - pb.max, pb.min - pa.max)
+            if gap > 0 { separated = true }
+            let overlap = min(pa.max, pb.max) - max(pa.min, pb.min)
+            minOverlap = min(minOverlap, overlap)
+        }
+
+        if separated {
+            // True minimum distance between two convex polygons. Face-normal
+            // axes alone overestimate the gap in corner-to-corner cases, so we
+            // measure vertex-to-edge distances directly.
+            return minimumDistance(cornersA, cornersB)
+        } else {
+            // Overlapping: the smallest overlap across axes is the penetration
+            // depth. Report it as negative clearance.
+            return -minOverlap
+        }
+    }
+
+    /// Minimum distance between two convex polygons known to be disjoint.
+    static func minimumDistance(_ a: [SIMD2<Float>], _ b: [SIMD2<Float>]) -> Float {
+        var best = Float.greatestFiniteMagnitude
+        for p in a {
+            for i in b.indices {
+                best = min(best, distance(from: p, toSegment: b[i], b[(i + 1) % b.count]))
+            }
+        }
+        for p in b {
+            for i in a.indices {
+                best = min(best, distance(from: p, toSegment: a[i], a[(i + 1) % a.count]))
+            }
+        }
+        return best
+    }
+
     /// Even-odd ray cast: is `point` inside the (possibly non-convex) polygon?
     /// Points exactly on an edge are treated as inside by the boundary-distance
     /// logic in FitService, so the strictness here doesn't affect the result.
@@ -243,6 +321,19 @@ enum Geometry2D {
     }
 
     // MARK: - Segment intersection (orientation method)
+
+    /// STRICT crossing: the segments pass through each other's interiors.
+    /// Touching at an endpoint or sliding collinearly does NOT count — that is
+    /// zero-distance contact, which the margin logic classifies, not this test.
+    private static func segmentsProperlyCross(_ p1: SIMD2<Float>, _ p2: SIMD2<Float>,
+                                              _ p3: SIMD2<Float>, _ p4: SIMD2<Float>) -> Bool {
+        let d1 = orientation(p3, p4, p1)
+        let d2 = orientation(p3, p4, p2)
+        let d3 = orientation(p1, p2, p3)
+        let d4 = orientation(p1, p2, p4)
+        return ((d1 > 0 && d2 < 0) || (d1 < 0 && d2 > 0)) &&
+               ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0))
+    }
 
     private static func segmentsIntersect(_ p1: SIMD2<Float>, _ p2: SIMD2<Float>,
                                           _ p3: SIMD2<Float>, _ p4: SIMD2<Float>) -> Bool {

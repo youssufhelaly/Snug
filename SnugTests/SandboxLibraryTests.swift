@@ -53,8 +53,8 @@ struct SandboxLibraryTests {
     }
 
     @MainActor
-    @Test func libraryFiltersByCategoryAndListsAvailable() async {
-        let assets = try! JSONDecoder().decode([SandboxAsset].self, from: Data(Self.json.utf8))
+    @Test func libraryFiltersByCategoryAndListsAvailable() async throws {
+        let assets = try JSONDecoder().decode([SandboxAsset].self, from: Data(Self.json.utf8))
         let library = SandboxLibrary(source: StubSource(assets: assets))
         await library.load()
         #expect(library.assets(in: .sofa).map(\.id) == ["sbx-sofa"])

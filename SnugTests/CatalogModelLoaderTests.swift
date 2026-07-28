@@ -92,4 +92,86 @@ struct CatalogModelLoaderTests {
             targetDimensions: SIMD3(2.18, 0.91, 0.84))  // w, d=0.91, h=0.84
         #expect(d > CatalogModelLoader.verifiedModelTolerance)
     }
+
+    // MARK: - Approximate-track footprint fit (Tripo / archetype meshes)
+
+    @Test func approximateAssetPrefixesAreRecognized() {
+        #expect(CatalogModelLoader.isApproximateAsset("tripo_B072DY2MHK"))
+        #expect(CatalogModelLoader.isApproximateAsset("quaternius_Sofa"))
+        #expect(!CatalogModelLoader.isApproximateAsset("sofa_lina_verified"))
+    }
+
+    @Test func cleanMeshFitsExactlyOneToOneOnAllAxes() {
+        // A clean mesh proportioned like the real product must land at exactly the
+        // catalog dims — footprint AND height (the 1:1 promise).
+        let fit = CatalogModelLoader.approximateFitTransform(
+            modelExtents: SIMD3(1.0, 0.4, 0.25),        // model axes (w, h, d)
+            modelCenter: .zero,
+            targetDimensions: SIMD3(2.0, 0.5, 0.8))     // footprint (w, d, h)
+        #expect(fit.yRotation == 0)
+        #expect(abs(fit.scale.x - 2.0) < 1e-5)          // width  2.0 / 1.0
+        #expect(abs(fit.scale.z - 2.0) < 1e-5)          // depth  0.5 / 0.25
+        #expect(abs(fit.scale.y - 2.0) < 1e-5)          // height snapped: 0.8 / 0.4
+    }
+
+    @Test func rotatedMeshIsDetectedAndFootprintStaysExact() {
+        // The pilot bed: Tripo output it long along X, but the real bed is long
+        // along DEPTH (w 1.52 × d 2.06). The fit must choose the 90° yaw and still
+        // deliver an exact real footprint.
+        let fit = CatalogModelLoader.approximateFitTransform(
+            modelExtents: SIMD3(1.0, 0.471, 0.742),     // normalized Tripo bbox
+            modelCenter: .zero,
+            targetDimensions: SIMD3(1.52, 2.06, 0.94))
+        #expect(fit.yRotation == .pi / 2)
+        // Under 90° yaw: world width comes from local Z, world depth from local X.
+        #expect(abs(fit.scale.z * 0.742 - 1.52) < 1e-3)  // world width exact
+        #expect(abs(fit.scale.x * 1.0 - 2.06) < 1e-3)    // world depth exact
+    }
+
+    @Test func clutterTallMeshKeepsProportionalHeightNeverSquashed() {
+        // The pilot desk: monitors modeled on top make the mesh proportionally much
+        // taller than the real 0.75 m desk. Height must stay proportional (taller),
+        // NOT be forced to 0.75 — squashing would sink the desktop to coffee height.
+        let extents = SIMD3<Float>(1.0, 0.6664, 0.4111)  // Tripo desk bbox (w,h,d)
+        let target = SIMD3<Float>(1.37, 0.50, 0.75)      // real (w, d, h)
+        let fit = CatalogModelLoader.approximateFitTransform(
+            modelExtents: extents, modelCenter: .zero, targetDimensions: target)
+        let renderedHeight = fit.scale.y * extents.y
+        #expect(renderedHeight > target.z)               // taller than real…
+        let footUniform = Float((1.37 / 1.0) * (0.50 / 0.4111)).squareRoot()
+        #expect(abs(renderedHeight - extents.y * footUniform) < 1e-4) // …proportionally
+        // Footprint still exact 1:1.
+        #expect(abs(fit.scale.x * extents.x - 1.37) < 1e-3)
+        #expect(abs(fit.scale.z * extents.z - 0.50) < 1e-3)
+    }
+
+    @Test func slightlyTallMeshSnapsToExactCatalogHeight() {
+        // Proportional height within the 10% clutter tolerance → treat as clean and
+        // snap to the exact catalog height (true 1:1), not the proportional value.
+        let extents = SIMD3<Float>(1.0, 0.53, 0.5)       // prop height would be 0.53
+        let target = SIMD3<Float>(1.0, 0.5, 0.5)         // real height 0.5 (6% over)
+        let fit = CatalogModelLoader.approximateFitTransform(
+            modelExtents: extents, modelCenter: .zero, targetDimensions: target)
+        #expect(abs(fit.scale.y * extents.y - 0.5) < 1e-5)
+    }
+
+    @Test func rotatedOffOriginMeshRecentersUnderTheYaw() {
+        // Center offset along local X must cancel along world Z after the 90° yaw
+        // (position = -R·(center·scale)), keeping the mesh centered on the box.
+        let fit = CatalogModelLoader.approximateFitTransform(
+            modelExtents: SIMD3(2.0, 1.0, 1.0),
+            modelCenter: SIMD3(0.5, 0, 0),
+            targetDimensions: SIMD3(1.0, 2.0, 1.0))      // long side is depth → rotate
+        #expect(fit.yRotation == .pi / 2)
+        #expect(abs(fit.position.x) < 1e-5)              // no world-X leakage
+        #expect(abs(fit.position.z) > 1e-3)              // offset moved to world Z
+    }
+
+    @Test func approximateFitDegenerateAxisIsSafe() {
+        let fit = CatalogModelLoader.approximateFitTransform(
+            modelExtents: SIMD3(0, 1, 1),
+            modelCenter: .zero,
+            targetDimensions: SIMD3(1, 1, 1))
+        #expect(fit.scale.x.isFinite && fit.scale.y.isFinite && fit.scale.z.isFinite)
+    }
 }

@@ -77,10 +77,10 @@ struct RoomPersistenceTests {
         let store = try makeStore()
         let stored = try store.save(FitFixtures.rectangularBedroom, name: "Original")
 
-        store.rename(stored, to: "  Living room  ")
+        try store.rename(stored, to: "  Living room  ")
         #expect(stored.name == "Living room")
 
-        store.rename(stored, to: "   ")
+        try store.rename(stored, to: "   ")
         #expect(!stored.name.isEmpty)
     }
 
@@ -96,12 +96,130 @@ struct RoomPersistenceTests {
         let store = try makeStore()
         let stored = try store.save(FitFixtures.rectangularBedroom)
         let data = Data([0x1, 0x2, 0x3])
-        store.setThumbnail(data, for: stored)
+        try store.setThumbnail(data, for: stored)
         #expect(stored.thumbnailData == data)
     }
 
     @Test func defaultNameReflectsArea() {
         let name = RoomStore.defaultName(for: FitFixtures.rectangularBedroom)
         #expect(name.contains("m²"))
+    }
+
+    // MARK: - Duplication
+
+    /// A footprint helper for the duplication tests — the geometry doesn't matter,
+    /// only the id/`isCleared` flags the copy filters on.
+    private func footprint(cleared: Bool = false) -> FurnitureFootprint {
+        FurnitureFootprint(
+            category: .sofa,
+            worldPosition: .zero,
+            dimensions: SIMD3(1.0, 0.8, 0.9),
+            appearance: FurnitureAppearance(colorCategory: .navy, materialClass: .fabric),
+            detectionConfidence: .detected,
+            isCleared: cleared
+        )
+    }
+
+    private func roomWithFurniture(_ pieces: [FurnitureFootprint]) -> RoomModel {
+        RoomModel(
+            provenance: .manualAR,
+            floorCorners: FitFixtures.rectangularBedroom.floorCorners,
+            ceilingHeight: 2.5,
+            detectedFurniture: pieces
+        )
+    }
+
+    @Test func duplicateKeepsAllChosenFurnitureAndCopiesGeometry() throws {
+        let store = try makeStore()
+        let a = footprint(), b = footprint()
+        let source = roomWithFurniture([a, b])
+        let stored = try store.save(source, name: "Studio")
+
+        let copy = try store.duplicate(stored, keepingFurnitureIDs: [a.id, b.id])
+        let model = try #require(copy.roomModel)
+        #expect(Set(model.detectedFurniture.map(\.id)) == [a.id, b.id])
+        // Geometry rides along; identity does not.
+        #expect(model.floorCorners == source.floorCorners)
+        #expect(copy.id != stored.id)
+        #expect(copy.name == "Studio copy")
+        // Both rooms now exist independently.
+        #expect(try store.allRooms().count == 2)
+    }
+
+    @Test func duplicateKeepsOnlyTheSelectedSubset() throws {
+        let store = try makeStore()
+        let a = footprint(), b = footprint()
+        let stored = try store.save(roomWithFurniture([a, b]))
+
+        let copy = try store.duplicate(stored, keepingFurnitureIDs: [a.id])
+        let model = try #require(copy.roomModel)
+        #expect(model.detectedFurniture.map(\.id) == [a.id])
+    }
+
+    @Test func duplicateWithEmptySelectionCopiesBareRoom() throws {
+        let store = try makeStore()
+        let stored = try store.save(roomWithFurniture([footprint(), footprint()]))
+
+        let copy = try store.duplicate(stored, keepingFurnitureIDs: [])
+        #expect(copy.roomModel?.detectedFurniture.isEmpty == true)
+    }
+
+    @Test func duplicateNeverCarriesClearedPieces() throws {
+        let store = try makeStore()
+        let cleared = footprint(cleared: true)
+        let stored = try store.save(roomWithFurniture([cleared]))
+
+        // Even explicitly selected, a cleared piece is dropped from the copy.
+        let copy = try store.duplicate(stored, keepingFurnitureIDs: [cleared.id])
+        #expect(copy.roomModel?.detectedFurniture.isEmpty == true)
+    }
+
+    @Test func duplicateLeavesSourceUnchanged() throws {
+        let store = try makeStore()
+        let a = footprint(), b = footprint()
+        let stored = try store.save(roomWithFurniture([a, b]), name: "Bedroom")
+
+        _ = try store.duplicate(stored, keepingFurnitureIDs: [a.id])
+        #expect(stored.name == "Bedroom")
+        #expect(stored.roomModel?.detectedFurniture.count == 2)
+    }
+
+    @Test func copyNameFallsBackForBlankSource() {
+        #expect(RoomStore.copyName(for: "  ") == "Room copy")
+        #expect(RoomStore.copyName(for: "Loft") == "Loft copy")
+    }
+
+    /// The surface style and openings must ride into the copy — the doc promises
+    /// "geometry, openings, and the surface style always come along," and a future
+    /// refactor dropping either from the copy's `RoomModel(...)` init would
+    /// otherwise pass every existing duplication test.
+    @Test func duplicateCopiesSurfaceStyleAndOpenings() throws {
+        let store = try makeStore()
+        let window = FitFixtures.bedroomWithWindow
+        #expect(!window.openings.isEmpty)   // guard the fixture actually has one
+        let source = RoomModel(
+            provenance: .manualAR,
+            floorCorners: window.floorCorners,
+            ceilingHeight: 2.5,
+            openings: window.openings,
+            surfaceStyle: RoomSurfaceStyle(wall: .sage, floor: .walnut, backdrop: .charcoal)
+        )
+        let stored = try store.save(source, name: "Styled")
+
+        let copy = try #require(try store.duplicate(stored, keepingFurnitureIDs: []).roomModel)
+        #expect(copy.surfaceStyle == source.surfaceStyle)
+        #expect(copy.openings == source.openings)
+    }
+
+    /// A source whose saved blob can't be decoded must make `duplicate` THROW,
+    /// never fabricate an empty room (CLAUDE.md: never invent geometry).
+    @Test func duplicateThrowsOnUnreadableSource() throws {
+        let store = try makeStore()
+        let stored = try store.save(FitFixtures.rectangularBedroom)
+        // Corrupt the blob so `stored.roomModel` decodes to nil.
+        stored.roomData = Data([0xFF, 0xFF, 0xFF])
+        #expect(throws: DuplicationError.self) {
+            try store.duplicate(stored, keepingFurnitureIDs: [])
+        }
     }
 }

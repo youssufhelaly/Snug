@@ -52,6 +52,25 @@ enum FitFixtures {
         ceilingHeight: 2.4
     )
 
+    /// A U-shaped room: 6 m × 4 m bounding box with the notch x∈[2,4], z∈[2,4]
+    /// cut OUT of the floor (open at z=4). Exercises the containment case corner
+    /// tests alone miss: an item can bridge the two arms with all four corners
+    /// on real floor while the notch walls pass clean through it.
+    static let uShapedLounge = RoomModel(
+        provenance: .manualAR,
+        floorCorners: [
+            PlanePoint(x: 0, z: 0),
+            PlanePoint(x: 6, z: 0),
+            PlanePoint(x: 6, z: 4),
+            PlanePoint(x: 4, z: 4),
+            PlanePoint(x: 4, z: 2),
+            PlanePoint(x: 2, z: 2),
+            PlanePoint(x: 2, z: 4),
+            PlanePoint(x: 0, z: 4),
+        ],
+        ceilingHeight: 2.4
+    )
+
     // MARK: - Codable proof
 
     /// A serialized `RoomModel` in the exact JSON form the app's fixture

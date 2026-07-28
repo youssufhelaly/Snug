@@ -15,7 +15,7 @@ struct SnugApp: App {
     /// The room persistence service, the one writer of saved rooms.
     @State private var roomStore: RoomStore
 
-    /// The bundled furniture catalog (BUY mode). Loaded once on launch; read-only
+    /// The bundled furniture catalog. Loaded once on launch; read-only
     /// over its items. Replaceable by a remote source later via `CatalogSource`.
     @State private var catalog = CatalogService()
 
@@ -35,12 +35,13 @@ struct SnugApp: App {
         do {
             container = try Self.makeContainer(schema: schema, configuration: configuration)
         } catch {
+            #if DEBUG
             // The on-disk store is incompatible with the current schema. Pre-release,
             // the V1 schema is still settling and we add no migration stage for a
             // dev-time storage change (e.g. flipping `thumbnailData` off
             // `.externalStorage`), so an old store can fail to load. Rather than
-            // brick launch, recreate it once from scratch — there is no shipped data
-            // and no cloud, so this is safe in V1. Logged loudly; never silent.
+            // brick launch, recreate it once from scratch — dev builds only carry
+            // dev data. Logged loudly; never silent.
             print("⚠️ Snug: data store incompatible (\(error)). Recreating it fresh.")
             Self.destroyStore(at: configuration.url)
             do {
@@ -48,6 +49,14 @@ struct SnugApp: App {
             } catch {
                 fatalError("Could not create the Snug data store after reset: \(error)")
             }
+            #else
+            // NEVER auto-destroy a user's store in release: a container load
+            // failure can also be transient (disk full, corruption in flight),
+            // and wiping it here would delete every saved room. Crash loudly so
+            // the failure is visible and the data stays recoverable; a shipped
+            // schema change must land as a proper SnugMigrationPlan stage.
+            fatalError("Could not open the Snug data store: \(error)")
+            #endif
         }
         _roomStore = State(initialValue: RoomStore(context: container.mainContext))
     }

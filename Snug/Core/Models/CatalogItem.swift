@@ -3,7 +3,7 @@ import simd
 
 /// A purchasable furniture product in the Snug catalog.
 ///
-/// This is the BUY-mode counterpart to `FurnitureFootprint`: where a footprint
+/// This is the commerce counterpart to `FurnitureFootprint`: where a footprint
 /// is a *placed* piece in a room (detected existing furniture or a dropped
 /// product), a `CatalogItem` is the *product definition* — real manufacturer
 /// dimensions, a true color, a price, and the retailer link we out-link to.
@@ -20,8 +20,8 @@ import simd
 ///   priors and back-projection), these are the product's *real* spec, so a
 ///   placed catalog item is trusted at the standard fit margin.
 /// - `trueColorRGB` is the product's real sRGB color (0–1 components) for the
-///   true-color promise of BUY mode. `colorCategory` is the perceptual bucket
-///   used for the PLAY-mode tint and for color filtering — keeping both means
+///   true-color promise. `colorCategory` is the perceptual bucket
+///   used for color filtering — keeping both means
 ///   browse/filter and rendering never disagree.
 struct CatalogItem: Codable, Equatable, Sendable, Identifiable {
     /// Stable catalog SKU. A `String` (not `UUID`) so the bundled JSON and a
@@ -33,9 +33,9 @@ struct CatalogItem: Codable, Equatable, Sendable, Identifiable {
 
     /// Real manufacturer `(width, depth, height)` in meters, `(x, y, z)`.
     let dimensions: SIMD3<Float>
-    /// True product color for BUY mode (sRGB, 0–1 components).
+    /// True product color (sRGB, 0–1 components).
     let trueColorRGB: SIMD3<Float>
-    /// Perceptual color bucket for PLAY tint + browse filtering.
+    /// Perceptual color bucket for browse filtering.
     let colorCategory: FurnitureColorCategory
     let material: FurnitureMaterialClass
 
@@ -62,6 +62,14 @@ struct CatalogItem: Codable, Equatable, Sendable, Identifiable {
     /// deposit-safe. V1 only surfaces items where this is true.
     let isRemovable: Bool
 
+    /// Amazon Standard Identification Number for catalog items sourced from
+    /// the Amazon ingest pipeline (tools/catalog). `nil` for legacy bundled
+    /// items — both optionals decode as absent from pre-P1 catalog JSON.
+    let asin: String?
+    /// Remote product thumbnail (Amazon CDN). The browse card loads it with
+    /// `AsyncImage` and falls back to the color swatch when nil or unreachable.
+    let imageURL: URL?
+
     init(
         id: String,
         name: String,
@@ -79,7 +87,9 @@ struct CatalogItem: Codable, Equatable, Sendable, Identifiable {
         thumbnailAssetName: String? = nil,
         modelAssetName: String? = nil,
         inStock: Bool = true,
-        isRemovable: Bool = true
+        isRemovable: Bool = true,
+        asin: String? = nil,
+        imageURL: URL? = nil
     ) {
         self.id = id
         self.name = name
@@ -98,6 +108,8 @@ struct CatalogItem: Codable, Equatable, Sendable, Identifiable {
         self.modelAssetName = modelAssetName
         self.inStock = inStock
         self.isRemovable = isRemovable
+        self.asin = asin
+        self.imageURL = imageURL
     }
 
     /// The retailer link to actually open, with the affiliate tag appended when

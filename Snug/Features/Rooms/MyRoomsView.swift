@@ -18,9 +18,12 @@ struct MyRoomsView: View {
     @State private var showMethodDialog = false
     @State private var roomPendingDelete: StoredRoom?
     @State private var roomPendingRename: StoredRoom?
+    @State private var roomPendingDuplicate: StoredRoom?
     @State private var renameDraft = ""
     @State private var failedSave: FailedSave?
     @State private var deleteErrorMessage: String?
+    @State private var renameErrorMessage: String?
+    @State private var duplicateErrorMessage: String?
     /// Toggled on each scan-button tap purely to drive its tap haptic.
     @State private var scanTapped = false
 
@@ -44,6 +47,12 @@ struct MyRoomsView: View {
             .toolbar { toolbarContent }
             .navigationDestination(item: $openRoom) { stored in
                 RoomDioramaScreen(stored: stored)
+            }
+            .sheet(item: $roomPendingDuplicate) { stored in
+                DuplicateRoomSheet(
+                    furniture: activeFurniture(of: stored),
+                    onDuplicate: { ids in duplicate(stored, keeping: ids) }
+                )
             }
             .safeAreaInset(edge: .bottom) {
                 if !methods.isEmpty && !rooms.isEmpty {
@@ -90,7 +99,13 @@ struct MyRoomsView: View {
         ) {
             TextField("Room name", text: $renameDraft)
             Button("Save") {
-                if let room = roomPendingRename { store.rename(room, to: renameDraft) }
+                if let room = roomPendingRename {
+                    do {
+                        try store.rename(room, to: renameDraft)
+                    } catch {
+                        renameErrorMessage = "We couldn't save the new name. Please try again."
+                    }
+                }
                 roomPendingRename = nil
             }
             Button("Cancel", role: .cancel) { roomPendingRename = nil }
@@ -117,6 +132,22 @@ struct MyRoomsView: View {
             Button("OK", role: .cancel) { deleteErrorMessage = nil }
         } message: {
             Text(deleteErrorMessage ?? "")
+        }
+        .alert(
+            "Couldn't rename room",
+            isPresented: Binding(get: { renameErrorMessage != nil }, set: { if !$0 { renameErrorMessage = nil } })
+        ) {
+            Button("OK", role: .cancel) { renameErrorMessage = nil }
+        } message: {
+            Text(renameErrorMessage ?? "")
+        }
+        .alert(
+            "Couldn't duplicate room",
+            isPresented: Binding(get: { duplicateErrorMessage != nil }, set: { if !$0 { duplicateErrorMessage = nil } })
+        ) {
+            Button("OK", role: .cancel) { duplicateErrorMessage = nil }
+        } message: {
+            Text(duplicateErrorMessage ?? "")
         }
     }
 
@@ -165,6 +196,11 @@ struct MyRoomsView: View {
                             roomPendingRename = stored
                         } label: {
                             Label("Rename", systemImage: "pencil")
+                        }
+                        Button {
+                            roomPendingDuplicate = stored
+                        } label: {
+                            Label("Duplicate", systemImage: "plus.square.on.square")
                         }
                         Button(role: .destructive) {
                             roomPendingDelete = stored
@@ -226,6 +262,25 @@ struct MyRoomsView: View {
 
     private func startCapture(_ method: any RoomCaptureMethod) {
         activeCapture = ActiveCapture(method: method)
+    }
+
+    /// The active (non-cleared) furniture offered when duplicating a room. Decodes
+    /// the source blob once when the sheet is built.
+    private func activeFurniture(of stored: StoredRoom) -> [FurnitureFootprint] {
+        (stored.roomModel?.detectedFurniture ?? []).filter { !$0.isCleared }
+    }
+
+    /// Forks a room with the chosen furniture and drops straight into the copy,
+    /// mirroring the finished-scan flow. The open is deferred to the next runloop
+    /// tick so the duplicate sheet finishes dismissing before the push (otherwise
+    /// SwiftUI can drop the navigation, same reason as the failed-save retry).
+    private func duplicate(_ stored: StoredRoom, keeping ids: Set<UUID>) {
+        do {
+            let copy = try store.duplicate(stored, keepingFurnitureIDs: ids)
+            DispatchQueue.main.async { openRoom = copy }
+        } catch {
+            duplicateErrorMessage = "We couldn't duplicate this room. Please try again."
+        }
     }
 
     /// A finished capture: persist it, dismiss the capture flow, and open the

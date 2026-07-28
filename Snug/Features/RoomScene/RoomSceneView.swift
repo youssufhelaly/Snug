@@ -7,33 +7,39 @@ import os
 /// Logs Verified-track product-model loading (the zero-scaling guard).
 private let catalogModelLogger = Logger(subsystem: "com.helaly.Snug", category: "CatalogModel")
 
-/// The Phase 1 diorama: a `RoomModel` rendered in RealityKit as a cozy, stylized
-/// "play mode" world, with an instant PLAY/BUY material toggle, orbit/zoom/pan
-/// camera, and a soft grounding base.
+/// The Phase 1 diorama: a `RoomModel` rendered in RealityKit as an open-top
+/// "dollhouse" with orbit/zoom camera and a soft grounding base.
 ///
-/// The hard product rule lives here: **geometry is identical between modes.**
-/// Switching PLAY↔BUY only swaps materials and lighting — never a vertex moves.
-/// The cross-fade is done by snapshotting the current frame (offscreen, via
-/// `OffscreenSnapshotRenderer`), swapping materials underneath, and fading the
-/// snapshot out (< 400 ms).
+/// The hard product rule lives here: **everything inside the room is
+/// true-to-color under neutral lighting.** The room's surfaces, the furniture,
+/// and the lights never stylize, warm, or lighten a color the user owns —
+/// seeing your real colors together IS the product. The playful brand warmth
+/// is confined to the frame around the room (the terracotta backdrop, the
+/// platform base, the wall-cap rims). Dimension labels are an info overlay
+/// toggled by `showsDimensions`, not a different rendering.
 ///
 /// ## Migrated to `RealityView`
 /// This was a `UIViewRepresentable` wrapping a `.nonAR` `ARView`. It is now a native
-/// SwiftUI `RealityView`. Three ARView conveniences had no direct `RealityView`
+/// SwiftUI `RealityView`. Two ARView conveniences had no direct `RealityView`
 /// equivalent and moved:
 /// - **Snapshot** (`ARView.snapshot`) → `OffscreenSnapshotRenderer` (RealityKit's
-///   `RealityRenderer`), used for both the cross-fade freeze and the list thumbnail.
-/// - **Image-based lighting** (`ARView.environment.lighting.resource`) → an
-///   `ImageBasedLightComponent` on a dedicated entity plus an
-///   `ImageBasedLightReceiverComponent` on the scene root (PLAY only).
+///   `RealityRenderer`), used for the room's list thumbnail.
 /// - **Background colour** (`ARView.environment.background`) → a SwiftUI
 ///   `Color(palette.background)` layer behind the `RealityView` in
-///   `RoomDioramaScreen`, which cross-fades natively with the mode change.
+///   `RoomDioramaScreen`.
 struct RoomSceneView: View {
     let room: RoomModel
-    let mode: RoomRenderMode
+    /// Whether the blueprint-style dimension labels are shown (the "measurements"
+    /// info overlay). Purely additive — flipping it never changes a material.
+    var showsDimensions: Bool = false
     /// Incremented by the parent to request a spring camera reset.
     var resetToken: Int = 0
+    /// Diorama (orbit) vs first-person walkthrough. Purely a camera-pose + gesture
+    /// change — the scene geometry is identical in both.
+    var perspective: CameraPerspective = .diorama
+    /// The standing spot the walkthrough camera should occupy (ignored in
+    /// `.diorama`). Changing it while inside glides to the new vantage.
+    var activeVantage: WalkthroughVantage? = nil
     /// Called once with PNG data after the first frames render, for the room's
     /// list thumbnail. Optional.
     var onThumbnail: ((Data) -> Void)? = nil
@@ -61,17 +67,9 @@ struct RoomSceneView: View {
     var onSelectSandboxPart: ((String) -> Void)? = nil
 
     /// The scene/camera/culling engine. Held in `@State` so the single instance
-    /// survives `body` re-evaluations (mode toggle, reset) — `RealityView`'s `make`
+    /// survives `body` re-evaluations (label toggle, reset) — `RealityView`'s `make`
     /// closure runs once against it; `update` drives it from external state.
     @State private var controller = RoomSceneController()
-
-    /// The current cross-fade freeze frame, produced offscreen on a mode change and
-    /// faded out by `crossfadeOverlay`. Nil when no fade is in flight.
-    @State private var crossfadeImage: UIImage?
-    @State private var fadeOpacity: Double = 0
-    /// Bumped per fade so a finished fade's completion can't clear a freeze a newer
-    /// toggle already replaced it with.
-    @State private var crossfadeToken = 0
 
     // Native-gesture state. Camera gestures are cumulative in SwiftUI; that cumulative
     // tracking now lives on `RoomSceneController` (NOT `@State`), so orbit/zoom ticks
@@ -86,9 +84,9 @@ struct RoomSceneView: View {
     @Environment(SandboxLibrary.self) private var sandbox
 
     /// Maps a placed footprint's `catalogItemID` to its bundled USDZ asset name, so
-    /// the controller can load the realistic product model for BUY mode without
-    /// depending on `CatalogService` directly. Nil for non-catalog pieces / items
-    /// with no bundled model (→ the controller keeps the stylized box).
+    /// the controller can load the realistic product model without depending on
+    /// `CatalogService` directly. Nil for non-catalog pieces / items with no
+    /// bundled model (→ the controller keeps the identity box).
     private func catalogModelResolver() -> (String) -> String? {
         { [catalog] catalogID in
             catalog.items.first { $0.id == catalogID }?.modelAssetName
@@ -96,7 +94,7 @@ struct RoomSceneView: View {
     }
 
     /// Maps a footprint's `sandboxAssetID` to its bundled generic USDZ — the
-    /// elastic "digital clay" shape, shown in BOTH modes and stretched freely.
+    /// elastic "digital clay" shape, stretched freely.
     private func sandboxModelResolver() -> (String) -> String? {
         { [sandbox] sandboxID in
             sandbox.assets.first { $0.id == sandboxID }?.modelAssetName
@@ -114,7 +112,7 @@ struct RoomSceneView: View {
                 controller.catalogModelAssetName = catalogModelResolver()
                 controller.sandboxModelAssetName = sandboxModelResolver()
                 controller.onSandboxParts = onSandboxParts
-                controller.makeEntities(room: room, mode: mode, editingFurniture: editableFurniture != nil, onThumbnail: onThumbnail)
+                controller.makeEntities(room: room, editingFurniture: editableFurniture != nil, onThumbnail: onThumbnail)
                 content.add(controller.root)
                 content.add(controller.cameraAnchor)
                 // Per-frame loop: reset spring, dollhouse wall culling, one-time
@@ -133,7 +131,9 @@ struct RoomSceneView: View {
                 controller.sandboxModelAssetName = sandboxModelResolver()
                 controller.onSandboxParts = onSandboxParts
                 controller.setWallPicking(isPickingWall)
-                controller.applyExternalState(mode: mode, resetToken: resetToken)
+                controller.setSurfaceStyle(room.surfaceStyle)
+                controller.applyExternalState(showsDimensions: showsDimensions, resetToken: resetToken,
+                                              perspective: perspective, vantage: activeVantage)
                 if let editableFurniture {
                     controller.syncFurniture(editableFurniture, states: placementStates, selectedID: selectedFurnitureID)
                 }
@@ -163,24 +163,9 @@ struct RoomSceneView: View {
             .gesture(deselectTapGesture)
             .simultaneousGesture(cameraOrbitGesture)
             .simultaneousGesture(cameraZoomGesture)
-            .overlay { crossfadeOverlay }
-            .onChange(of: crossfadeImage) { _, image in startCrossfade(image) }
             .onChange(of: geo.size) { syncPixelSize(geo.size) }
             .onChange(of: displayScale) { syncPixelSize(geo.size) }
-            .onAppear {
-                // Snap the freeze to full opacity in the SAME state mutation that
-                // introduces the image, so the overlay's first committed frame is
-                // already opaque. If opacity stayed at 0 until `.onChange` →
-                // `startCrossfade` ran, SwiftUI could commit one frame of the
-                // just-swapped materials showing through the transparent overlay —
-                // the inverse of the intended freeze. `startCrossfade` still drives
-                // the fade-OUT.
-                controller.crossfade = { image in
-                    if image != nil { fadeOpacity = 1 }
-                    crossfadeImage = image
-                }
-                syncPixelSize(geo.size)
-            }
+            .onAppear { syncPixelSize(geo.size) }
             // Release the live RealityKit render context the instant we navigate
             // away, so it never contends with the capture ARView's session on the
             // next scan (the black-passthrough-every-other-scan bug). See
@@ -209,6 +194,8 @@ struct RoomSceneView: View {
     /// entity (correct unprojection for the ortho camera), so no manual ray.
     private var furnitureTapGesture: some Gesture {
         SpatialTapGesture().targetedToAnyEntity().onEnded { value in
+            // Walkthrough is a preview, not an editor: no selecting/moving from inside.
+            guard perspective == .diorama else { return }
             // "Snap to wall" pick mode: a tap (on the now-tappable floor or any piece)
             // reports its world floor point so the host can snap to the nearest wall.
             if isPickingWall {
@@ -259,6 +246,7 @@ struct RoomSceneView: View {
         DragGesture()
             .targetedToAnyEntity()
             .onChanged { value in
+                guard perspective == .diorama else { return }
                 guard let (root, id) = taggedFurnitureRoot(for: value.entity),
                       let parent = root.parent else { return }
                 let floorPlane = Self.horizontalPlane(atHeight: root.position.y)
@@ -319,6 +307,7 @@ struct RoomSceneView: View {
         MagnifyGesture().targetedToAnyEntity()
             .simultaneously(with: RotateGesture().targetedToAnyEntity())
             .onChanged { value in
+                guard perspective == .diorama else { return }
                 // Either sub-gesture may be the one that fired this frame; both
                 // carry the same targeted entity.
                 guard let entity = value.first?.entity ?? value.second?.entity,
@@ -347,79 +336,63 @@ struct RoomSceneView: View {
 
     /// Tap on empty space → deselect. (Fires only when no entity tap consumed it.)
     private var deselectTapGesture: some Gesture {
-        TapGesture().onEnded { onSelectFurniture?(nil) }
+        TapGesture().onEnded {
+            guard perspective == .diorama else { return }
+            onSelectFurniture?(nil)
+        }
     }
 
-    /// One-finger drag on empty space → orbit. The controller tracks the cumulative
-    /// translation and feeds itself incremental deltas, so this closure never writes
-    /// `@State` (which would invalidate `body` every frame and stall the gesture).
+    /// One-finger drag. In `.diorama` it orbits the camera; in `.walkthrough` it is
+    /// the look-around (yaw/pitch of the eye-level view). Either way the controller
+    /// tracks the cumulative translation and feeds itself incremental deltas, so this
+    /// closure never writes `@State` (which would invalidate `body` every frame and
+    /// stall the gesture).
     private var cameraOrbitGesture: some Gesture {
         DragGesture()
             .onChanged { value in
+                if perspective == .walkthrough {
+                    controller.lookAroundContinuous(translation: value.translation)
+                    return
+                }
                 // Gate: a furniture drag (targeted gesture) sets `furnitureDragID` on
                 // its first tick; once set, this simultaneous orbit no-ops so dragging
                 // a piece doesn't also spin the camera. Empty-space drags never set it.
                 guard furnitureDragID == nil else { return }
                 controller.orbitContinuous(translation: value.translation)
             }
-            .onEnded { _ in controller.endOrbit() }
+            .onEnded { _ in
+                if perspective == .walkthrough { controller.endLook() } else { controller.endOrbit() }
+            }
     }
 
-    /// Pinch on empty space → zoom. Cumulative magnification is converted to the
-    /// incremental factor inside the controller — again, no `@State` written per tick.
+    /// Pinch → zoom. In the diorama it dollies the camera; in the walkthrough it
+    /// changes the eye-level FOV (the controller branches on perspective). Cumulative
+    /// magnification is converted to the incremental factor inside the controller.
     private var cameraZoomGesture: some Gesture {
         MagnifyGesture()
             .onChanged { value in
                 // Gate: a pinch/twist on the selected piece sets `furnitureResizeActive`
                 // / `furnitureRotateActive`; while either is active this simultaneous
                 // zoom no-ops so manipulating furniture doesn't also zoom the camera.
+                // (Both flags stay false in walkthrough, where furniture isn't editable.)
                 guard !furnitureResizeActive, !furnitureRotateActive else { return }
                 controller.zoomContinuous(magnification: value.magnification)
             }
             .onEnded { _ in controller.endZoom() }
     }
 
-    /// The cross-fade freeze: shown instantly at full opacity (covering the material
-    /// swap), then animated out over 350 ms by `startCrossfade`. Inserted with no
-    /// transition so it does not fade *in*.
-    @ViewBuilder private var crossfadeOverlay: some View {
-        if let image = crossfadeImage {
-            Image(uiImage: image)
-                .resizable()
-                .scaledToFill()
-                .opacity(fadeOpacity)
-                .allowsHitTesting(false)
-                .ignoresSafeArea()
-        }
-    }
-
-    /// Drive the freeze-frame out. Snaps to full opacity (covering the just-swapped
-    /// materials), then animates to clear and drops the image. Triggered by every
-    /// change to `crossfadeImage`, so a rapid re-toggle restarts the fade cleanly.
-    private func startCrossfade(_ image: UIImage?) {
-        guard image != nil else { return }
-        crossfadeToken += 1
-        let token = crossfadeToken
-        fadeOpacity = 1
-        withAnimation(.easeOut(duration: 0.35)) {
-            fadeOpacity = 0
-        } completion: {
-            if crossfadeToken == token { crossfadeImage = nil }
-        }
-    }
 }
 
-/// Owns the RealityKit scene, camera rig, gesture math, per-mode materials,
-/// dollhouse wall culling, the cross-fade, and the thumbnail snapshot for one
-/// `RoomSceneView`. A plain reference type driven by the SwiftUI view; not
-/// `@Observable` — the only thing the view observes is the cross-fade image, which
-/// the controller pushes through the `crossfade` callback.
+/// Owns the RealityKit scene, camera rig, gesture math, materials, dollhouse
+/// wall culling, and the thumbnail snapshot for one `RoomSceneView`. A plain
+/// reference type driven by the SwiftUI view; not `@Observable` — nothing in it
+/// is observed, the view pushes state in through `applyExternalState` and friends.
 @MainActor
 final class RoomSceneController {
 
     // MARK: Scene
-    /// Scene root; added to `RealityViewContent` by the view. Holds geometry, lights,
-    /// and the image-based-light source/receiver.
+    /// Scene root; added to `RealityViewContent` by the view. Holds geometry and
+    /// lights.
     let root = AnchorEntity(world: .zero)
     /// Camera root; added to content separately so root transforms can never bleed
     /// into the camera pose.
@@ -428,58 +401,44 @@ final class RoomSceneController {
     private let keyLight = DirectionalLight()
     private let fillA = DirectionalLight()
     private let fillB = DirectionalLight()
-    /// The entity carrying the PLAY image-based light. The scene root receives from
-    /// it (PLAY only) via `ImageBasedLightReceiverComponent`. Named so the offscreen
-    /// snapshot can re-point its clone's receiver at the cloned source.
-    private let iblEntity = Entity()
-    static let iblEntityName = "snug_ibl_source"
-    /// The warm studio environment for PLAY image-based lighting. Built asynchronously
-    /// (GPU work) after the scene attaches; nil until ready and in BUY, where lighting
-    /// stays neutral.
-    private var environment: EnvironmentResource?
 
     private var floorEntity: ModelEntity?
-    /// The floor's chunky outline under-sheet (PLAY only).
-    private var floorOutline: ModelEntity?
     private var baseEntity: ModelEntity?
     /// Soft drop shadow grounding the floating room cube against the solid void
-    /// backdrop (PLAY only). A baked contact-shadow plane tucked under the base.
+    /// backdrop. A baked contact-shadow plane tucked under the base (frame, not
+    /// room — it never darkens an in-room surface).
     private var dropShadow: ModelEntity?
 
-    /// One wall edge and all of its PLAY-mode companions that must hide together
-    /// when the wall is culled (the open-dollhouse look): the inverted-hull
-    /// `outline`, the chunky white `cap` rim, and the emissive `cornice` strip.
-    /// `midXZ`/`outwardXZ` drive culling. The companions cull with `entity`.
+    /// One wall edge and the chunky white `cap` rim that must hide together with
+    /// it when the wall is culled (the open-dollhouse look). `midXZ`/`outwardXZ`
+    /// drive culling.
     private struct WallNode {
         let entity: ModelEntity
-        let outline: ModelEntity?
         let cap: ModelEntity?
-        let cornice: ModelEntity?
         let midXZ: SIMD2<Float>
         let outwardXZ: SIMD2<Float>
     }
     private var walls: [WallNode] = []
     /// Styled openings: a container holding a trim frame + an inner pane (glass /
-    /// door panel / blown-out void) + mullions/rails. `entity` is the container
-    /// (toggled by culling); `pane` is the palette-driven inner surface; `trims`
-    /// are the frame/mullion bars, also palette-driven so they go neutral in BUY;
-    /// `wallIndex` ties it to its wall so culling stays in sync; `kind` selects the
-    /// PLAY pane material (windows/openings become white voids, doors stay paneled).
-    private var openings: [(entity: Entity, pane: ModelEntity, trims: [ModelEntity], wallIndex: Int, kind: RoomOpening.Kind)] = []
-    /// BUY-mode dimension labels (lie flat on the floor like a blueprint).
+    /// door panel) + mullions/rails. `entity` is the container (toggled by
+    /// culling); `pane` is the palette-driven inner surface; `trims` are the
+    /// frame/mullion bars; `wallIndex` ties it to its wall so culling stays in sync.
+    private var openings: [(entity: Entity, pane: ModelEntity, trims: [ModelEntity], wallIndex: Int)] = []
+    /// Dimension labels (lie flat on the floor like a blueprint), shown only
+    /// while the measurements overlay is on.
     private var labels: [ModelEntity] = []
 
     // MARK: Phase 2 furniture (separate keyed store — never mixed into the
-    // wall/floor/opening scene building, so the PLAY/BUY geometry invariant is
-    // untouched). In editing mode these are driven live by the placement tray via
-    // `syncFurniture`; in viewing mode `buildGeometry` adds them once, statically.
+    // wall/floor/opening scene building). In editing mode these are driven live
+    // by the placement tray via `syncFurniture`; in viewing mode `buildGeometry`
+    // adds them once, statically.
     private var furnitureEntities: [UUID: Entity] = [:]
     /// Last-synced footprint per id, so `syncFurniture` only rebuilds an entity
     /// when its geometry actually changed (cheap re-tints otherwise).
     private var furnitureSnapshots: [UUID: FurnitureFootprint] = [:]
-    /// Last-synced placement state + selection (editing mode), so a PLAY↔BUY swap
-    /// can re-tint furniture with the new mode's color while preserving the fit-state
-    /// coloring — without waiting for a SwiftUI round-trip.
+    /// Last-synced placement state + selection (editing mode), so a model
+    /// attach/detach can re-apply the fit-state coloring without waiting for a
+    /// SwiftUI round-trip.
     private var lastFurnitureStates: [UUID: PlacementState] = [:]
     private var lastSelectedFurnitureID: UUID?
     /// When true, `buildGeometry` skips the static furniture pass — the tray owns
@@ -493,10 +452,10 @@ final class RoomSceneController {
     private var editingRoom: RoomModel?
     /// Resolves a footprint's `catalogItemID` to its bundled USDZ asset name (set by
     /// the view from `CatalogService`). Nil-returning for non-catalog pieces / items
-    /// with no model → the stylized box is kept. The realistic model is BUY-only.
+    /// with no model → the identity box is kept.
     var catalogModelAssetName: ((String) -> String?)?
     /// Resolves a footprint's `sandboxAssetID` to its bundled generic USDZ (the
-    /// elastic "digital clay" shape). Shown in BOTH modes and stretched freely.
+    /// elastic "digital clay" shape), stretched freely.
     var sandboxModelAssetName: ((String) -> String?)?
     /// Footprint ids whose product model is currently loading, so a re-sync doesn't
     /// kick off a duplicate async load.
@@ -546,8 +505,8 @@ final class RoomSceneController {
     /// (`targetedToAnyEntity` / `unproject`) does NOT work against an
     /// `OrthographicCameraComponent` on iOS — taps/drags simply don't register.
     /// A long-lens perspective is the smallest change that restores reliable native
-    /// gestures; BUY-mode scale is only mildly affected at this FOV (labels still
-    /// show true measurements). Also drives initial framing in `frameCamera`.
+    /// gestures; on-screen scale is only mildly affected at this FOV (labels
+    /// still show true measurements). Also drives initial framing in `frameCamera`.
     static let isoFOVDegrees: Float = 14
     /// True isometric viewing angle above the horizon: `atan(1/√2) ≈ 35.26°`.
     /// Paired with a 45° azimuth this is the canonical diorama orientation.
@@ -574,24 +533,56 @@ final class RoomSceneController {
     }
     private var cameraAnim: CameraAnim?
 
-    // MARK: Misc
-    private(set) var mode: RoomRenderMode = .play
-    /// Whether PLAY-mode outlines are currently shown; read by `cullWalls` so a
-    /// culled wall's outline hides with it.
-    private var showsOutlines = true
-    /// Whether PLAY-mode wall caps / cornice strips are shown; read by `cullWalls`
-    /// so a culled wall's cap and glow strip hide with it.
-    private var showsWallCaps = true
-    private var showsCornice = true
+    // MARK: Walkthrough (first-person) camera state
+    //
+    // Orthogonal to the orbital rig above: while `perspective == .walkthrough` the
+    // camera sits at `walkPositionXZ`/`walkEyeHeight` and looks along
+    // `lookYaw`/`lookPitch` (see `updateWalkthroughCamera`). The orbital fields
+    // (azimuth/elevation/radius/target) are left untouched so `exitToDiorama` snaps
+    // straight back to the iso framing the user left.
 
-    /// TEMPORARY: drop preview furniture into the diorama so the Phase-3 look can
-    /// be eyeballed on device. This is NOT real placement — flip to `false` (or
-    /// delete this flag, `placeDemoFurniture`, and its call) before shipping.
-    /// The preview pieces are not mode-aware: they keep their PLAY styling in BUY.
-    static let demoFurniture = false
-    /// Bumped on every `setMode`; a snapshot callback applies its frame only if it's
-    /// still the latest generation, so rapid toggles can't flash a stale one.
-    private var modeGeneration = 0
+    /// Default human-eye FOV on entering the walkthrough. A WIDE lens is what makes
+    /// a room feel spacious in first person — more peripheral vision, walls read as
+    /// further away — vs the narrow near-iso diorama lens (which felt cramped). The
+    /// two-finger pinch adjusts it live within `walkFOVRange` (spread = zoom in /
+    /// narrower; pinch together = wider / more room around you).
+    static let walkthroughDefaultFOV: Float = 78
+    static let walkFOVRange: ClosedRange<Float> = 55...100
+
+    private(set) var perspective: CameraPerspective = .diorama
+    /// Current walkthrough FOV in degrees, mutated by the pinch gesture; reset to
+    /// the default each time you step inside.
+    private var walkFOV = RoomSceneController.walkthroughDefaultFOV
+    /// The vantage the walkthrough camera currently occupies, so a re-sync with the
+    /// same vantage is a no-op and a changed one glides.
+    private var currentVantageID: String?
+    private var walkPositionXZ = SIMD2<Float>.zero
+    private var walkEyeHeight = WalkthroughVantage.standingEyeHeight
+    /// Horizontal look angle: forward on XZ is `(sin, cos)`, matching `WalkthroughVantage`.
+    private var lookYaw: Float = 0
+    /// Vertical look angle (radians): +up, clamped so you never stare into the
+    /// open-top "void" above the walls, nor past straight-down at the floor.
+    private var lookPitch: Float = 0
+
+    /// In-flight glide between vantages (position + look), advanced by the update loop.
+    private struct WalkAnim {
+        var elapsed: TimeInterval = 0
+        let duration: TimeInterval
+        let fromPos, toPos: SIMD2<Float>
+        let fromYaw, toYaw, fromPitch, toPitch, fromEye, toEye: Float
+    }
+    private var walkAnim: WalkAnim?
+    private var lastLookTranslation: CGSize = .zero
+
+    // MARK: Misc
+    /// The room's chosen wall/floor colors, overlaid on the palette by
+    /// `applyPalette`. Set from the room in `makeEntities`; live changes arrive
+    /// via `setSurfaceStyle` (materials only — geometry never moves).
+    private var surfaceStyle: RoomSurfaceStyle = .unset
+    /// Whether the blueprint dimension labels are currently shown (the
+    /// measurements info overlay, driven by the view).
+    private var showsDimensions = false
+
     var lastResetToken = 0
     var onThumbnail: ((Data) -> Void)?
     private var didSnapshot = false
@@ -602,8 +593,6 @@ final class RoomSceneController {
     private var framesSinceModelsLoaded = 0
     /// Retained per-frame subscription (set by the view from `RealityViewContent`).
     var updateSub: EventSubscription?
-    /// Pushes a cross-fade freeze frame up to the SwiftUI view. Set by the view.
-    var crossfade: ((UIImage?) -> Void)?
     /// The view's drawable size in PIXELS (points × display scale), kept current by
     /// the view; the offscreen snapshot renders at this resolution.
     var pixelSize: CGSize = .zero
@@ -622,30 +611,26 @@ final class RoomSceneController {
     func teardown() {
         updateSub?.cancel()
         updateSub = nil
-        crossfade = nil
         root.children.removeAll()
         cameraAnchor.children.removeAll()
         root.removeFromParent()
         cameraAnchor.removeFromParent()
-        environment = nil
     }
 
     // MARK: - Setup
 
     /// Build all scene entities (geometry, lights, camera). The view adds `root` and
     /// `cameraAnchor` to its `RealityViewContent` and wires the per-frame loop.
-    func makeEntities(room: RoomModel, mode: RoomRenderMode, editingFurniture: Bool = false, onThumbnail: ((Data) -> Void)?) {
-        self.mode = mode
+    func makeEntities(room: RoomModel, editingFurniture: Bool = false, onThumbnail: ((Data) -> Void)?) {
         self.editingFurniture = editingFurniture
         self.editingRoom = room
+        self.surfaceStyle = room.surfaceStyle
         self.onThumbnail = onThumbnail
 
         buildLights()
         root.addChild(keyLight)
         root.addChild(fillA)
         root.addChild(fillB)
-        iblEntity.name = Self.iblEntityName
-        root.addChild(iblEntity)
         buildGeometry(room: room)
 
         // Narrow-FOV PERSPECTIVE camera (NOT orthographic): native entity gesture
@@ -660,26 +645,24 @@ final class RoomSceneController {
         cameraAnchor.addChild(camera)
 
         frameCamera(room: room)
-        applyPalette(for: mode)
+        applyPalette()
         updateCamera()
-        loadEnvironment()
     }
 
     private func buildLights() {
-        // Warm key from top-right, cooler fill from the left, warm back fill. The
-        // soft ambient wrap comes from image-based lighting (`StudioEnvironment`);
-        // RealityKit has no dedicated ambient-light entity (still true on iOS 26),
-        // so this back/fill pair supplements the IBL and stands in for it on the
-        // first frames before the async environment loads. Directional lights use
-        // only their direction, so aiming at the origin is correct even when the
-        // room isn't centered there. Tints/intensities are set per mode in
-        // `applyPalette`.
+        // Neutral key from top-right, fills from the left and back. RealityKit
+        // has no dedicated ambient-light entity (still true on iOS 26), so this
+        // back/fill pair stands in for the ambient wrap. All white on purpose:
+        // a tinted light would shift every perceived color in the room, breaking
+        // the true-color promise. Directional lights use only their direction,
+        // so aiming at the origin is correct even when the room isn't centered
+        // there. Tints/intensities are set in `applyPalette`.
         keyLight.look(at: .zero, from: [2.5, 4.0, 2.5], relativeTo: nil)
         fillA.look(at: .zero, from: [-3.0, 2.0, -1.0], relativeTo: nil)
         fillB.look(at: .zero, from: [0.4, 1.4, -2.2], relativeTo: nil)
     }
 
-    // MARK: - Geometry (mode-independent)
+    // MARK: - Geometry
 
     private func buildGeometry(room: RoomModel) {
         let corners = room.floorCorners.map(\.simd2)
@@ -688,9 +671,8 @@ final class RoomSceneController {
         let height = room.ceilingHeight
 
         // Grounding base: a chunky rounded platform under the room so the diorama
-        // reads as a solid floating model. Its soft drop shadow (PLAY) lands on the
-        // void backdrop just below it; real per-item contact shadows arrive with
-        // furniture in Phase 3.
+        // reads as a solid floating model. Its soft drop shadow lands on the
+        // void backdrop just below it.
         if let base = makeBase(corners: corners) {
             baseEntity = base
             root.addChild(base)
@@ -707,17 +689,10 @@ final class RoomSceneController {
             let floor = ModelEntity(mesh: floorMesh, materials: [placeholderMaterial()])
             floorEntity = floor
             root.addChild(floor)
-            // Floor outline: a slightly larger dark sheet tucked just below, so
-            // its border reads as a chunky rim (culling-independent).
-            if let outline = OutlineEntity.floorShell(corners: corners, pivot: centroidXZ,
-                                                      y: -0.004, color: outlineColor) {
-                floorOutline = outline
-                root.addChild(outline)
-            }
         }
 
         // Walls: chunky full-height slabs, one per polygon edge, each topped by a
-        // white cap rim and lined with a warm emissive cornice strip (PLAY).
+        // white cap rim (frame detailing — it sits above the wall, never on it).
         let wallDepth: Float = 0.08   // thicker than a sheet → reads as a model slab
         let capHeight: Float = 0.06
         for wall in room.walls {
@@ -729,8 +704,7 @@ final class RoomSceneController {
             let yaw = atan2(-dir.y, dir.x)
             let orientation = simd_quatf(angle: yaw, axis: [0, 1, 0])
 
-            // Outward XZ normal (away from the room centroid) — needed now so the
-            // cornice can be nudged onto the *inner* face.
+            // Outward XZ normal (away from the room centroid).
             var outward = SIMD2<Float>(dir.y, -dir.x)
             if simd_dot(outward, mid - centroidXZ) < 0 { outward = -outward }
             outward = simd_normalize(outward)
@@ -742,8 +716,7 @@ final class RoomSceneController {
             // intrude `wallDepth/2` (4 cm) into the interior, so a piece reported as
             // "Fits" (5 cm clear of the line) sat only ~1 cm off the visible wall and
             // read as grazing/inside it. Now the visible interior == the fit
-            // reference, so the badge matches what's on screen. Changes geometry
-            // identically in PLAY and BUY, so the mode invariant holds.
+            // reference, so the badge matches what's on screen.
             let outwardShift = outward * (wallDepth / 2)
             let slabMid = mid + outwardShift
 
@@ -752,14 +725,6 @@ final class RoomSceneController {
             entity.position = SIMD3(slabMid.x, height / 2, slabMid.y)
             entity.orientation = orientation
             root.addChild(entity)
-
-            // Inverted-hull outline sibling, matching the wall's transform.
-            let outline = OutlineEntity.boxShell(size: [length, height, wallDepth], color: outlineColor)
-            if let outline {
-                outline.position = entity.position
-                outline.orientation = orientation
-                root.addChild(outline)
-            }
 
             // Chunky white cap rim, proud of the wall on every edge so the slab
             // reads as a molded model piece. Material set in `applyPalette`.
@@ -770,28 +735,18 @@ final class RoomSceneController {
             cap.orientation = orientation
             root.addChild(cap)
 
-            // Warm emissive cornice strip tucked just inside the top inner edge (now
-            // the polygon line) — the hidden light-cove glow. Material set in `applyPalette`.
-            let corniceMesh = MeshResource.generateBox(size: [length * 0.94, 0.03, 0.03], cornerRadius: 0.012)
-            let cornice = ModelEntity(mesh: corniceMesh, materials: [placeholderMaterial()])
-            let innerNudge = -outward * 0.02
-            cornice.position = SIMD3(mid.x + innerNudge.x, height - 0.05, mid.y + innerNudge.y)
-            cornice.orientation = orientation
-            root.addChild(cornice)
-
-            walls.append(WallNode(entity: entity, outline: outline, cap: cap,
-                                  cornice: cornice, midXZ: mid, outwardXZ: outward))
+            walls.append(WallNode(entity: entity, cap: cap, midXZ: mid, outwardXZ: outward))
         }
 
         // Openings: proud panels on the inner face of their nearest wall.
         for opening in room.openings {
             guard let panel = makeOpening(opening, walls: room.walls, ceiling: height) else { continue }
             root.addChild(panel.entity)
-            openings.append((panel.entity, panel.pane, panel.trims, panel.wallIndex, opening.kind))
+            openings.append((panel.entity, panel.pane, panel.trims, panel.wallIndex))
         }
 
-        // Dimension labels (shown only in BUY): wall length, laid flat near each
-        // wall's midpoint like a floor-plan annotation.
+        // Dimension labels (shown while the measurements overlay is on): wall
+        // length, laid flat near each wall's midpoint like a floor-plan annotation.
         for wall in room.walls {
             guard let label = makeDimensionLabel(for: wall) else { continue }
             label.isEnabled = false
@@ -799,7 +754,7 @@ final class RoomSceneController {
             root.addChild(label)
         }
 
-        // Phase 2: detected existing furniture, rendered as stylized identity
+        // Phase 2: detected existing furniture, rendered as true-color identity
         // boxes (collision + tap-target tagged) so it appears in the diorama. Y is
         // floor-relative (the box center is half its height above this y=0 floor),
         // so it sits ON the floor regardless of the AR session's altitude. In
@@ -807,45 +762,12 @@ final class RoomSceneController {
         // placement tray) owns the entities so they can update live.
         if !editingFurniture {
             for footprint in room.detectedFurniture where !footprint.isCleared {
-                let entity = FurnitureEntityBuilder.entity(for: footprint, mode: mode)
+                let entity = FurnitureEntityBuilder.entity(for: footprint)
                 root.addChild(entity)
-                // Track so a PLAY↔BUY swap can re-tint these static pieces too.
                 furnitureEntities[footprint.id] = entity
                 furnitureSnapshots[footprint.id] = footprint
             }
         }
-
-        // TEMPORARY furniture preview — only when there's no real detected
-        // furniture, so detection testing isn't cluttered by the demo cluster.
-        // Delete with `placeDemoFurniture`.
-        if Self.demoFurniture && room.detectedFurniture.isEmpty { placeDemoFurniture(at: centroidXZ) }
-    }
-
-    /// TEMPORARY visual preview of the Phase-3 furniture — NOT real placement.
-    /// Drops a compact living-room cluster at the room center so the stylized
-    /// materials, outlines, and contact shadows can be judged on device across
-    /// box, cylinder, and sphere forms. Offsets are modest (~2.4 × 1.6 m) to fit
-    /// most rooms; in a very small room some pieces may clip the walls. Delete
-    /// this method and the `demoFurniture` flag when catalog placement lands.
-    private func placeDemoFurniture(at center: SIMD2<Float>) {
-        let origin = SIMD3<Float>(center.x, 0, center.y)
-        func add(_ kind: PlayModeFurniture.Kind, dx: Float, dz: Float, yaw: Float = 0) {
-            let piece = PlayModeFurniture.make(kind)
-            piece.position = origin + SIMD3(dx, 0, dz)
-            if yaw != 0 { piece.orientation = simd_quatf(angle: yaw, axis: [0, 1, 0]) }
-            root.addChild(piece)
-        }
-        // Cozy reference-style arrangement with real negative space: sofa centered
-        // on the back wall, an angled armchair in a front corner, table on the rug,
-        // plant + lamp flanking the sofa in the back corners. Offsets are kept
-        // within ~±1.15 m so they don't clip the walls of a ~3 m room; a very small
-        // or non-square room may still need the (forthcoming) real placement system.
-        add(.rug,         dx: 0,     dz: 0.05)
-        add(.sofa,        dx: 0,     dz: -0.85)
-        add(.coffeeTable, dx: 0,     dz: 0.0)
-        add(.armchair,    dx: -0.95, dz: 0.7,  yaw: .pi / 5)
-        add(.plantTall,   dx: 1.1,   dz: -0.85)
-        add(.floorLamp,   dx: -1.1,  dz: -0.85)
     }
 
     /// A thin, double-sided floor sheet. Two triangle sets at ±epsilon Y with
@@ -894,10 +816,11 @@ final class RoomSceneController {
         return entity
     }
 
-    /// A soft baked drop shadow grounding the floating cube on the void backdrop
-    /// (PLAY only). A horizontal contact-shadow plane, larger than the base and
-    /// tucked just beneath it, so from the isometric angle it reads as a soft blob
-    /// under the model rather than a hard cast shadow.
+    /// A soft baked drop shadow grounding the floating cube on the void backdrop.
+    /// A horizontal contact-shadow plane, larger than the base and tucked just
+    /// beneath it, so from the isometric angle it reads as a soft blob under the
+    /// model rather than a hard cast shadow. Frame detailing — it darkens the
+    /// backdrop, never an in-room surface.
     private func makeDropShadow(corners: [SIMD2<Float>]) -> ModelEntity? {
         let xs = corners.map(\.x), zs = corners.map(\.y)
         guard let minX = xs.min(), let maxX = xs.max(),
@@ -953,9 +876,9 @@ final class RoomSceneController {
     }
 
     /// Builds a styled opening in local space so a captured door/window reads as
-    /// one rather than a flat colored slab: a warm trim frame around the perimeter,
-    /// a recessed inner pane (returned so the palette can drive it — pale glass in
-    /// PLAY, neutral in BUY), and kind-specific dividers (a cross mullion for
+    /// one rather than a flat colored slab: a trim frame around the perimeter,
+    /// a recessed inner pane (returned so the palette can drive it), and
+    /// kind-specific dividers (a cross mullion for
     /// windows, two rails for a paneled door). Local axes: x along the wall, y up,
     /// z = wall thickness; the frame stands proud of both faces so it reads from
     /// inside the open-top dollhouse regardless of which face points inward.
@@ -970,8 +893,7 @@ final class RoomSceneController {
         let barD: Float = 0.05     // dividers sit just behind the frame face
 
         // Frame bars carry a placeholder material; `applyPalette` re-materialises
-        // them per mode (warm trim in PLAY, neutral in BUY) via the returned list,
-        // so the frames never keep PLAY-warm color in the true-color BUY view.
+        // them via the returned list.
         var trims: [ModelEntity] = []
         func bar(_ size: SIMD3<Float>, at p: SIMD3<Float>) {
             let e = ModelEntity(mesh: .generateBox(size: size, cornerRadius: 0.015),
@@ -1054,63 +976,33 @@ final class RoomSceneController {
         SimpleMaterial(color: .gray, isMetallic: false)
     }
 
-    /// Outline color (identical across modes; pulled from the palette so colors
-    /// stay centralized in Theme).
-    private var outlineColor: UIColor { RoomPalette.palette(for: .play).outline }
+    /// Apply the single truthful palette (with the room's chosen surface colors
+    /// overlaid) to every surface, plus the fixed neutral lighting rig. Materials
+    /// only — no geometry is touched, so it's safe to re-run on a live surface
+    /// change.
+    private func applyPalette() {
+        let palette = RoomPalette.palette(style: surfaceStyle)
 
-    /// Swap only materials + lighting (and outline / label visibility). No
-    /// geometry is touched — the identical-geometry invariant between PLAY and
-    /// BUY holds (outlines are sibling entities toggled with `isEnabled`).
-    private func applyPalette(for mode: RoomRenderMode) {
-        let palette = RoomPalette.palette(for: mode)
-
-        // One shared material instance per surface (Step 9: don't allocate per
-        // entity).
-        let floorMat = PlayModeMaterials.floor(palette)
-        let wallMat = PlayModeMaterials.wall(palette)
-        let openingMat = PlayModeMaterials.opening(palette)
-        let trimMat = PlayModeMaterials.openingTrim(palette)
-        let voidMat = PlayModeMaterials.voidWindow(palette)
-        let baseMat = PlayModeMaterials.base(palette)
-        let capMat = PlayModeMaterials.wallCap(palette)
-        let corniceMat = PlayModeMaterials.cornice(palette)
+        // One shared material instance per surface (don't allocate per entity).
+        let floorMat = RoomMaterials.floor(palette)
+        let wallMat = RoomMaterials.wall(palette)
+        let openingMat = RoomMaterials.opening(palette)
+        let trimMat = RoomMaterials.openingTrim(palette)
+        let baseMat = RoomMaterials.base(palette)
+        let capMat = RoomMaterials.wallCap(palette)
 
         setMaterial(floorMat, on: floorEntity)
         setMaterial(baseMat, on: baseEntity)
         for wall in walls {
             setMaterial(wallMat, on: wall.entity)
             setMaterial(capMat, on: wall.cap)
-            setMaterial(corniceMat, on: wall.cornice)
         }
-        // Windows / open openings blow out to a white void in PLAY; doors keep a
-        // paneled face. BUY uses the neutral pane everywhere.
         for opening in openings {
-            let usesVoid = palette.usesVoidWindows && opening.kind != .door
-            setMaterial(usesVoid ? voidMat : openingMat, on: opening.pane)
+            setMaterial(openingMat, on: opening.pane)
             for trim in opening.trims { setMaterial(trimMat, on: trim) }
         }
 
-        // Outlines / caps / cornice (PLAY only). These also obey culling —
-        // refreshed each frame in `cullWalls`; set the baseline here.
-        showsOutlines = palette.showsOutlines
-        showsWallCaps = palette.showsWallCaps
-        showsCornice = palette.showsCornice
-        floorOutline?.isEnabled = showsOutlines
-        for wall in walls {
-            wall.outline?.isEnabled = showsOutlines && wall.entity.isEnabled
-            wall.cap?.isEnabled = showsWallCaps && wall.entity.isEnabled
-            wall.cornice?.isEnabled = showsCornice && wall.entity.isEnabled
-        }
-
-        // Soft drop shadow grounds the floating cube against the void (PLAY only).
-        dropShadow?.isEnabled = palette.showsDropShadow
-
-        // Dimension labels (BUY only).
-        for label in labels { label.isEnabled = palette.showsDimensions }
-
-        // Lighting: warm 3-point in PLAY, neutral in BUY. In PLAY the directional
-        // rig is dialed down (Theme) because the image-based light carries the
-        // ambient wrap — the key light's main job here is the soft cast shadow.
+        // Neutral lighting — white tints so no perceived color ever shifts.
         keyLight.light.color = palette.keyTint
         keyLight.light.intensity = palette.keyIntensity
         fillA.light.color = palette.fillTint
@@ -1118,52 +1010,10 @@ final class RoomSceneController {
         fillB.light.color = palette.backTint
         fillB.light.intensity = palette.backIntensity
 
-        // Soft cast shadow from the key light — PLAY only, so BUY's neutral
-        // measuring look is unchanged. A large maximumDistance + depth bias keeps
-        // it gentle rather than hard-edged.
-        keyLight.shadow = (mode == .play)
-            ? DirectionalLightComponent.Shadow(maximumDistance: 8, depthBias: 2.0)
-            : nil
-
-        // Warm image-based lighting in PLAY (once `environment` is built); none in
-        // BUY. Kept last so the directional rig is in place regardless of whether
-        // the async environment has loaded yet.
-        applyEnvironmentLighting()
-    }
-
-    /// Apply the warm studio environment as PLAY image-based lighting, or none in
-    /// BUY. On the old `ARView` this set `environment.lighting.resource`; `RealityView`
-    /// has no such hook, so the IBL is driven by components: the source lives on
-    /// `iblEntity` (set once `environment` loads) and the scene root receives from it
-    /// only in PLAY. Removing the receiver in BUY restores the neutral measuring look.
-    /// The visible "void" backdrop is no longer a skybox here — it's a SwiftUI colour
-    /// layer behind the `RealityView` (see `RoomDioramaScreen`).
-    private func applyEnvironmentLighting() {
-        if mode == .play, let environment {
-            iblEntity.components.set(ImageBasedLightComponent(source: .single(environment)))
-            root.components.set(ImageBasedLightReceiverComponent(imageBasedLight: iblEntity))
-        } else {
-            root.components.remove(ImageBasedLightReceiverComponent.self)
-        }
-    }
-
-    /// Build the warm studio environment off the main actor, then apply it. There
-    /// is NO graceful fallback for the IBL API: a runtime failure is surfaced
-    /// loudly (assertionFailure in debug, a console warning otherwise) instead of
-    /// being masked. The directional rig still lights the scene either way, but the
-    /// soft GI wrap is the intended look and its absence should be obvious.
-    private func loadEnvironment() {
-        Task { @MainActor [weak self] in
-            do {
-                let resource = try await StudioEnvironment.makeResource()
-                guard let self else { return }
-                self.environment = resource
-                self.applyEnvironmentLighting()
-            } catch {
-                assertionFailure("Snug StudioEnvironment IBL failed to build: \(error)")
-                print("⚠️ Snug: image-based lighting unavailable — \(error)")
-            }
-        }
+        // Soft cast shadow from the key light. Shadows are honest (they change
+        // luminance where an object blocks light, not hue); a large
+        // maximumDistance + depth bias keeps it gentle rather than hard-edged.
+        keyLight.shadow = DirectionalLightComponent.Shadow(maximumDistance: 8, depthBias: 2.0)
     }
 
     private func setMaterial(_ material: any RealityKit.Material, on entity: ModelEntity?) {
@@ -1172,88 +1022,19 @@ final class RoomSceneController {
         entity.model = model
     }
 
-    /// Cross-fade to a new render mode: snapshot the current frame (offscreen),
-    /// swap materials beneath it, then hand the freeze to the view to fade out in
-    /// < 400 ms. If the offscreen snapshot fails it is surfaced loudly by
-    /// `OffscreenSnapshotRenderer` and we apply the palette WITHOUT a fade — never a
-    /// fabricated frame.
-    func setMode(_ newMode: RoomRenderMode, animated: Bool) {
-        guard newMode != mode else { return }
-        let oldMode = mode
-        mode = newMode
-        modeGeneration += 1
-        let generation = modeGeneration
-
-        let size = pixelSize
-        guard animated, size.width > 0, size.height > 0 else {
-            applyPalette(for: newMode)
-            retintFurniture()
-            return
-        }
-
-        Task { @MainActor in
-            let image = await self.captureSnapshot(mode: oldMode, pixelSize: size)
-            // A newer toggle has superseded this one; let its callback drive the
-            // cross-fade rather than flashing a stale frame on top of it.
-            guard self.modeGeneration == generation else { return }
-            guard let image else {
-                // Failure already surfaced by the renderer — swap without a fade.
-                self.applyPalette(for: newMode)
-                self.retintFurniture()
-                return
-            }
-            // Show the freeze first, then swap materials underneath it.
-            self.crossfade?(image)
-            self.applyPalette(for: newMode)
-            self.retintFurniture()
-        }
-    }
-
-    /// Re-tint furniture after a PLAY↔BUY swap — `applyPalette` only covers
-    /// walls/floor/openings. Editing pieces keep their fit-state + selection
-    /// coloring (re-applied for the new mode); static viewing pieces re-tint to the
-    /// mode's base color. Geometry is never touched, only the material.
-    private func retintFurniture() {
-        for (id, entity) in furnitureEntities {
-            if editingFurniture {
-                FurnitureEntityBuilder.applyPlacementState(
-                    lastFurnitureStates[id] ?? .valid,
-                    selected: id == lastSelectedFurnitureID,
-                    mode: mode,
-                    to: entity
-                )
-            } else if let footprint = furnitureSnapshots[id] {
-                FurnitureEntityBuilder.retint(entity, footprint: footprint, mode: mode)
-            }
-            // Show/hide the realistic product model for the new mode (BUY shows it,
-            // PLAY restores the stylized box). Runs after the tint so the box
-            // material is correct before the model is layered over it.
-            if let footprint = furnitureSnapshots[id] {
-                updateRealisticModel(for: footprint, on: entity)
-            }
-        }
-    }
-
     // MARK: - Snapshot
 
-    /// Render the current scene offscreen into a `UIImage`, composited over `mode`'s
-    /// background colour. Clones the live scene + camera (the renderer must not be
-    /// handed live, parented entities) and re-points the cloned IBL receiver at the
-    /// cloned source so PLAY lighting matches the on-screen frame.
-    private func captureSnapshot(mode: RoomRenderMode, pixelSize: CGSize) async -> UIImage? {
+    /// Render the current scene offscreen into a `UIImage`, composited over the
+    /// backdrop colour. Clones the live scene + camera (the renderer must not be
+    /// handed live, parented entities).
+    private func captureSnapshot(pixelSize: CGSize) async -> UIImage? {
         let sceneClone = root.clone(recursive: true)
-        // A cloned `ImageBasedLightReceiverComponent` still references the ORIGINAL
-        // source entity (not in the offscreen scene), so re-point it at the clone.
-        if root.components[ImageBasedLightReceiverComponent.self] != nil,
-           let clonedSource = sceneClone.findEntity(named: Self.iblEntityName) {
-            sceneClone.components.set(ImageBasedLightReceiverComponent(imageBasedLight: clonedSource))
-        }
         let cameraClone = camera.clone(recursive: false)
         cameraClone.transform = Transform(matrix: camera.transformMatrix(relativeTo: nil))
 
         guard let raw = await OffscreenSnapshotRenderer.image(
             scene: sceneClone, camera: cameraClone, pixelSize: pixelSize) else { return nil }
-        return Self.composite(raw, over: RoomPalette.palette(for: mode).background)
+        return Self.composite(raw, over: RoomPalette.palette(style: surfaceStyle).background)
     }
 
     /// Flatten a (transparent-backed) render over a solid background colour so the
@@ -1339,20 +1120,145 @@ final class RoomSceneController {
 
     // MARK: - External state (driven by the SwiftUI view's `update`)
 
-    func applyExternalState(mode newMode: RoomRenderMode, resetToken: Int) {
-        if mode != newMode { setMode(newMode, animated: true) }
+    func applyExternalState(showsDimensions: Bool, resetToken: Int,
+                            perspective newPerspective: CameraPerspective, vantage: WalkthroughVantage?) {
+        if self.showsDimensions != showsDimensions {
+            self.showsDimensions = showsDimensions
+            // Purely additive info overlay — label visibility only, never a material.
+            for label in labels { label.isEnabled = showsDimensions }
+        }
+
+        // Perspective transitions. Enter/exit set `perspective`, so the reset-token
+        // block below sees the up-to-date value.
+        if perspective != newPerspective {
+            if newPerspective == .walkthrough {
+                if let vantage { enterWalkthrough(vantage) }
+            } else {
+                exitToDiorama()
+            }
+        } else if newPerspective == .walkthrough, let vantage, vantage.id != currentVantageID {
+            moveToVantage(vantage, animated: true)
+        }
+
         if lastResetToken != resetToken {
             lastResetToken = resetToken
-            resetCamera(animated: true)
+            if perspective == .walkthrough, let vantage {
+                // "Reset view" while inside re-aims at the current vantage (recenters
+                // the look) rather than framing the whole room.
+                moveToVantage(vantage, animated: true)
+            } else {
+                resetCamera(animated: true)
+            }
         }
+    }
+
+    // MARK: - Walkthrough (first-person) camera
+
+    /// Drop into first-person at `vantage`: eye height, wide FOV, look aimed as the
+    /// vantage specifies. Widening the FOV only mutates the existing
+    /// `PerspectiveCameraComponent`, so it stays perspective (and gesture hit-testing
+    /// stays valid); `exitToDiorama` restores the narrow iso lens.
+    func enterWalkthrough(_ vantage: WalkthroughVantage) {
+        perspective = .walkthrough
+        currentVantageID = vantage.id
+        cameraAnim = nil
+        walkAnim = nil
+        walkPositionXZ = vantage.position
+        walkEyeHeight = vantage.eyeHeight
+        lookYaw = vantage.initialYaw
+        lookPitch = 0
+        walkFOV = Self.walkthroughDefaultFOV
+        setCameraFOV(walkFOV)
+        updateWalkthroughCamera()
+    }
+
+    /// Glide (or snap) to another preset vantage while staying inside.
+    func moveToVantage(_ vantage: WalkthroughVantage, animated: Bool) {
+        currentVantageID = vantage.id
+        if animated {
+            // Glide the short way around: the drag-accumulated `lookYaw` is
+            // unbounded, so a raw lerp to the vantage's atan2 yaw can whip the
+            // camera through full extra turns. Wrap the delta to [-π, π].
+            var yawDelta = (vantage.initialYaw - lookYaw).truncatingRemainder(dividingBy: 2 * .pi)
+            if yawDelta > .pi { yawDelta -= 2 * .pi }
+            if yawDelta < -.pi { yawDelta += 2 * .pi }
+            walkAnim = WalkAnim(
+                duration: 0.5,
+                fromPos: walkPositionXZ, toPos: vantage.position,
+                fromYaw: lookYaw, toYaw: lookYaw + yawDelta,
+                fromPitch: lookPitch, toPitch: 0,
+                fromEye: walkEyeHeight, toEye: vantage.eyeHeight)
+        } else {
+            walkPositionXZ = vantage.position
+            walkEyeHeight = vantage.eyeHeight
+            lookYaw = vantage.initialYaw
+            lookPitch = 0
+            updateWalkthroughCamera()
+        }
+    }
+
+    /// Step back out to the isometric diorama, springing to the canonical iso
+    /// framing (the `default*` fields set once in `frameCamera`) via `resetCamera`
+    /// — a clean overhead view, NOT whatever orbit the user last had. The orbital
+    /// fields are left untouched while inside, so a future "resume last orbit"
+    /// would only need to swap `resetCamera` for a spring toward the live values.
+    func exitToDiorama() {
+        perspective = .diorama
+        currentVantageID = nil
+        walkAnim = nil
+        setCameraFOV(Self.isoFOVDegrees)
+        resetCamera(animated: true)
+    }
+
+    /// One-finger look-around: incremental screen-point deltas turn the head. Pitch
+    /// is clamped so the open-top void above the walls and the floor underfoot stay
+    /// out of frame. Uses the "grab the world" sign convention (drag down → look up).
+    func lookAround(dx: Float, dy: Float) {
+        walkAnim = nil
+        lookYaw -= dx * 0.005
+        lookPitch = min(max(lookPitch + dy * 0.005, -1.0), 0.45)
+        updateWalkthroughCamera()
+    }
+
+    /// Look-around from the drag gesture's cumulative translation (cumulative →
+    /// incremental, like `orbitContinuous`, so the view never writes `@State` per tick).
+    func lookAroundContinuous(translation: CGSize) {
+        lookAround(dx: Float(translation.width - lastLookTranslation.width),
+                   dy: Float(translation.height - lastLookTranslation.height))
+        lastLookTranslation = translation
+    }
+
+    func endLook() { lastLookTranslation = .zero }
+
+    /// Point the camera from the eye position along the current yaw/pitch.
+    private func updateWalkthroughCamera() {
+        let pos = SIMD3<Float>(walkPositionXZ.x, walkEyeHeight, walkPositionXZ.y)
+        let cosP = cosf(lookPitch)
+        let forward = SIMD3<Float>(sinf(lookYaw) * cosP, sinf(lookPitch), cosf(lookYaw) * cosP)
+        camera.look(at: pos + forward, from: pos, relativeTo: nil)
+    }
+
+    /// Change the FOV of the existing perspective camera in place (never swaps the
+    /// component type — that's what re-broke gesture hit-testing historically).
+    private func setCameraFOV(_ degrees: Float) {
+        guard var cam = camera.components[PerspectiveCameraComponent.self] else { return }
+        cam.fieldOfViewInDegrees = degrees
+        camera.components.set(cam)
+    }
+
+    /// Apply a changed wall/floor choice live (the surfaces sheet is open over the
+    /// diorama, so the pick previews instantly). Materials only — no geometry.
+    func setSurfaceStyle(_ style: RoomSurfaceStyle) {
+        guard style != surfaceStyle else { return }
+        surfaceStyle = style
+        applyPalette()
     }
 
     /// Reconcile the live furniture entities with the placement tray's footprints
     /// (editing mode only). Adds new pieces, removes cleared/deleted ones, rebuilds
     /// an entity only when its geometry changed (position/size/rotation), and
     /// re-tints each by its `PlacementState`. Keyed by `footprint.id` in a store
-    /// separate from the wall/floor scene, so it never perturbs the PLAY/BUY
-    /// geometry invariant.
+    /// separate from the wall/floor scene building.
     func syncFurniture(_ footprints: [FurnitureFootprint], states: [UUID: PlacementState], selectedID: UUID?) {
         lastFurnitureStates = states
         lastSelectedFurnitureID = selectedID
@@ -1374,7 +1280,7 @@ final class RoomSceneController {
             // meshes in place.
             if furnitureEntities[footprint.id] == nil || furnitureSnapshots[footprint.id] != footprint {
                 furnitureEntities[footprint.id]?.removeFromParent()
-                let entity = FurnitureEntityBuilder.entity(for: footprint, mode: mode)
+                let entity = FurnitureEntityBuilder.entity(for: footprint)
                 root.addChild(entity)
                 furnitureEntities[footprint.id] = entity
                 furnitureSnapshots[footprint.id] = footprint
@@ -1384,7 +1290,6 @@ final class RoomSceneController {
                 FurnitureEntityBuilder.applyPlacementState(
                     states[footprint.id] ?? .valid,
                     selected: selected,
-                    mode: mode,
                     to: entity
                 )
                 // Selection "pop": scale to 1.03 when selected, 1.0 otherwise. Only
@@ -1404,15 +1309,15 @@ final class RoomSceneController {
         }
     }
 
-    // MARK: - Realistic model (Verified products, BUY only) + Sandbox clay (both modes)
+    // MARK: - Realistic model (Verified products) + Sandbox clay
 
-    /// Show a USDZ model over the stylized box, or restore the box. Two model
+    /// Show a USDZ model over the identity box, or restore the box. Two model
     /// tracks share this one path:
-    /// - **Sandbox** ("digital clay"): a generic USDZ, shown in BOTH modes and
-    ///   per-axis stretched to the sketch's size — distortion is the *feature*, so
-    ///   it skips the Verified zero-scaling guard and renders a uniform clay tone so
-    ///   it never reads as a real product.
-    /// - **Verified product**: a real USDZ, BUY only, placed 1:1 behind the guard,
+    /// - **Sandbox** ("digital clay"): a generic USDZ, per-axis stretched to the
+    ///   sketch's size — distortion is the *feature*, so it skips the Verified
+    ///   zero-scaling guard and renders a uniform clay tone so it never reads as
+    ///   a real product.
+    /// - **Verified product**: a real USDZ, placed 1:1 behind the guard,
     ///   keeping its own materials.
     /// The USDZ loads asynchronously; the box shows until it arrives, then its mesh
     /// is hidden beneath the model. Visual only — collision/fit/gestures stay on the box.
@@ -1420,10 +1325,10 @@ final class RoomSceneController {
         let isSandbox = footprint.sandboxAssetID != nil
         let assetName: String? = isSandbox
             ? footprint.sandboxAssetID.flatMap { sandboxModelAssetName?($0) }
-            : (mode == .buy ? footprint.catalogItemID.flatMap { catalogModelAssetName?($0) } : nil)
+            : footprint.catalogItemID.flatMap { catalogModelAssetName?($0) }
 
         guard let assetName else {
-            // PLAY verified / non-catalog / no bundled model → ensure the box shows.
+            // Non-catalog piece / no bundled model → ensure the box shows.
             if FurnitureEntityBuilder.hasRealisticModel(box) {
                 FurnitureEntityBuilder.removeRealisticModel(from: box)
                 reapplyFurnitureState(for: footprint.id, on: box)
@@ -1432,7 +1337,7 @@ final class RoomSceneController {
         }
 
         if FurnitureEntityBuilder.hasRealisticModel(box),
-           let model = box.findEntity(named: FurnitureEntityBuilder.realisticModelName) {
+           let model = FurnitureEntityBuilder.realisticModelChild(of: box) {
             let baked = modelPartColors[footprint.id] ?? [:]
             let desired = isSandbox ? sandboxDesiredColors(footprint, model: model) : [:]
             // A part reset to its ORIGINAL color can't be un-tinted in place (the
@@ -1454,7 +1359,7 @@ final class RoomSceneController {
             }
             // Falls through to reload the original-colored model. Restore the box
             // mesh now (it was hidden under the tinted model) so the piece stays
-            // visible as the stylized box during the async reload, instead of
+            // visible as the identity box during the async reload, instead of
             // flashing invisible until the fresh model attaches.
             FurnitureEntityBuilder.removeRealisticModel(from: box)
             modelPartColors[footprint.id] = nil
@@ -1491,8 +1396,21 @@ final class RoomSceneController {
                 return
             }
 
-            // Verified product: BUY-only; re-validate mode since it may have changed.
-            guard self.mode == .buy else { return }
+            // Approximate product mesh (photo-generated Tripo / category archetype):
+            // not authored at true scale, so the Verified 1:1 guard below would
+            // always refuse it. Instead the footprint (w×d) is locked exactly to the
+            // catalog dims and height is 1:1 unless the mesh carries photo clutter on
+            // top (then it renders taller, never squashed — see
+            // CatalogModelLoader.approximateFitTransform). The fit/collision box
+            // keeps the true catalog dims either way, so the honest-fit promise is
+            // untouched; only the visual is approximate.
+            if CatalogModelLoader.isApproximateAsset(assetName) {
+                FurnitureEntityBuilder.attachRealisticModel(
+                    model, to: box, dimensions: dims, tint: nil, approximate: true)
+                self.reapplyFurnitureState(for: id, on: box)
+                return
+            }
+
             // Verified-track zero-scaling guard: a real product USDZ must already be
             // authored at its true catalog size (placed 1:1, never warped). Measure
             // its native extents and refuse anything off by > 1 cm — fall back to the
@@ -1526,11 +1444,10 @@ final class RoomSceneController {
             FurnitureEntityBuilder.applyPlacementState(
                 lastFurnitureStates[id] ?? .valid,
                 selected: id == lastSelectedFurnitureID,
-                mode: mode,
                 to: box
             )
         } else if let footprint = furnitureSnapshots[id] {
-            FurnitureEntityBuilder.retint(box, footprint: footprint, mode: mode)
+            FurnitureEntityBuilder.retint(box, footprint: footprint)
         }
     }
 
@@ -1541,7 +1458,7 @@ final class RoomSceneController {
     /// for verified/non-clay pieces (no loaded model) or a tap through empty space.
     func sandboxPartKey(forTapThrough throughPoint: SIMD3<Float>, pieceID id: UUID) -> String? {
         // Sandbox clay only. Verified products ALSO attach a `realisticModelName`
-        // child in BUY, so finding the model isn't enough to prove this is clay — a
+        // child, so finding the model isn't enough to prove this is clay — a
         // re-tap on a verified product would otherwise route into part-picking and
         // swallow the re-select. Gate on the footprint carrying a `sandboxAssetID`.
         guard currentFootprints.first(where: { $0.id == id })?.sandboxAssetID != nil,
@@ -1603,7 +1520,7 @@ final class RoomSceneController {
             // and the tint is identical across frames sharing a state. Position still
             // updates every frame for 1:1 finger tracking.
             if state != lastDragState {
-                FurnitureEntityBuilder.applyPlacementState(state, selected: true, mode: mode, to: entity)
+                FurnitureEntityBuilder.applyPlacementState(state, selected: true, to: entity)
             }
             furnitureSnapshots[id] = footprint   // keep snapshot in sync so the post-drag re-sync won't rebuild
         }
@@ -1668,9 +1585,9 @@ final class RoomSceneController {
             // Drop the stale-sized selection border so applyPlacementState rebuilds
             // it to fit the resized box.
             entity.findEntity(named: FurnitureEntityBuilder.selectionOutlineName)?.removeFromParent()
-            FurnitureEntityBuilder.applyPlacementState(state, selected: true, mode: mode, to: entity)
+            FurnitureEntityBuilder.applyPlacementState(state, selected: true, to: entity)
             // Keep a shown realistic model fit to the new size.
-            if let visual = entity.findEntity(named: FurnitureEntityBuilder.realisticModelName) {
+            if let visual = FurnitureEntityBuilder.realisticModelChild(of: entity) {
                 FurnitureEntityBuilder.scaleRealisticModel(visual, to: footprint.dimensions)
             }
             furnitureSnapshots[id] = footprint
@@ -1727,7 +1644,7 @@ final class RoomSceneController {
             // material and rebuilds the selection border, a per-tick hitch across the
             // (nearly always) identical-state frames of a twist. Mirrors `dragFurniture`.
             if state != lastDragState {
-                FurnitureEntityBuilder.applyPlacementState(state, selected: true, mode: mode, to: entity)
+                FurnitureEntityBuilder.applyPlacementState(state, selected: true, to: entity)
             }
             furnitureSnapshots[id] = footprint
         }
@@ -1774,6 +1691,7 @@ final class RoomSceneController {
 
     func onSceneUpdate(deltaTime: TimeInterval) {
         advanceCameraAnim(deltaTime: deltaTime)
+        advanceWalkAnim(deltaTime: deltaTime)
         cullWalls()
         captureThumbnailIfNeeded()
     }
@@ -1791,9 +1709,34 @@ final class RoomSceneController {
         cameraAnim = (t >= 1) ? nil : anim
     }
 
+    /// Advance an in-flight vantage glide. Uses a smootherstep ease (no overshoot —
+    /// a camera flying past a standing spot and snapping back reads as a glitch).
+    private func advanceWalkAnim(deltaTime: TimeInterval) {
+        guard var anim = walkAnim else { return }
+        anim.elapsed += deltaTime
+        let t = Float(min(1, anim.elapsed / anim.duration))
+        let e = t * t * t * (t * (t * 6 - 15) + 10)   // smootherstep
+        walkPositionXZ = anim.fromPos + (anim.toPos - anim.fromPos) * e
+        lookYaw = anim.fromYaw + (anim.toYaw - anim.fromYaw) * e
+        lookPitch = anim.fromPitch + (anim.toPitch - anim.fromPitch) * e
+        walkEyeHeight = anim.fromEye + (anim.toEye - anim.fromEye) * e
+        updateWalkthroughCamera()
+        walkAnim = (t >= 1) ? nil : anim
+    }
+
     /// Hide walls between the camera and the room interior — the open-dollhouse
     /// view. A wall is hidden when the camera is on its outward side.
     private func cullWalls() {
+        // Inside the room (walkthrough) you WANT the walls around you — never cull.
+        // Show every wall, cap, and opening and skip the dollhouse test entirely.
+        if perspective == .walkthrough {
+            for wall in walls {
+                wall.entity.isEnabled = true
+                wall.cap?.isEnabled = true
+            }
+            for opening in openings { opening.entity.isEnabled = true }
+            return
+        }
         let cam = camera.position(relativeTo: nil)
         let camXZ = SIMD2(cam.x, cam.z)
         var hidden = [Bool](repeating: false, count: walls.count)
@@ -1802,9 +1745,7 @@ final class RoomSceneController {
             let isHidden = simd_dot(wall.outwardXZ, toCam) > 0.05
             hidden[i] = isHidden
             wall.entity.isEnabled = !isHidden
-            wall.outline?.isEnabled = !isHidden && showsOutlines
-            wall.cap?.isEnabled = !isHidden && showsWallCaps
-            wall.cornice?.isEnabled = !isHidden && showsCornice
+            wall.cap?.isEnabled = !isHidden
         }
         for opening in openings where hidden.indices.contains(opening.wallIndex) {
             opening.entity.isEnabled = !hidden[opening.wallIndex]
@@ -1819,7 +1760,7 @@ final class RoomSceneController {
         // size is known so the offscreen render is correctly sized.
         guard frameCount >= 8 else { return }
         // Don't snapshot while realistic furniture models are still loading: the
-        // pieces are translucent stylized boxes until their async USDZ attaches, and
+        // pieces are translucent identity boxes until their async USDZ attaches, and
         // a thumbnail taken now would show those boxes instead of the real furniture.
         // Wait for all pending loads to finish, then a few more frames so the
         // freshly-attached models actually render. A hard frame cap (~4s at 60fps)
@@ -1833,9 +1774,8 @@ final class RoomSceneController {
         let size = pixelSize
         guard size.width > 0, size.height > 0 else { return }
         didSnapshot = true
-        let mode = self.mode
         Task { @MainActor in
-            guard let image = await self.captureSnapshot(mode: mode, pixelSize: size),
+            guard let image = await self.captureSnapshot(pixelSize: size),
                   let data = image.pngData() else { return }
             self.onThumbnail?(data)
         }
@@ -1880,11 +1820,24 @@ final class RoomSceneController {
         lastOrbitTranslation = translation
     }
 
-    /// Zoom from the magnify gesture's cumulative magnification.
+    /// Zoom from the magnify gesture's cumulative magnification. In the diorama this
+    /// is dolly distance (`pinch`); in the walkthrough it changes the eye-level FOV
+    /// (`zoomWalkFOV`) — you can't dolly a first-person camera without free-roam, so
+    /// pinch adjusts how wide the lens is instead.
     func zoomContinuous(magnification: CGFloat) {
         guard lastZoomMagnification > 0 else { return }
-        pinch(scale: Float(magnification / lastZoomMagnification))
+        let scale = Float(magnification / lastZoomMagnification)
+        if perspective == .walkthrough { zoomWalkFOV(scale: scale) } else { pinch(scale: scale) }
         lastZoomMagnification = magnification
+    }
+
+    /// Adjust the walkthrough FOV by the pinch's incremental scale. Spreading fingers
+    /// (scale > 1) narrows the lens (zoom in); pinching together widens it (more room
+    /// around you). Dividing by `scale` mirrors the diorama's dolly feel.
+    func zoomWalkFOV(scale: Float) {
+        guard scale > 0 else { return }
+        walkFOV = min(max(walkFOV / scale, Self.walkFOVRange.lowerBound), Self.walkFOVRange.upperBound)
+        setCameraFOV(walkFOV)
     }
 
     /// Reset the cumulative baselines when a camera gesture ends.

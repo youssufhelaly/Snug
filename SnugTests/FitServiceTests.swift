@@ -121,6 +121,26 @@ struct FitServiceTests {
         #expect(result.state == .wontFit)
     }
 
+    /// Regression: an item bridging the two arms of a U-shaped room puts all
+    /// four corners on real floor while the notch walls pass clean through it —
+    /// corner containment alone called this a fit. It must read as won't-fit.
+    @Test func boxSpanningTheNotchOfAUShapedRoomWontFit() {
+        let g = FitFixtures.uShapedLounge.fitGeometry()
+        // 3.0 × 0.5 item centered above the notch: corners at x 1.5 / 4.5 land
+        // in the arms, but the notch region x∈[2,4] under it is not floor.
+        let result = service.evaluate(item: box(3.0, 3.5, 3.0, 0.5), in: g, errorMargin: margin)
+        #expect(result.state == .wontFit)
+        #expect(result.clearance < 0)
+    }
+
+    /// The same U-shaped room must still fit an item that sits entirely
+    /// within one arm — the stricter containment can't over-reject.
+    @Test func boxInsideOneArmOfAUShapedRoomFits() {
+        let g = FitFixtures.uShapedLounge.fitGeometry()
+        let result = service.evaluate(item: box(1.0, 3.0, 1.2, 1.2), in: g, errorMargin: margin)
+        #expect(result.state == .fitsWithRoom)
+    }
+
     // MARK: - Non-convex / rotated rooms (regression: no phantom wall floor)
 
     /// In an L-shaped room, a box far from one wall but near another must report

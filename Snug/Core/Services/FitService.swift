@@ -55,7 +55,7 @@ struct FitService {
         var clearance = wall.clearance              // raw clearance of the binding constraint
         var limit: FitResult.Limit = .wall(index: wall.wallIndex)
         for obstacle in geometry.obstacles {
-            let raw = rectangleClearance(item, obstacle.footprint)
+            let raw = Geometry2D.clearance(item, obstacle.footprint)
             if obstacleClearance == nil || raw < obstacleClearance! {
                 obstacleClearance = raw
             }
@@ -117,12 +117,11 @@ struct FitService {
             return (-.greatestFiniteMagnitude, 0)
         }
 
-        // Inside ⇔ every item corner is within the floor polygon AND no wall
-        // corner has poked inside the item (which would mean a wall slices
-        // through it). Works for any simple polygon, convex or not.
-        let allCornersInside = box.allSatisfy { Geometry2D.isPoint($0, insidePolygon: poly) }
-        let wallCornerInsideBox = poly.contains { Geometry2D.isPoint($0, insidePolygon: box) }
-        let inside = allCornersInside && !wallCornerInsideBox
+        // Inside ⇔ every item corner within the floor polygon, no wall corner
+        // poked inside the item, and no wall edge passing clean through it (the
+        // spanning-a-notch case corner tests alone miss). Works for any simple
+        // polygon, convex or not. Shared with FurniturePlacementValidator.
+        let inside = Geometry2D.isConvexFootprint(box, insidePolygon: poly)
 
         var minDistance = Float.greatestFiniteMagnitude
         var wallIndex = 0
@@ -144,57 +143,6 @@ struct FitService {
         }
 
         return (inside ? minDistance : -minDistance, wallIndex)
-    }
-
-    // MARK: - Obstacle clearance
-
-    /// Signed clearance between two oriented rectangles: positive is the true
-    /// gap, negative is the penetration depth when they overlap.
-    private func rectangleClearance(_ a: OrientedFootprint, _ b: OrientedFootprint) -> Float {
-        let cornersA = a.corners
-        let cornersB = b.corners
-        // Face normals of both boxes are the complete separating-axis set for
-        // two convex rectangles (SAT).
-        let axes = a.separatingAxes + b.separatingAxes
-
-        var separated = false
-        var minOverlap = Float.greatestFiniteMagnitude
-        for axis in axes {
-            let pa = Geometry2D.projectionInterval(of: cornersA, onto: axis)
-            let pb = Geometry2D.projectionInterval(of: cornersB, onto: axis)
-            // Positive on an axis means a gap on that axis -> separated.
-            let gap = max(pa.min - pb.max, pb.min - pa.max)
-            if gap > 0 { separated = true }
-            let overlap = min(pa.max, pb.max) - max(pa.min, pb.min)
-            minOverlap = min(minOverlap, overlap)
-        }
-
-        if separated {
-            // True minimum distance between two convex polygons. Face-normal
-            // axes alone overestimate the gap in corner-to-corner cases, so we
-            // measure vertex-to-edge distances directly.
-            return polygonDistance(cornersA, cornersB)
-        } else {
-            // Overlapping: the smallest overlap across axes is the penetration
-            // depth. Report it as negative clearance.
-            return -minOverlap
-        }
-    }
-
-    /// Minimum distance between two convex polygons known to be disjoint.
-    private func polygonDistance(_ a: [SIMD2<Float>], _ b: [SIMD2<Float>]) -> Float {
-        var distance = Float.greatestFiniteMagnitude
-        for p in a {
-            for i in b.indices {
-                distance = min(distance, Geometry2D.distance(from: p, toSegment: b[i], b[(i + 1) % b.count]))
-            }
-        }
-        for p in b {
-            for i in a.indices {
-                distance = min(distance, Geometry2D.distance(from: p, toSegment: a[i], a[(i + 1) % a.count]))
-            }
-        }
-        return distance
     }
 }
 
