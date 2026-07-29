@@ -190,7 +190,7 @@ enum Geometry2D {
     static func isConvexFootprint(_ box: [SIMD2<Float>], insidePolygon polygon: [SIMD2<Float>]) -> Bool {
         guard polygon.count >= 3, box.count >= 3 else { return false }
         guard box.allSatisfy({ isPoint($0, insidePolygon: polygon) }) else { return false }
-        guard !polygon.contains(where: { isPoint($0, insidePolygon: box) }) else { return false }
+        guard !polygon.contains(where: { isPointStrictlyInside($0, insidePolygon: box) }) else { return false }
         for k in box.indices {
             let a = box[k]
             let b = box[(k + 1) % box.count]
@@ -255,11 +255,32 @@ enum Geometry2D {
         return best
     }
 
-    /// Even-odd ray cast: is `point` inside the (possibly non-convex) polygon?
-    /// Points exactly on an edge are treated as inside by the boundary-distance
-    /// logic in FitService, so the strictness here doesn't affect the result.
+    /// Is `point` inside the (possibly non-convex) polygon, treating a point
+    /// exactly on an edge as INSIDE? This is the contract `isConvexFootprint`
+    /// relies on so a footprint corner flush against a wall still reads as
+    /// contained (the margin logic, not this predicate, owns the "too close"
+    /// call). The raw ray cast is undefined on the boundary, so the on-edge
+    /// case is settled first.
     static func isPoint(_ point: SIMD2<Float>, insidePolygon polygon: [SIMD2<Float>]) -> Bool {
         guard polygon.count >= 3 else { return false }
+        if isOnBoundary(point, of: polygon) { return true }
+        return rayCastInside(point, polygon)
+    }
+
+    /// Strict interior test: like `isPoint`, but a point exactly on an edge is
+    /// NOT inside. Used to tell flush boundary contact apart from a real
+    /// interior intrusion — a room vertex lying on a footprint edge is flush
+    /// contact (allowed), while one poking into the box interior means a wall
+    /// cuts through the piece (rejected).
+    static func isPointStrictlyInside(_ point: SIMD2<Float>, insidePolygon polygon: [SIMD2<Float>]) -> Bool {
+        guard polygon.count >= 3 else { return false }
+        if isOnBoundary(point, of: polygon) { return false }
+        return rayCastInside(point, polygon)
+    }
+
+    /// Even-odd ray cast core. Boundary behavior is undefined — callers settle
+    /// the on-edge case first (`isPoint` = inside, `isPointStrictlyInside` = out).
+    private static func rayCastInside(_ point: SIMD2<Float>, _ polygon: [SIMD2<Float>]) -> Bool {
         var inside = false
         var j = polygon.count - 1
         for i in polygon.indices {
@@ -271,6 +292,16 @@ enum Geometry2D {
             j = i
         }
         return inside
+    }
+
+    /// Whether `point` lies exactly on any edge of the closed polygon.
+    private static func isOnBoundary(_ point: SIMD2<Float>, of polygon: [SIMD2<Float>]) -> Bool {
+        for i in polygon.indices {
+            let a = polygon[i]
+            let b = polygon[(i + 1) % polygon.count]
+            if orientation(a, b, point) == 0 && onSegment(a, b, point) { return true }
+        }
+        return false
     }
 
     /// Projection interval [min, max] of `points` onto a (not necessarily

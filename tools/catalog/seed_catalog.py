@@ -356,21 +356,29 @@ def main() -> None:
                 # Package-only or no dims: would lie in the fit check. Drop, never ship.
                 dropped.append((asin, category, f"no assembled dims ({dims['source']})"))
                 continue
+            review_reasons: list[str] = []
             if category in WIDE_CATEGORIES:
-                # The long span belongs left-right on wide furniture. Applied
-                # even to axis-LABELED listings: sellers routinely paste W/D
-                # into the wrong template slots (found real listings like a
-                # '70"D x 15.8"W' TV stand — physically absurd).
+                # The long span belongs left-right on wide furniture. Sellers
+                # routinely paste W/D into the wrong template slots (real
+                # listings like a '70"D x 15.8"W' TV stand — physically absurd),
+                # so we swap when depth exceeds width even on axis-LABELED
+                # listings. But overriding an EXPLICIT label is a guess, not a
+                # correction, so a labeled swap is flagged for the human review
+                # pass rather than trusted silently.
                 w, d, h = dims["dims_m"]
                 if d > w:
                     dims["dims_m"] = [d, w, h]
+                    if dims["axis_labeled"]:
+                        review_reasons.append(
+                            f"swapped W/D on a LABELED wide item (label read "
+                            f"D>W: {round(d, 3)}×{round(w, 3)}m) — confirm it "
+                            f"isn't legitimately deeper than wide")
 
             cents, currency = price_cents(p)
             rating, ratings_total, reviews_total = ratings(p)
             color_cat, true_rgb, color_note = infer_color(p.get("mainImageUrl") or "")
             material = infer_material(p)
 
-            review_reasons = []
             if not dims["axis_labeled"]:
                 review_reasons.append("dims had no W/D/H axis letters — verify order")
             if color_cat is None:
