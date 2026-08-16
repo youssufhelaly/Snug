@@ -2,8 +2,6 @@
 - **Name:** Snug — a native iOS app for renters to scan rooms, place true-to-scale 3D furniture, and evaluate fit & style.
 - **Why it exists:** Helps renters make confident buy decisions by visualizing real products in their real room with honest fit checks and dimension-aware placement.
 
-[![CI](https://github.com/youssufhelaly/Snug/actions/workflows/ci.yml/badge.svg)](https://github.com/youssufhelaly/Snug/actions)
-
 **Highlights (for recruiters)**
 - **Problem & impact:** Solves the hard UX problem of "will this furniture fit and look right?" by combining AR-assisted capture, accurate geometry, and a curated commerce catalog. Emphasize user trust: local-first persistence + transparent fit confidence margins.
 - **Scale & complexity:** Combines AR (RealityKit / ARKit), SwiftUI, `SwiftData` persistence, unit-tested fit logic, and a production-quality catalog ingestion pipeline. The codebase contains feature-level separation, automated tests, and realistic fixtures used by tests.
@@ -33,12 +31,6 @@
 - RealityKit diorama + a truthful buy-overlay (dimensions, prices, fit state).
 - Catalog integration with an ingest pipeline and cached offline fallback (`Resources/catalog.json`).
 - Unit test suite covering geometry, placement validation, and model rendering.
-
-**Demo (placeholders)**
-Below are placeholder screenshots you can replace with real captures. To update, record AR captures on-device and drop images into `Resources/demo/` with the same filenames.
-
-![Demo 1](Resources/demo/screen1.svg)
-![Demo 2](Resources/demo/screen2.svg)
 
 **How to build & run (quick)**
 - Open the workspace in Xcode and run on a device (AR requires a physical iPhone):
