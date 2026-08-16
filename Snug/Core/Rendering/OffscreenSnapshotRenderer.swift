@@ -10,28 +10,28 @@ import CoreGraphics
 /// Offscreen RealityKit snapshot for the RoomScene diorama.
 ///
 /// `RealityView` — unlike the legacy `ARView` it replaced — exposes no
-/// `snapshot(...)`, so the PLAY↔BUY cross-fade freeze-frame and the room-list
-/// thumbnail are produced here with `RealityRenderer`, RealityKit's
-/// render-to-texture engine. The caller hands us a **detached clone** of the live
-/// scene; we drive it through an orthographic camera into an offscreen Metal
-/// texture and read that back into a `UIImage`.
+/// `snapshot(...)`, so the room-list thumbnail is produced here with
+/// `RealityRenderer`, RealityKit's render-to-texture engine. The caller hands
+/// us a **detached clone** of the live scene; we drive it through an
+/// orthographic camera into an offscreen Metal texture and read that back into
+/// a `UIImage`.
 ///
-/// ## Fail loud, never fake (deliberate — mirrors `StudioEnvironment`)
+/// ## Fail loud, never fake (deliberate)
 /// If any step fails (no Metal device, renderer / texture / camera-output creation,
 /// the render pass itself, or the completion handler never firing within a generous
 /// timeout) this returns `nil` *after* surfacing the failure:
 /// `assertionFailure` in debug, a console warning always. Callers must NOT invent a
-/// substitute frame — a missing snapshot degrades to an instant, un-animated
-/// material swap, and the failure is reported rather than masked. This matches the
+/// substitute frame — a missing snapshot degrades to no thumbnail (regenerated on
+/// the next open), and the failure is reported rather than masked. This matches the
 /// project rule: never display a frame the renderer did not actually produce.
 ///
 /// VERIFY ON DEVICE (no Xcode on the dev Mac, so these can't be compile-checked):
 /// 1. The exact `updateAndRender` argument list — drawn from Apple's RealityRenderer
 ///    samples; if the build complains, adjust `whenScheduled` / `actionsBefore/After`.
 /// 2. Whether `RealityRenderer`'s empty (no-geometry) pixels clear to *transparent*.
-///    This code assumes they do, so the caller composites the frame over the mode's
-///    background colour. If they clear to opaque black instead, the cross-fade will
-///    flash the wrong backdrop — a loud, obvious on-device failure, by design.
+///    This code assumes they do, so the caller composites the frame over the
+///    backdrop colour. If they clear to opaque black instead, the thumbnail will
+///    show the wrong backdrop — a loud, obvious on-device failure, by design.
 @MainActor
 enum OffscreenSnapshotRenderer {
 

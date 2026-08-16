@@ -2,7 +2,8 @@ import RealityKit
 import UIKit
 import simd
 
-/// Builds the chunky dark "toy" outlines for the PLAY-mode diorama.
+/// Builds inverted-hull outline shells — used for the furniture selection
+/// border and the "kept" accent ring in the diorama.
 ///
 /// ## Technique (and its one runtime assumption)
 /// RealityKit's standard materials are single-sided — back faces are culled and
@@ -30,14 +31,11 @@ import simd
 /// are irrelevant — only winding matters.
 enum OutlineEntity {
 
-    /// Default inflation for solid forms. Kept thin — the PLAY outline is now a
-    /// subtle warm rim, not a chunky toy outline, so it only peeks past the
-    /// silhouette rather than framing it heavily.
+    /// Default inflation for solid forms. Kept thin — a subtle rim that only
+    /// peeks past the silhouette rather than framing it heavily.
     static let boxScale: Float = 1.022
-    /// Flat surfaces (the floor) need only a hair of inflation to read.
-    static let flatScale: Float = 1.012
 
-    // MARK: - Box shell (walls, opening panels, box furniture parts)
+    // MARK: - Box shell (box furniture pieces)
 
     /// An inverted-hull outline shell for a box of `size`, centered on its own
     /// origin. The caller positions/orients it to match the source entity.
@@ -87,34 +85,5 @@ enum OutlineEntity {
         d.positions = MeshBuffers.Positions(corners)
         d.primitives = .triangles(indices)
         return try? MeshResource.generate(from: [d])
-    }
-
-    // MARK: - Floor shell (culling-independent under-sheet)
-
-    /// The floor outline is a flat dark sheet slightly larger than the floor,
-    /// tucked just below it, so its border peeks out as a rim. This needs no
-    /// winding trick — it's robust regardless of culling — because it's offset on
-    /// a single axis (down) and inflated only in the floor plane.
-    ///
-    /// - Parameters:
-    ///   - corners: the floor polygon (XZ).
-    ///   - pivot: the point to inflate about (the floor centroid).
-    ///   - scale: in-plane inflation (≈1.02).
-    ///   - y: vertical placement (just below the real floor).
-    static func floorShell(corners: [SIMD2<Float>], pivot: SIMD2<Float>,
-                           scale: Float = flatScale, y: Float, color: UIColor) -> ModelEntity? {
-        guard corners.count >= 3 else { return nil }
-        let inflated = corners.map { pivot + ($0 - pivot) * scale }
-        let tris = PolygonTriangulator.triangulate(inflated)
-        guard !tris.isEmpty else { return nil }
-
-        let positions = inflated.map { SIMD3<Float>($0.x, y, $0.y) }
-        let normals = [SIMD3<Float>](repeating: [0, 1, 0], count: positions.count)
-        var d = MeshDescriptor(name: "outlineFloor")
-        d.positions = MeshBuffers.Positions(positions)
-        d.normals = MeshBuffers.Normals(normals)
-        d.primitives = .triangles(tris)
-        guard let mesh = try? MeshResource.generate(from: [d]) else { return nil }
-        return ModelEntity(mesh: mesh, materials: [rimMaterial(color)])
     }
 }

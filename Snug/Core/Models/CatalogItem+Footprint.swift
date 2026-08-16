@@ -26,7 +26,7 @@ extension CatalogItem {
             appearance: FurnitureAppearance(
                 colorCategory: colorCategory,
                 materialClass: material,
-                exactColorRGB: trueColorRGB   // known manufacturer color → BUY true-color
+                exactColorRGB: trueColorRGB   // known manufacturer color → rendered exactly
             ),
             detectionConfidence: .detected,
             isCleared: false,

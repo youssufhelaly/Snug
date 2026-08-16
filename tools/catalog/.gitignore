@@ -5,3 +5,26 @@ staging/
 *.usdc
 out-quaternius
 Quaternius_Ultimate_Furniture Pack/
+
+# P0 spike output (throwaway probe results)
+spike_report.json
+
+# Python bytecode
+__pycache__/
+
+# P1 pipeline working files (per-run caches / checkpoints)
+out-tripo/
+out-tripo-usdz/
+out-tripo-staged/
+images_cache/
+tripo_tasks.json
+# Full raw Canopy product payloads, one JSON per ASIN. Local-only cache so
+# re-runs skip paid API calls; not committed (paid PAYG data, hundreds of files).
+raw_cache/
+
+# API keys — never commit. seed/generate/ingest read these.
+.env
+.env.*
+
+# Local review scratch (downloaded product photos for the human dim/quality pass)
+review_imgs/

@@ -25,7 +25,7 @@ struct SandboxAsset: Codable, Equatable, Sendable, Identifiable {
     /// reshapes from here; nothing about this size is a claim — it's just a sketch.
     let baseDimensions: SIMD3<Float>
     /// Stylized tint bucket for the diorama box. There is intentionally NO
-    /// `trueColorRGB`: an ideation piece never renders BUY true-color, because it
+    /// `trueColorRGB`: an ideation piece never claims a true color, because it
     /// isn't a real product.
     let colorCategory: FurnitureColorCategory
     let material: FurnitureMaterialClass

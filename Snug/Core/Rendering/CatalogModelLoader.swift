@@ -1,16 +1,16 @@
 import RealityKit
 import simd
 
-/// Loads and caches bundled catalog USDZ product models for BUY-mode rendering,
-/// and computes how to fit a loaded model into a footprint's real dimensions.
+/// Loads and caches bundled catalog USDZ product models for the diorama, and
+/// computes how to fit a loaded model into a footprint's real dimensions.
 ///
 /// ## Why an actor, and why the model is visual-only
 /// Loading is async (`Entity(named:in:)`, iOS 18+) so it never blocks the main
 /// thread / hitches the diorama. The loaded model is added as a VISUAL-ONLY child
 /// of the furniture box root — it carries no `CollisionComponent` /
 /// `InputTargetComponent`, so taps, drags, pinch-resize, and the fit math all stay
-/// driven by the box (the source of truth). Detected/manual furniture and PLAY
-/// mode never touch this; only a placed catalog product in BUY shows a model.
+/// driven by the box (the source of truth). Detected/manual furniture never touches
+/// this; only a placed catalog product (or a Sandbox clay shape) shows a model.
 actor CatalogModelLoader {
     static let shared = CatalogModelLoader()
 
@@ -18,24 +18,49 @@ actor CatalogModelLoader {
     /// placed instance is independent (an entity can't be parented twice).
     private var cache: [String: Entity] = [:]
     /// Asset names that failed to load (missing from the bundle / unreadable), so
-    /// we don't retry every BUY swap — the caller keeps the stylized box.
+    /// we don't retry every placement — the caller keeps the identity box.
     private var failed: Set<String> = []
+    /// In-flight loads keyed by asset name so concurrent first-requests for the
+    /// same model share ONE disk read instead of each starting its own (actor
+    /// reentrancy across the load `await`). Cleared into `cache`/`failed` when the
+    /// load settles.
+    private var inFlight: [String: Task<Entity?, Never>] = [:]
 
     /// A fresh clone of the named bundled USDZ model, or nil when the asset isn't
     /// bundled or fails to load (→ caller falls back to the box). Cached so each
-    /// product loads from disk only once.
+    /// product loads from disk only once, even under concurrent first-loads.
     func model(named name: String) async -> Entity? {
-        if let template = cache[name] { return template.clone(recursive: true) }
-        if failed.contains(name) { return nil }
-        do {
-            // iOS 18+ async, non-blocking load from the main bundle.
-            let entity = try await Entity(named: name, in: .main)
-            cache[name] = entity
-            return entity.clone(recursive: true)
-        } catch {
-            failed.insert(name)
-            return nil
+        // Entity.clone is MainActor-isolated (scene-graph mutation) — hop for the
+        // clone only; the cache stays actor-protected.
+        if let template = cache[name] {
+            return await MainActor.run { template.clone(recursive: true) }
         }
+        if failed.contains(name) { return nil }
+
+        // Coalesce concurrent first-loads of the same asset into one disk read:
+        // without this, actor reentrancy across the load `await` lets several
+        // callers all miss the cache above and each load the USDZ separately.
+        let task: Task<Entity?, Never>
+        if let existing = inFlight[name] {
+            task = existing
+        } else {
+            // iOS 18+ async, non-blocking load from the main bundle.
+            task = Task { try? await Entity(named: name, in: .main) }
+            inFlight[name] = task
+        }
+        let loaded = await task.value
+
+        // The first caller to resume records the terminal state and frees the
+        // in-flight slot — both in one actor step (no `await` between them), so a
+        // late caller can't slip in and kick off a second load. Later awaiters of
+        // the same task fall through and just clone the shared template.
+        if inFlight[name] != nil {
+            inFlight[name] = nil
+            if let loaded { cache[name] = loaded } else { failed.insert(name) }
+        }
+
+        guard let loaded else { return nil }
+        return await MainActor.run { loaded.clone(recursive: true) }
     }
 
     // MARK: - Pure fit math (unit-tested, no RealityKit types)
@@ -70,6 +95,85 @@ actor CatalogModelLoader {
         // Re-center: cancel the model's bounds offset, in the now-scaled space.
         let position = -modelCenter * scale
         return (scale, position)
+    }
+
+    // MARK: - Approximate-track fit (pure, unit-tested)
+
+    /// Asset-name prefixes of APPROXIMATE product meshes: photo-generated Tripo
+    /// meshes (`tripo_<ASIN>`) and Quaternius category archetypes. These are not
+    /// authored at true scale (Tripo outputs normalized, often 90°-rotated
+    /// geometry), so they use `approximateFitTransform` instead of the Verified
+    /// 1:1-or-refuse guard. The fit/collision box ALWAYS keeps the catalog's real
+    /// dimensions — only the visual mesh is approximate.
+    nonisolated static func isApproximateAsset(_ name: String) -> Bool {
+        name.hasPrefix("tripo_") || name.hasPrefix("quaternius_")
+    }
+
+    /// How much taller than the real product a mesh may be (proportionally) and
+    /// still be treated as CLEAN and snapped to the exact catalog height. Beyond
+    /// this the extra height is taken as photo clutter modeled on top of the piece
+    /// (a monitor on a desk); the mesh then keeps its proportional height so the
+    /// furniture body stays true-size and the clutter pokes above — taller is
+    /// honest, squashing the piece to hide the clutter is not.
+    static let clutterHeightTolerance: Float = 1.10
+
+    /// Fit an approximate product mesh into the catalog's real dimensions:
+    ///
+    /// - FOOTPRINT (width × depth) is always exactly 1:1 to the catalog dims —
+    ///   that's the fit-critical promise. The ground-plane orientation (0° or 90°
+    ///   yaw) is chosen automatically: Tripo does not preserve our width/depth
+    ///   convention, so we keep whichever rotation distorts the footprint least.
+    /// - HEIGHT is exactly 1:1 too, UNLESS the mesh is proportionally taller than
+    ///   the real product by more than `clutterHeightTolerance` — then it keeps
+    ///   its (taller) proportional height. Never shorter than real.
+    ///
+    /// Returns the yaw to apply plus the LOCAL-axis scale and the local position
+    /// that re-centers the (possibly off-origin) mesh onto the box origin under
+    /// that yaw. Transform order is RealityKit's T·R·S, so `position` must cancel
+    /// the ROTATED scaled-center offset.
+    nonisolated static func approximateFitTransform(
+        modelExtents: SIMD3<Float>,
+        modelCenter: SIMD3<Float>,
+        targetDimensions: SIMD3<Float>
+    ) -> (yRotation: Float, scale: SIMD3<Float>, position: SIMD3<Float>) {
+        let safe: (Float) -> Float = { abs($0) < 1e-5 ? 1 : $0 }
+        let target = targetInModelAxes(targetDimensions)   // (x: w, y: h, z: d)
+        let ex = safe(modelExtents.x), ey = safe(modelExtents.y), ez = safe(modelExtents.z)
+
+        // Footprint factors for both ground-plane orientations. At 90° yaw the
+        // mesh's local X spans world depth and local Z spans world width.
+        let straight = (w: target.x / ex, d: target.z / ez)
+        let rotated  = (w: target.x / ez, d: target.z / ex)
+        let spread: ((w: Float, d: Float)) -> Float = { max($0.w, $0.d) / min($0.w, $0.d) }
+        let useRotation = spread(rotated) < spread(straight)
+        let foot = useRotation ? rotated : straight
+        let yRotation: Float = useRotation ? .pi / 2 : 0
+
+        // Height: proportional to the footprint (geometric mean keeps it unbiased
+        // when width and depth stretch differently); snap to the exact catalog
+        // height unless the mesh is clutter-tall.
+        let footUniform = (foot.w * foot.d).squareRoot()
+        let proportionalHeight = ey * footUniform
+        let heightScale = proportionalHeight <= target.y * clutterHeightTolerance
+            ? target.y / ey          // clean mesh → true 1:1 height
+            : footUniform            // clutter on top → taller, never squashed
+
+        // LOCAL-axis scale: under 90° yaw, local X must carry world depth and
+        // local Z world width.
+        let scale = useRotation
+            ? SIMD3<Float>(foot.d, heightScale, foot.w)
+            : SIMD3<Float>(foot.w, heightScale, foot.d)
+
+        // Re-center: cancel the mesh's bounds offset in scaled-then-rotated space.
+        let rotation = simd_quatf(angle: yRotation, axis: SIMD3(0, 1, 0))
+        var position = -rotation.act(modelCenter * scale)
+        // A clutter-tall mesh is taller than the box it's centered in, so pure
+        // centering would sink half the overflow below the floor. Lift it so the
+        // mesh bottom stays on the box bottom (the floor) and the clutter pokes
+        // above — the furniture body keeps its true height. Yaw is about Y, so
+        // adjusting Y after the rotation is safe.
+        position.y += max(0, (ey * heightScale - target.y) / 2)
+        return (yRotation, scale, position)
     }
 
     // MARK: - Verified-track zero-scaling guard (pure, unit-tested)

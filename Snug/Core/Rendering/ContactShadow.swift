@@ -3,7 +3,7 @@ import CoreGraphics
 import UIKit
 import simd
 
-/// Soft contact-shadow planes that ground furniture in the PLAY diorama.
+/// Soft contact-shadow planes that ground the diorama on its backdrop.
 ///
 /// The shadow is a textured plane, not a real-time cast shadow: a CoreGraphics
 /// radial gradient (warm-dark center → clear edge) baked once into a `CGImage`,

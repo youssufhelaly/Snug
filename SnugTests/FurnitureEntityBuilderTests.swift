@@ -82,13 +82,38 @@ struct FurnitureEntityBuilderTests {
             group.name = name
             group.position = SIMD3(Float(i - 1) * 0.5, 0, 0)   // x = -0.5, 0, +0.5
             let mesh = ModelEntity(
-                mesh: .generateBox(size: 0.2),
+                mesh: Self.triangleBox(size: 0.2),
                 materials: [SimpleMaterial(color: .white, isMetallic: false)])
             mesh.name = "Mesh"   // generic → part key resolves to the group name
             group.addChild(mesh)
             root.addChild(group)
         }
         return root
+    }
+
+    /// An axis-aligned box built from an explicit indexed *triangle* list, so the
+    /// ray-pick test does not silently depend on whether `MeshResource.generateBox`
+    /// emits triangles or quads for a given RealityKit version (which decides whether
+    /// `part.triangleIndices` is populated at all). Winding is irrelevant — the
+    /// intersection test in `partKey` is double-sided.
+    private static func triangleBox(size: Float) -> MeshResource {
+        let h = size / 2
+        let positions: [SIMD3<Float>] = [
+            [-h, -h, -h], [ h, -h, -h], [ h,  h, -h], [-h,  h, -h],   // 0..3  z = -h
+            [-h, -h,  h], [ h, -h,  h], [ h,  h,  h], [-h,  h,  h],   // 4..7  z = +h
+        ]
+        let indices: [UInt32] = [
+            0, 2, 1, 0, 3, 2,   // back  (z = -h)
+            4, 5, 6, 4, 6, 7,   // front (z = +h)
+            0, 7, 3, 0, 4, 7,   // left  (x = -h)
+            1, 2, 6, 1, 6, 5,   // right (x = +h)
+            3, 6, 2, 3, 7, 6,   // top   (y = +h)
+            0, 1, 5, 0, 5, 4,   // bottom(y = -h)
+        ]
+        var descriptor = MeshDescriptor(name: "box")
+        descriptor.positions = MeshBuffers.Positions(positions)
+        descriptor.primitives = .triangles(indices)
+        return try! .generate(from: [descriptor])
     }
 
     @Test func discoversNamedColorableParts() {

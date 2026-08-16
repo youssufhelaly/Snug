@@ -46,3 +46,6 @@ venv/
 .claude/
 
 graphify-out/
+# API keys — never commit
+.env
+.env.*

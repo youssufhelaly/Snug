@@ -105,6 +105,10 @@ struct RoomModel: Identifiable, Codable, Equatable {
     /// JSON blob; see the custom `Codable` below for why old blobs that predate
     /// this field still decode.
     var detectedFurniture: [FurnitureFootprint]
+    /// The user's chosen wall/floor colors (`.unset` until they pick — we never
+    /// claim surface colors we don't know). Persisted inside this room's JSON
+    /// blob, decoded with a fallback like `detectedFurniture` below.
+    var surfaceStyle: RoomSurfaceStyle
 
     init(
         id: UUID = UUID(),
@@ -113,7 +117,8 @@ struct RoomModel: Identifiable, Codable, Equatable {
         floorCorners: [PlanePoint],
         ceilingHeight: Float,
         openings: [RoomOpening] = [],
-        detectedFurniture: [FurnitureFootprint] = []
+        detectedFurniture: [FurnitureFootprint] = [],
+        surfaceStyle: RoomSurfaceStyle = .unset
     ) {
         self.id = id
         self.capturedAt = capturedAt
@@ -122,12 +127,13 @@ struct RoomModel: Identifiable, Codable, Equatable {
         self.ceilingHeight = ceilingHeight
         self.openings = openings
         self.detectedFurniture = detectedFurniture
+        self.surfaceStyle = surfaceStyle
     }
 
     // MARK: - Codable (backward-compatible)
 
     private enum CodingKeys: String, CodingKey {
-        case id, capturedAt, provenance, floorCorners, ceilingHeight, openings, detectedFurniture
+        case id, capturedAt, provenance, floorCorners, ceilingHeight, openings, detectedFurniture, surfaceStyle
     }
 
     /// Custom decoder so that room blobs written before `detectedFurniture`
@@ -146,6 +152,7 @@ struct RoomModel: Identifiable, Codable, Equatable {
         ceilingHeight = try c.decode(Float.self, forKey: .ceilingHeight)
         openings = try c.decodeIfPresent([RoomOpening].self, forKey: .openings) ?? []
         detectedFurniture = try c.decodeIfPresent([FurnitureFootprint].self, forKey: .detectedFurniture) ?? []
+        surfaceStyle = try c.decodeIfPresent(RoomSurfaceStyle.self, forKey: .surfaceStyle) ?? .unset
     }
 
     func encode(to encoder: Encoder) throws {
@@ -157,6 +164,7 @@ struct RoomModel: Identifiable, Codable, Equatable {
         try c.encode(ceilingHeight, forKey: .ceilingHeight)
         try c.encode(openings, forKey: .openings)
         try c.encode(detectedFurniture, forKey: .detectedFurniture)
+        try c.encode(surfaceStyle, forKey: .surfaceStyle)
     }
 
     // MARK: - Derived geometry

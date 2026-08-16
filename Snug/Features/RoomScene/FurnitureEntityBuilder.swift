@@ -12,19 +12,19 @@ struct FurnitureTagComponent: Component {
     /// returning to the `.valid` tint (the entity carries no other color source).
     let colorCategory: FurnitureColorCategory
     /// Exact catalog-product color (nil for detected/manual pieces). When set,
-    /// BUY mode renders it instead of `colorCategory`'s representative color.
+    /// it renders instead of `colorCategory`'s representative color.
     let exactColorRGB: SIMD3<Float>?
 }
 
 /// Builds collision-ready, tap-routable RealityKit entities for detected
 /// furniture in the diorama.
 ///
-/// ## Honest scope (matches `PlayModeFurniture`)
-/// These are **stylized identity boxes**, not reconstructions: one rounded box per
-/// piece, in the category's perceptual PLAY color, sized to its (estimated)
-/// dimensions. That is the whole product promise for existing furniture — "we
-/// recognize your room", not "we rebuilt your sofa". No texture projection, no
-/// per-item meshes, no baked shadows (CLAUDE.md: out of scope).
+/// ## Honest scope
+/// These are **identity boxes**, not reconstructions: one rounded box per
+/// piece, in its true perceptual color, sized to its (estimated) dimensions.
+/// That is the whole product promise for existing furniture — "we recognize
+/// your room", not "we rebuilt your sofa". No texture projection, no per-item
+/// meshes, no baked shadows (CLAUDE.md: out of scope).
 ///
 /// ## Coordinate convention
 /// `dimensions` is `(width, depth, height)` = `(x, y, z)`. The box mesh therefore
@@ -48,13 +48,13 @@ enum FurnitureEntityBuilder {
     /// Build the entity for one footprint: a translucent rounded box in the
     /// category color, with collision + input-target for tapping and a billboarded
     /// category label. Tagged with the footprint id for tap routing.
-    static func entity(for footprint: FurnitureFootprint, mode: RoomRenderMode = .play) -> Entity {
+    static func entity(for footprint: FurnitureFootprint) -> Entity {
         registerComponentsIfNeeded()
 
         let size = SIMD3<Float>(footprint.dimensions.x, footprint.dimensions.z, footprint.dimensions.y)
         let root = ModelEntity(
             mesh: .generateBox(width: size.x, height: size.y, depth: size.z, cornerRadius: 0.04),
-            materials: [material(for: footprint, opacity: defaultOpacity, mode: mode)]
+            materials: [material(for: footprint, opacity: defaultOpacity)]
         )
         root.name = "furniture_\(footprint.id.uuidString)"
         root.position = footprint.worldPosition
@@ -77,9 +77,9 @@ enum FurnitureEntityBuilder {
     /// Switch a pending box to the "kept" look: fully opaque in its real color,
     /// with an amber outline shell. Takes the footprint so the color is exact
     /// rather than read back out of the live material.
-    static func applyKeptAppearance(to entity: Entity, footprint: FurnitureFootprint, mode: RoomRenderMode = .play) {
+    static func applyKeptAppearance(to entity: Entity, footprint: FurnitureFootprint) {
         if let model = entity as? ModelEntity, var component = model.model {
-            component.materials = [material(for: footprint, opacity: 1.0, mode: mode)]
+            component.materials = [material(for: footprint, opacity: 1.0)]
             model.model = component
         }
         // Add the amber outline shell once.
@@ -105,13 +105,13 @@ enum FurnitureEntityBuilder {
     /// (@ 0.6) AND gains a Clay border (inverted-hull shell child) — so it stays
     /// obviously "the one being moved" the whole time it's selected, not just a
     /// momentary pop. The base color still signals collision (red base = invalid).
-    static func applyPlacementState(_ state: PlacementState, selected: Bool = false, mode: RoomRenderMode = .play, to entity: Entity) {
+    static func applyPlacementState(_ state: PlacementState, selected: Bool = false, to entity: Entity) {
         guard let model = entity as? ModelEntity, var component = model.model,
               let tag = entity.components[FurnitureTagComponent.self] else { return }
 
-        // A piece showing a realistic model (BUY catalog product, or a Sandbox clay
-        // shape in EITHER mode): the box mesh stays invisible so the model reads
-        // through, EXCEPT an `.invalid` overflow flashes a translucent red so a piece
+        // A piece showing a realistic model (catalog product or Sandbox clay
+        // shape): the box mesh stays invisible so the model reads through,
+        // EXCEPT an `.invalid` overflow flashes a translucent red so a piece
         // that won't fit is still obvious. Selection is signaled by the Clay outline +
         // scale-pop, not box opacity. (valid / tooClose lean on the 2D FitBadge — the
         // honest state is always on screen.)
@@ -127,8 +127,8 @@ enum FurnitureEntityBuilder {
                 component.materials = [box]
             case .tooClose:
                 // Amber "too close to call" wash — the same honest uncertain-fit cue
-                // the stylized box shows, at a lighter opacity so the model's true
-                // color still reads through in BUY. Without it a too-close model/clay
+                // the identity box shows, at a lighter opacity so the model's true
+                // color still reads through. Without it a too-close model/clay
                 // piece was visually identical to a comfortably-fitting one (the 2D
                 // FitBadge alone carried the state), quietly softening the very signal
                 // we promise never to round to OK.
@@ -153,9 +153,9 @@ enum FurnitureEntityBuilder {
 
         switch state {
         case .valid:
-            material.baseColor = .init(tint: tint(tag.colorCategory, exact: tag.exactColorRGB, mode: mode))
+            material.baseColor = .init(tint: tint(tag.colorCategory, exact: tag.exactColorRGB))
         case .tooClose:
-            material.baseColor = .init(tint: tint(tag.colorCategory, exact: tag.exactColorRGB, mode: mode))
+            material.baseColor = .init(tint: tint(tag.colorCategory, exact: tag.exactColorRGB))
             material.emissiveColor = .init(color: keptOutlineColor)        // amber #BA7517
             material.emissiveIntensity = 0.3
         case .invalid:
@@ -190,20 +190,35 @@ enum FurnitureEntityBuilder {
         }
     }
 
-    // MARK: - Realistic catalog model (BUY-only, visual-only child)
+    // MARK: - Realistic catalog model (visual-only child)
 
-    /// Name of the realistic product-model child attached to a catalog box in BUY.
+    /// Name of the realistic product-model child attached to a catalog box.
     /// Its presence is what flips the box into "show the model" mode; absent for
-    /// detected/manual pieces and in PLAY, where the stylized box is the visual.
+    /// detected/manual pieces, where the identity box is the visual.
     static let realisticModelName = "catalog_model"
+    /// Name for an APPROXIMATE product mesh child (Tripo / archetype). The fit mode
+    /// must survive resize re-fits, where only the entity is in hand — encoding it
+    /// in the child's name keeps `scaleRealisticModel` self-contained.
+    static let approximateModelName = "catalog_model~approx"
+
+    /// The realistic-model child of a box, whichever fit track attached it.
+    static func realisticModelChild(of entity: Entity) -> Entity? {
+        entity.findEntity(named: realisticModelName)
+            ?? entity.findEntity(named: approximateModelName)
+    }
 
     /// Attach a loaded product model as a VISUAL-ONLY child of the box root, fit to
     /// `dimensions`, and hide the box's own mesh so the realistic model shows. The
     /// model carries no collision / input target, so taps and drags still resolve
     /// to the box (the source of truth). Replaces any existing model child.
-    static func attachRealisticModel(_ model: Entity, to box: Entity, dimensions: SIMD3<Float>, tint: UIColor? = nil) {
-        box.findEntity(named: realisticModelName)?.removeFromParent()
-        model.name = realisticModelName
+    ///
+    /// `approximate: true` marks a photo-generated / archetype mesh: footprint
+    /// locked 1:1 to `dimensions`, height 1:1 unless the mesh carries clutter on
+    /// top (see `CatalogModelLoader.approximateFitTransform`).
+    static func attachRealisticModel(_ model: Entity, to box: Entity, dimensions: SIMD3<Float>,
+                                     tint: UIColor? = nil, approximate: Bool = false) {
+        realisticModelChild(of: box)?.removeFromParent()
+        model.name = approximate ? approximateModelName : realisticModelName
         scaleRealisticModel(model, to: dimensions)
         if let tint { applyModelTint(tint, to: model) }
         box.addChild(model)
@@ -212,7 +227,7 @@ enum FurnitureEntityBuilder {
 
     /// Override every descendant mesh's material with a solid PBR tint.
     ///
-    /// For the untextured placeholder `.usda` models this is how BUY-mode true
+    /// For the untextured placeholder `.usda` models this is how true
     /// color is delivered: RealityKit ignores USD `displayColor` without a bound
     /// material network, so it would otherwise render the shapes default white.
     /// Tinting to the product's `trueColorRGB` also lets ONE shared model serve
@@ -383,7 +398,7 @@ enum FurnitureEntityBuilder {
     /// Names USD import assigns to anonymous group/mesh prims, which carry no
     /// product meaning and should never become a part key on their own.
     private static func isMeaningfulPartName(_ name: String) -> Bool {
-        if name.isEmpty || name == realisticModelName { return false }
+        if name.isEmpty || name == realisticModelName || name == approximateModelName { return false }
         let lower = name.lowercased()
         return !(lower == "mesh" || lower == "geom" || lower == "rootnode"
             || lower == "scene" || lower.hasPrefix("qgeom"))
@@ -410,16 +425,26 @@ enum FurnitureEntityBuilder {
     }
 
     /// Re-fit an already-attached model to new `dimensions` (called on resize). Safe
-    /// to call when no model is attached.
+    /// to call when no model is attached. An approximate mesh (named at attach) uses
+    /// the footprint-primary fit with auto ground-plane rotation; anything else uses
+    /// the exact per-axis fit.
     static func scaleRealisticModel(_ model: Entity, to dimensions: SIMD3<Float>) {
         // Measure intrinsic bounds with the model's own transform reset, so the fit
         // is computed from the raw asset every time (resize re-fits from scratch).
         model.transform = .identity
         let bounds = model.visualBounds(relativeTo: model)
-        let fit = CatalogModelLoader.fitTransform(
-            modelExtents: bounds.extents, modelCenter: bounds.center, targetDimensions: dimensions)
-        model.scale = fit.scale
-        model.position = fit.position
+        if model.name == approximateModelName {
+            let fit = CatalogModelLoader.approximateFitTransform(
+                modelExtents: bounds.extents, modelCenter: bounds.center, targetDimensions: dimensions)
+            model.orientation = simd_quatf(angle: fit.yRotation, axis: SIMD3(0, 1, 0))
+            model.scale = fit.scale
+            model.position = fit.position
+        } else {
+            let fit = CatalogModelLoader.fitTransform(
+                modelExtents: bounds.extents, modelCenter: bounds.center, targetDimensions: dimensions)
+            model.scale = fit.scale
+            model.position = fit.position
+        }
     }
 
     /// The model's intrinsic bounding-box extents (meters), measured with its own
@@ -450,24 +475,24 @@ enum FurnitureEntityBuilder {
 
     /// A genuinely non-rendering material for a box hidden beneath a realistic model.
     /// Uses `UnlitMaterial`, NOT a transparent `PhysicallyBasedMaterial`: a PBR
-    /// surface at opacity 0 still catches specular highlights / IBL reflections and
-    /// leaves a faint "glass box" ghost framing the model (worst in PLAY mode, which
-    /// has image-based lighting). Unlit ignores lighting, so opacity 0 is truly invisible.
+    /// surface at opacity 0 still catches specular highlights and leaves a faint
+    /// "glass box" ghost framing the model. Unlit ignores lighting, so opacity 0
+    /// is truly invisible.
     private static func invisibleBoxMaterial() -> UnlitMaterial {
         var m = UnlitMaterial(color: .clear)
         m.blending = .transparent(opacity: .init(floatLiteral: 0))
         return m
     }
 
-    /// Whether a box currently shows its realistic model child (BUY + catalog).
+    /// Whether a box currently shows its realistic model child.
     static func hasRealisticModel(_ entity: Entity) -> Bool {
-        entity.findEntity(named: realisticModelName) != nil
+        realisticModelChild(of: entity) != nil
     }
 
-    /// Remove the realistic model child (returning to the stylized box, e.g. on a
-    /// swap back to PLAY). No-op when none is attached.
+    /// Remove the realistic model child (returning to the identity box). No-op
+    /// when none is attached.
     static func removeRealisticModel(from entity: Entity) {
-        entity.findEntity(named: realisticModelName)?.removeFromParent()
+        realisticModelChild(of: entity)?.removeFromParent()
     }
 
     /// Animate a cleared box out: shrink + fade over 0.35 s, then detach. Runs on
@@ -483,12 +508,12 @@ enum FurnitureEntityBuilder {
 
     // MARK: - Materials
 
-    /// Material in the category's color for the given render mode. `opacity` drives
-    /// transparent blending — translucent while pending, solid once kept.
-    private static func material(for footprint: FurnitureFootprint, opacity: Float, mode: RoomRenderMode) -> PhysicallyBasedMaterial {
+    /// Material in the piece's true color. `opacity` drives transparent
+    /// blending — translucent while pending, solid once kept.
+    private static func material(for footprint: FurnitureFootprint, opacity: Float) -> PhysicallyBasedMaterial {
         var m = PhysicallyBasedMaterial()
         m.baseColor = .init(tint: tint(footprint.appearance.colorCategory,
-                                       exact: footprint.appearance.exactColorRGB, mode: mode))
+                                       exact: footprint.appearance.exactColorRGB))
         m.roughness = .init(floatLiteral: footprint.appearance.materialClass.roughness)
         m.metallic = .init(floatLiteral: 0)
         if opacity < 1 {
@@ -497,45 +522,28 @@ enum FurnitureEntityBuilder {
         return m
     }
 
-    /// The base tint for a color in a render mode.
-    ///
-    /// BUY is the **true** color — the buy-mode promise. `exact` (a catalog
-    /// product's known manufacturer sRGB) wins when present; otherwise the
-    /// perceptual `category`'s `representativeRGB` (the best we know for a detected
-    /// piece). PLAY is a **softened pastel** of that same source color (lightened
-    /// toward white) for the playful look — derived from one source so the toggle
-    /// is never a no-op.
-    static func tint(_ category: FurnitureColorCategory, exact: SIMD3<Float>? = nil, mode: RoomRenderMode) -> UIColor {
+    /// The **true** base tint for a piece — the honesty promise. `exact` (a
+    /// catalog product's known manufacturer sRGB) wins when present; otherwise
+    /// the perceptual `category`'s `representativeRGB` (the best we know for a
+    /// detected piece). Never lightened, warmed, or stylized.
+    static func tint(_ category: FurnitureColorCategory, exact: SIMD3<Float>? = nil) -> UIColor {
         let rgb = exact ?? category.representativeRGB
-        let trueColor = UIColor(red: CGFloat(rgb.x), green: CGFloat(rgb.y), blue: CGFloat(rgb.z), alpha: 1)
-        switch mode {
-        case .buy:  return trueColor
-        case .play: return Self.pastel(rgb)
-        }
+        return UIColor(red: CGFloat(rgb.x), green: CGFloat(rgb.y), blue: CGFloat(rgb.z), alpha: 1)
     }
 
-    /// A lightened, gently desaturated version of a true color for PLAY's stylized
-    /// look — 30% toward white, so a navy reads as a soft slate and a black armchair
-    /// as a warm grey, clearly distinct from BUY's true color on toggle.
-    private static func pastel(_ rgb: SIMD3<Float>) -> UIColor {
-        let mix: Float = 0.30
-        let lighten: (Float) -> CGFloat = { CGFloat($0 + (1 - $0) * mix) }
-        return UIColor(red: lighten(rgb.x), green: lighten(rgb.y), blue: lighten(rgb.z), alpha: 1)
-    }
-
-    /// Re-tint a static (viewing-mode) furniture entity for a new render mode,
-    /// preserving its pending translucency. Editing mode re-tints via
-    /// `applyPlacementState` (which also carries the fit-state coloring).
-    static func retint(_ entity: Entity, footprint: FurnitureFootprint, mode: RoomRenderMode) {
+    /// Re-tint a static (viewing-mode) furniture entity, preserving its pending
+    /// translucency. Editing mode re-tints via `applyPlacementState` (which
+    /// also carries the fit-state coloring).
+    static func retint(_ entity: Entity, footprint: FurnitureFootprint) {
         guard let model = entity as? ModelEntity, var component = model.model else { return }
-        // A shown realistic model keeps the box mesh invisible (BUY catalog product
-        // or a Sandbox clay shape in either mode).
+        // A shown realistic model keeps the box mesh invisible (catalog product
+        // or a Sandbox clay shape).
         if hasRealisticModel(entity) {
             component.materials = [invisibleBoxMaterial()]
             model.model = component
             return
         }
-        component.materials = [material(for: footprint, opacity: defaultOpacity, mode: mode)]
+        component.materials = [material(for: footprint, opacity: defaultOpacity)]
         model.model = component
     }
 

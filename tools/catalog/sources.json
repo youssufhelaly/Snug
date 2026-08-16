@@ -23,6 +23,13 @@
       "axis": { "obj": { "up": "Z", "forward": "-Y" }, "fbx": { "up": "Z", "forward": "-Y" } },
       "scale_note": "Advertised real-world scale; useful as the proportion reference even though the app re-scales."
     },
+    "tripo": {
+      "license": "generated",
+      "url": "",
+      "prefer_format": "glb",
+      "axis": { "glb": { "up": "Y", "forward": "-Z" } },
+      "scale_note": "Tripo image-to-3D output, Y-up GLB by spec. App re-scales to real Amazon dims via fitTransform; generate_3d.py --finalize rejects meshes whose proportions need >1.15x non-uniform stretch."
+    },
     "_test": {
       "license": "n/a",
       "url": "",

@@ -2,9 +2,11 @@ import SwiftUI
 import UIKit
 import simd
 
-/// The room as a place: a full-screen RealityKit diorama with the always-visible
-/// PLAY/BUY toggle and a spring "Reset view". This is the Phase 1 centerpiece —
-/// where a scanned `RoomModel` stops being a floor plan and becomes a room.
+/// The room as a place: a full-screen RealityKit diorama with a spring "Reset
+/// view". This is the Phase 1 centerpiece — where a scanned `RoomModel` stops
+/// being a floor plan and becomes a room. There is ONE rendering — true colors,
+/// neutral light; the "measurements" pill toggles the dimension-label info
+/// overlay, never a different look.
 struct RoomDioramaScreen: View {
     let stored: StoredRoom
 
@@ -12,14 +14,19 @@ struct RoomDioramaScreen: View {
     @Environment(CatalogService.self) private var catalog
     @Environment(\.openURL) private var openURL
 
-    @State private var mode: RoomRenderMode = .play
+    /// Whether the blueprint dimension labels are shown (info overlay only).
+    @State private var showDimensions = false
     @State private var resetToken = 0
+    /// Diorama (orbit) vs first-person walkthrough — a preview you "step inside".
+    @State private var perspective: CameraPerspective = .diorama
+    /// The vantage the walkthrough is standing at (`nil` → the first one).
+    @State private var vantageID: String?
     @State private var showingRename = false
     @State private var nameDraft = ""
 
     /// The decoded geometry, cached for this view's lifetime. `stored.roomModel`
     /// decodes the JSON blob on every access, so we decode it once at init rather
-    /// than on every `body` re-eval (mode toggle, reset, rename alert). The
+    /// than on every `body` re-eval (label toggle, reset, rename alert). The
     /// diorama never mutates geometry, so a one-time decode is correct.
     @State private var room: RoomModel?
     /// Editable furniture (live during placement; persisted on gesture end). Seeded
@@ -28,12 +35,21 @@ struct RoomDioramaScreen: View {
     @State private var selectedFurnitureID: UUID?
     @State private var showFineTune = false
     @State private var showCarousel = false
+    /// Presents the room-surfaces (wall/floor color) picker sheet.
+    @State private var showSurfaces = false
     @State private var showLimitToast = false
+    /// True while the auto-save path is failing. Auto-save on gesture end is the
+    /// ONLY save path for furniture edits, so a failed write must be loud (CLAUDE.md:
+    /// never silent) — the toast stays up until a save succeeds again.
+    @State private var showSaveError = false
     /// Presents the reverse-search sheet for the selected sandbox sketch.
     @State private var showMatchSheet = false
     /// Non-nil while the user is choosing which wall to snap the selected piece to
     /// (set when they tap "snap to wall"; cleared on the wall tap or Cancel).
     @State private var pickingWallForID: UUID?
+    /// Presents the "Clear room" confirmation. Removing every piece is destructive
+    /// (and auto-saves), so it goes behind a confirm — but stays one undo away.
+    @State private var showClearConfirm = false
 
     private var isPickingWall: Bool { pickingWallForID != nil }
     /// Debounces the SwiftData write while the user drags the sandbox `ColorPicker`,
@@ -80,6 +96,19 @@ struct RoomDioramaScreen: View {
         footprints.first { $0.id == selectedFurnitureID && !$0.isCleared }
     }
 
+    /// Preset first-person standing spots, derived from the room (doorways/openings
+    /// + center). Recomputed per body eval — cheap (a handful of openings).
+    private var vantages: [WalkthroughVantage] {
+        room.map(WalkthroughVantage.vantages(for:)) ?? []
+    }
+
+    /// The vantage currently occupied (falls back to the first).
+    private var activeVantage: WalkthroughVantage? {
+        vantages.first { $0.id == vantageID } ?? vantages.first
+    }
+
+    private var isWalkthrough: Bool { perspective == .walkthrough }
+
     init(stored: StoredRoom) {
         self.stored = stored
         let decoded = stored.roomModel
@@ -93,7 +122,27 @@ struct RoomDioramaScreen: View {
         guard var updated = room else { return }
         updated.detectedFurniture = footprints
         room = updated
-        try? store.update(stored, with: updated)
+        do {
+            try store.update(stored, with: updated)
+            showSaveError = false
+        } catch {
+            showSaveError = true
+        }
+    }
+
+    /// Persist a changed wall/floor choice. The scene picks the new style up live
+    /// through `RoomSceneView`'s update pass; surfaces stay out of the furniture
+    /// undo stack (they're a room setting, not a layout edit).
+    private func setSurfaceStyle(_ style: RoomSurfaceStyle) {
+        guard var updated = room else { return }
+        updated.surfaceStyle = style
+        room = updated
+        do {
+            try store.update(stored, with: updated)
+            showSaveError = false
+        } catch {
+            showSaveError = true
+        }
     }
 
     /// Called when the Fine Tune sheet dismisses. Records a single undo entry (the
@@ -169,18 +218,24 @@ struct RoomDioramaScreen: View {
     var body: some View {
         ZStack {
             if let room {
-                // The diorama's "void" backdrop. On the old ARView this was
-                // `environment.background = .color(...)`; RealityView has no such
-                // hook, so it lives here as a SwiftUI layer behind the scene and
-                // cross-fades with the mode change (the scene renders transparent).
-                Color(uiColor: RoomPalette.palette(for: mode).background)
+                // The diorama's "void" backdrop — part of the frame, not the room,
+                // so the brand terracotta (or the room's chosen backdrop color)
+                // lives here without touching an in-room color. On the old ARView
+                // this was `environment.background = .color(...)`; RealityView has
+                // no such hook, so it lives here as a SwiftUI layer behind the
+                // scene (which renders transparent).
+                Color(uiColor: RoomPalette.palette(style: room.surfaceStyle).background)
                     .ignoresSafeArea()
 
                 RoomSceneView(
                     room: room,
-                    mode: mode,
+                    showsDimensions: showDimensions,
                     resetToken: resetToken,
-                    onThumbnail: { data in store.setThumbnail(data, for: stored) },
+                    perspective: perspective,
+                    activeVantage: isWalkthrough ? activeVantage : nil,
+                    // A failed thumbnail write is cosmetic (regenerated on the
+                    // next open), so this one is deliberately not surfaced.
+                    onThumbnail: { data in try? store.setThumbnail(data, for: stored) },
                     editableFurniture: footprints,
                     placementStates: placementStates(for: room),
                     selectedFurnitureID: selectedFurnitureID,
@@ -203,31 +258,43 @@ struct RoomDioramaScreen: View {
                 )
                 .ignoresSafeArea()
 
-                if RoomPalette.palette(for: mode).showsVignette {
-                    vignette
-                        .ignoresSafeArea()
-                        .allowsHitTesting(false)
-                        .transition(.opacity)
-                }
-
-                controls
+                // Editing chrome only in the diorama; walkthrough is a preview.
+                if !isWalkthrough { controls }
             } else {
                 unreadableRoom
             }
         }
         .overlay(alignment: .bottom) { selectedItemOverlay }
-        .overlay(alignment: .topTrailing) { toolCluster }
-        .overlay(alignment: .bottom) { carousel }
+        .overlay(alignment: .topTrailing) { if !isWalkthrough { toolCluster } }
         .overlay(alignment: .top) { limitToast }
+        .overlay(alignment: .top) { saveErrorToast }
         .overlay(alignment: .top) { wallPickBanner }
+        // Walkthrough chrome: "Step out" up top, vantage chips along the bottom.
+        .overlay(alignment: .top) { walkthroughTopBar }
+        .overlay(alignment: .bottom) { vantageBar }
+        .animation(Self.pillSpring, value: perspective)
         .animation(Self.pillSpring, value: selectedFurnitureID)
         .animation(Self.pillSpring, value: showCarousel)
         .animation(Self.pillSpring, value: showLimitToast)
+        .animation(Self.pillSpring, value: showSaveError)
         .animation(Self.pillSpring, value: pickingWallForID)
         .animation(Self.pillSpring, value: undoStack.isEmpty)
         .animation(Self.pillSpring, value: redoStack.isEmpty)
         // A new selection starts on the "All" parts chip with recolor collapsed.
         .onChange(of: selectedFurnitureID) { selectedPartKey = nil; showRecolor = false }
+        .confirmationDialog("Clear room?", isPresented: $showClearConfirm, titleVisibility: .visible) {
+            Button("Remove \(activeFurnitureCount) item\(activeFurnitureCount == 1 ? "" : "s")",
+                   role: .destructive, action: clearRoom)
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Removes all furniture so you can start over. You can undo this.")
+        }
+        .sheet(isPresented: $showCarousel) { carousel }
+        .sheet(isPresented: $showSurfaces) {
+            if let room {
+                RoomSurfacesSheet(style: room.surfaceStyle, onChange: setSurfaceStyle)
+            }
+        }
         .sheet(isPresented: $showFineTune) {
             if let id = selectedFurnitureID {
                 FineTuneSheet(footprints: $footprints, footprintID: id, onCommit: commitFineTune)
@@ -277,7 +344,9 @@ struct RoomDioramaScreen: View {
         }
         .alert("Rename room", isPresented: $showingRename) {
             TextField("Room name", text: $nameDraft)
-            Button("Save") { store.rename(stored, to: nameDraft) }
+            Button("Save") {
+                do { try store.rename(stored, to: nameDraft) } catch { showSaveError = true }
+            }
             Button("Cancel", role: .cancel) {}
         }
     }
@@ -292,7 +361,7 @@ struct RoomDioramaScreen: View {
     /// recolor section + "find real" bridge (sandbox) or the retailer out-link
     /// (catalog product).
     @ViewBuilder private var selectedItemOverlay: some View {
-        if !showFineTune, !showCarousel, !showMatchSheet, !isPickingWall, let footprint = selectedFootprint {
+        if !isWalkthrough, !showFineTune, !showCarousel, !showMatchSheet, !isPickingWall, let footprint = selectedFootprint {
             inspectorCard(footprint)
                 .padding(.horizontal, 16)
                 .padding(.bottom, 92)   // clears the bottom dock
@@ -778,23 +847,34 @@ struct RoomDioramaScreen: View {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
-    // MARK: - Add furniture (carousel)
+    /// Empties the room in one shot: every active piece is marked cleared under a
+    /// SINGLE undo entry (so one undo brings the whole layout back), the selection
+    /// drops, and the layout auto-saves. Confirmed via `showClearConfirm`.
+    private func clearRoom() {
+        guard activeFurnitureCount > 0 else { return }
+        pushUndo()
+        for index in footprints.indices { footprints[index].isCleared = true }
+        selectedFurnitureID = nil
+        persistFurniture()
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
 
-    @ViewBuilder private var carousel: some View {
-        if showCarousel {
-            CatalogBrowseOverlay(
-                onSelect: { item in
-                    addCatalogItem(item)
-                    showCarousel = false
-                },
-                onSelectSandbox: { asset in
-                    addSandboxAsset(asset)
-                    showCarousel = false
-                },
-                onClose: { showCarousel = false }
-            )
-            .transition(.move(edge: .bottom))
-        }
+    // MARK: - Add furniture (shop sheet)
+
+    /// Presented as a resizable sheet (medium ↔ large detents), so the user can
+    /// drag it taller to browse the full grid or shorter to see the room.
+    private var carousel: some View {
+        CatalogBrowseOverlay(
+            onSelect: { item in
+                addCatalogItem(item)
+                showCarousel = false
+            },
+            onSelectSandbox: { asset in
+                addSandboxAsset(asset)
+                showCarousel = false
+            },
+            onClose: { showCarousel = false }
+        )
     }
 
     @ViewBuilder private var limitToast: some View {
@@ -805,6 +885,25 @@ struct RoomDioramaScreen: View {
                 .padding(.horizontal, 16).padding(.vertical, 10)
                 .background(.regularMaterial, in: Capsule())
                 .padding(.top, 12)
+                .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    /// Shown while writes are failing; cleared by the next successful save.
+    /// Deliberately persistent (unlike `limitToast`) — the user's edits are at
+    /// stake, so this must not quietly time out while saves keep failing.
+    @ViewBuilder private var saveErrorToast: some View {
+        if showSaveError {
+            Label("Couldn't save — your latest change may be lost", systemImage: "exclamationmark.triangle.fill")
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .foregroundStyle(SnugTheme.ink)
+                .padding(.horizontal, 16).padding(.vertical, 10)
+                .background(.regularMaterial, in: Capsule())
+                // Both this and `walkthroughTopBar` pin to the top; while inside,
+                // drop below the "Step out" capsule so the two never overlap
+                // (this toast persists across a step-inside, the other top toasts
+                // are diorama-only).
+                .padding(.top, isWalkthrough ? 68 : 12)
                 .transition(.move(edge: .top).combined(with: .opacity))
         }
     }
@@ -877,41 +976,21 @@ struct RoomDioramaScreen: View {
         UINotificationFeedbackGenerator().notificationOccurred(.success)
     }
 
-    // MARK: - Vignette (PLAY only)
-
-    /// A soft corner vignette in the diorama's terracotta, deepening the cozy
-    /// "looking into a box" feel. Pure SwiftUI — no RealityKit involvement. The
-    /// tint comes from the PLAY palette background so the brand stays centralized.
-    private var vignette: some View {
-        GeometryReader { geo in
-            let maxDim = max(geo.size.width, geo.size.height)
-            RadialGradient(
-                gradient: Gradient(colors: [
-                    .clear,
-                    Color(RoomPalette.palette(for: .play).background).opacity(0.12),
-                ]),
-                center: .center,
-                startRadius: maxDim * 0.30,
-                endRadius: maxDim * 0.82
-            )
-        }
-    }
-
     // MARK: - Bottom dock (always-visible chrome)
 
-    /// The bottom dock holds only the two primary controls — the PLAY/BUY toggle on
-    /// the leading edge and the Add FAB on the trailing edge — with a wide,
-    /// touch-transparent gap between them so furniture in the lower scene stays
-    /// tappable/draggable (the old full-width glass row swallowed those taps).
-    /// Limiting it to two items guarantees it fits even a 375 pt iPhone SE — the
-    /// earlier four-button row overflowed and clipped Add. The secondary
-    /// undo/redo/reset tools live in `toolCluster` at the top-trailing corner.
+    /// The bottom dock holds only the two primary controls — the measurements
+    /// toggle on the leading edge and the Add FAB on the trailing edge — with a
+    /// wide, touch-transparent gap between them so furniture in the lower scene
+    /// stays tappable/draggable (the old full-width glass row swallowed those
+    /// taps). Limiting it to two items guarantees it fits even a 375 pt iPhone SE.
+    /// The secondary undo/redo/reset tools live in `toolCluster` at the
+    /// top-trailing corner.
     private var controls: some View {
         let busy = showCarousel || showFineTune
         return VStack {
             Spacer()
             HStack(spacing: 12) {
-                RenderModeToggle(mode: $mode)
+                dimensionsToggle
                 Spacer(minLength: 8)
                 addDockButton
             }
@@ -920,6 +999,29 @@ struct RoomDioramaScreen: View {
             .opacity(busy ? 0 : 1)
             .allowsHitTesting(!busy)
         }
+    }
+
+    /// The "measurements" pill: shows/hides the blueprint dimension labels. An
+    /// info overlay toggle — the room itself always renders the same one way.
+    private var dimensionsToggle: some View {
+        Button {
+            withAnimation(SnugTheme.spring) { showDimensions.toggle() }
+        } label: {
+            Label("Measure", systemImage: "ruler.fill")
+                .font(.subheadline.weight(.semibold))
+                .labelStyle(.titleAndIcon)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .foregroundStyle(showDimensions ? Color.white : SnugTheme.ink)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(showDimensions ? .regular.tint(SnugTheme.clay).interactive()
+                                    : .regular.interactive(),
+                     in: .capsule)
+        .sensoryFeedback(.selection, trigger: showDimensions)
+        .accessibilityLabel("Measurements")
+        .accessibilityHint("Shows wall dimension labels on the floor")
+        .accessibilityAddTraits(showDimensions ? [.isSelected, .isButton] : .isButton)
     }
 
     /// undo · redo · reset grouped in one compact glass capsule, floated at the
@@ -932,12 +1034,31 @@ struct RoomDioramaScreen: View {
         let busy = showCarousel || showFineTune
         GlassEffectContainer {
             HStack(spacing: 2) {
+                // Signature "step inside" — clay-tinted so it reads as special, not
+                // just another utility. Disabled if the room has no valid vantages.
+                toolButton("figure.walk", label: "Step inside",
+                           hint: "Preview the room in first person, at standing eye height",
+                           enabled: !vantages.isEmpty, tint: SnugTheme.clay,
+                           action: enterWalkthrough)
+                toolButton("paintpalette", label: "Room surfaces",
+                           hint: "Choose your wall and floor colors", enabled: true) {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    selectedFurnitureID = nil   // keep the inspector off the sheet
+                    showSurfaces = true
+                }
                 toolButton("arrow.uturn.backward", label: "Undo last change",
                            hint: "Reverts the most recent furniture edit",
                            enabled: !undoStack.isEmpty, action: undoLastChange)
                 toolButton("arrow.uturn.forward", label: "Redo",
                            hint: "Reapplies the change you just undid",
                            enabled: !redoStack.isEmpty, action: redoLastChange)
+                toolButton("trash", label: "Clear room",
+                           hint: "Removes all furniture so you can start the layout over",
+                           enabled: activeFurnitureCount > 0) {
+                    UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                    selectedFurnitureID = nil   // keep the inspector off the dialog
+                    showClearConfirm = true
+                }
                 toolButton("arrow.counterclockwise", label: "Reset view",
                            hint: "Recenters the camera on the room", enabled: true) {
                     UIImpactFeedbackGenerator(style: .light).impactOccurred()
@@ -955,11 +1076,12 @@ struct RoomDioramaScreen: View {
     }
 
     private func toolButton(_ icon: String, label: String, hint: String,
-                            enabled: Bool, action: @escaping () -> Void) -> some View {
+                            enabled: Bool, tint: Color = SnugTheme.ink,
+                            action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: icon)
                 .font(.system(size: 15, weight: .semibold))
-                .foregroundStyle(enabled ? SnugTheme.ink : SnugTheme.subtle.opacity(0.4))
+                .foregroundStyle(enabled ? tint : SnugTheme.subtle.opacity(0.4))
                 .frame(width: 40, height: 40)
                 .contentShape(Rectangle())
         }
@@ -981,66 +1103,91 @@ struct RoomDioramaScreen: View {
         .accessibilityLabel("Add furniture")
     }
 
+    // MARK: - Walkthrough (first-person preview)
+
+    /// Enter first-person at the first vantage. Deselects any piece (the inspector is
+    /// hidden inside) and only fires when the room actually has vantages.
+    private func enterWalkthrough() {
+        guard !vantages.isEmpty else { return }
+        selectedFurnitureID = nil
+        if activeVantage == nil { vantageID = vantages.first?.id }
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        withAnimation(SnugTheme.spring) { perspective = .walkthrough }
+    }
+
+    /// Step back out to the overhead diorama.
+    private func exitWalkthrough() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        withAnimation(SnugTheme.spring) { perspective = .diorama }
+    }
+
+    /// Jump to another preset vantage (the scene glides there).
+    private func selectVantage(_ vantage: WalkthroughVantage) {
+        guard vantage.id != vantageID else { return }
+        vantageID = vantage.id
+        UISelectionFeedbackGenerator().selectionChanged()
+    }
+
+    /// "Step out" control, top-leading, while inside.
+    @ViewBuilder private var walkthroughTopBar: some View {
+        if isWalkthrough {
+            HStack {
+                Button(action: exitWalkthrough) {
+                    Label("Step out", systemImage: "arrow.down.right.and.arrow.up.left")
+                        .font(.subheadline.weight(.semibold))
+                        .labelStyle(.titleAndIcon)
+                        .padding(.horizontal, 16).padding(.vertical, 11)
+                        .foregroundStyle(SnugTheme.ink)
+                }
+                .buttonStyle(.plain)
+                .glassEffect(.regular.interactive(), in: .capsule)
+                .accessibilityLabel("Step out")
+                .accessibilityHint("Return to the overhead view of the room")
+                Spacer()
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, 8)
+            .transition(.move(edge: .top).combined(with: .opacity))
+        }
+    }
+
+    /// The tap-between vantage chips along the bottom while inside.
+    @ViewBuilder private var vantageBar: some View {
+        if isWalkthrough {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(vantages) { vantageChip($0) }
+                }
+                .padding(.horizontal, 16)
+            }
+            .frame(height: 44)
+            .padding(.bottom, 24)
+            .transition(.move(edge: .bottom).combined(with: .opacity))
+        }
+    }
+
+    private func vantageChip(_ vantage: WalkthroughVantage) -> some View {
+        let isOn = activeVantage?.id == vantage.id
+        return Button { selectVantage(vantage) } label: {
+            Label(vantage.label, systemImage: vantage.symbol)
+                .font(.system(size: 13, weight: .semibold, design: .rounded))
+                .labelStyle(.titleAndIcon)
+                .foregroundStyle(isOn ? .white : SnugTheme.ink)
+                .padding(.horizontal, 14).frame(height: 40)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(isOn ? .regular.tint(SnugTheme.clay).interactive() : .regular.interactive(),
+                     in: .capsule)
+        .accessibilityLabel(vantage.label)
+        .accessibilityHint("Stand at the \(vantage.label.lowercased()) and look around")
+        .accessibilityAddTraits(isOn ? [.isSelected, .isButton] : .isButton)
+    }
+
     private var unreadableRoom: some View {
         ContentUnavailableView(
             "We couldn't open this room",
             systemImage: "exclamationmark.triangle",
             description: Text("The saved data looks damaged. Try scanning the room again.")
         )
-    }
-}
-
-/// The always-visible, one-tap PLAY/BUY pill. A sliding highlight (spring,
-/// reduced-motion aware) gives the brand bounce; the scene handles the < 400 ms
-/// cross-fade. Haptic on every switch.
-private struct RenderModeToggle: View {
-    @Binding var mode: RoomRenderMode
-    @Namespace private var highlight
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
-    var body: some View {
-        HStack(spacing: 4) {
-            ForEach(RoomRenderMode.allCases) { option in
-                segment(option)
-            }
-        }
-        .padding(4)
-        // Glass on the CONTAINER only (it isn't itself tappable, so no
-        // `.interactive()` here — that rendered the pill as odd blobs); the
-        // segments carry the tap + the sliding clay highlight.
-        .glassEffect(.regular, in: .capsule)
-        // Selection haptic fires declaratively on an actual mode switch (iOS 17+).
-        .sensoryFeedback(.selection, trigger: mode)
-        .accessibilityElement(children: .contain)
-        .accessibilityLabel("Render mode")
-    }
-
-    private func segment(_ option: RoomRenderMode) -> some View {
-        let isSelected = mode == option
-        return Button {
-            guard mode != option else { return }
-            if reduceMotion {
-                mode = option
-            } else {
-                withAnimation(SnugTheme.spring) { mode = option }
-            }
-        } label: {
-            Label(option.title, systemImage: option.symbol)
-                .font(.subheadline.weight(.semibold))
-                .labelStyle(.titleAndIcon)
-                .padding(.horizontal, 14)
-                .padding(.vertical, 11)
-                .foregroundStyle(isSelected ? Color.white : SnugTheme.ink)
-                .background {
-                    if isSelected {
-                        Capsule()
-                            .fill(SnugTheme.clay)
-                            .matchedGeometryEffect(id: "modeHighlight", in: highlight)
-                    }
-                }
-        }
-        .buttonStyle(.plain)
-        .accessibilityAddTraits(isSelected ? [.isSelected, .isButton] : .isButton)
-        .accessibilityHint(option == .buy ? "True-to-scale view with dimension labels" : "Playful stylized view")
     }
 }

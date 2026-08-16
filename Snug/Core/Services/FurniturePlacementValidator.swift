@@ -55,12 +55,16 @@ struct FurniturePlacementValidator {
 
         // --- Invalid (red) conditions first ---
 
-        // Any corner outside the room polygon.
-        if corners.contains(where: { !Geometry2D.isPoint($0, insidePolygon: polygon) }) {
+        // Not fully inside the room — a corner outside the polygon OR a wall
+        // edge slicing through the box (the spanning-a-notch case corner tests
+        // alone miss). Same predicate FitService's containment uses.
+        if !Geometry2D.isConvexFootprint(corners, insidePolygon: polygon) {
             return .invalid
         }
-        // Overlap with any other piece (SAT via the rectangles' separating axes).
-        if others.contains(where: { overlaps(box, $0) }) {
+        // Overlap with any other piece: non-positive signed clearance. Same
+        // math as FitService's obstacle clearance (`Geometry2D.clearance`).
+        let neighborClearances = others.map { Geometry2D.clearance(box, $0) }
+        if neighborClearances.contains(where: { $0 <= 0 }) {
             return .invalid
         }
 
@@ -74,45 +78,10 @@ struct FurniturePlacementValidator {
         if nearestWall < wallMargin { return .tooClose }
 
         // Within `overlapMargin` of any other (non-overlapping) piece.
-        if others.contains(where: { minimumDistance(box, $0) < overlapMargin }) {
+        if neighborClearances.contains(where: { $0 < overlapMargin }) {
             return .tooClose
         }
 
         return .valid
-    }
-
-    // MARK: - Geometry (composed from existing FitGeometry primitives)
-
-    /// Separating-Axis-Theorem overlap test for two oriented rectangles, using the
-    /// rectangles' own face normals (`OrientedFootprint.separatingAxes`) — the
-    /// complete axis set for two convex boxes — and `Geometry2D.projectionInterval`.
-    private static func overlaps(_ a: OrientedFootprint, _ b: OrientedFootprint) -> Bool {
-        let cornersA = a.corners
-        let cornersB = b.corners
-        for axis in a.separatingAxes + b.separatingAxes {
-            let pa = Geometry2D.projectionInterval(of: cornersA, onto: axis)
-            let pb = Geometry2D.projectionInterval(of: cornersB, onto: axis)
-            if pa.min > pb.max || pb.min > pa.max { return false }   // a gap ⇒ separated
-        }
-        return true
-    }
-
-    /// Minimum distance between two disjoint rectangles: the smallest corner→edge
-    /// distance in both directions (`Geometry2D.distance(from:toSegment:_:)`).
-    private static func minimumDistance(_ a: OrientedFootprint, _ b: OrientedFootprint) -> Float {
-        let cornersA = a.corners
-        let cornersB = b.corners
-        var best = Float.greatestFiniteMagnitude
-        for corner in cornersA {
-            for i in cornersB.indices {
-                best = min(best, Geometry2D.distance(from: corner, toSegment: cornersB[i], cornersB[(i + 1) % cornersB.count]))
-            }
-        }
-        for corner in cornersB {
-            for i in cornersA.indices {
-                best = min(best, Geometry2D.distance(from: corner, toSegment: cornersA[i], cornersA[(i + 1) % cornersA.count]))
-            }
-        }
-        return best
     }
 }
