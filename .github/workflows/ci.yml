@@ -1,0 +1,23 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          echo "No non-system dependencies to install for this repo"
+
+      - name: Run unit tests
+        run: |
+          xcodebuild -workspace Snug.xcworkspace -scheme Snug -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 15' test
