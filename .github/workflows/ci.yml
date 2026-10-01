@@ -48,14 +48,19 @@ jobs:
 
       - name: Build and test
         run: |
-          set -o pipefail
+          # Write the full log to a file first. Piping xcodebuild straight into a
+          # truncating filter can close the pipe early and kill the build.
+          status=0
           xcodebuild test \
             -project Snug.xcodeproj \
             -scheme Snug \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -resultBundlePath TestResults.xcresult \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
-            2>&1 | tee xcodebuild.log | grep -E "error:|warning:|Test run|✘|✔ Suite|passed|failed|\*\* (BUILD|TEST)" | head -400
+            > xcodebuild.log 2>&1 || status=$?
+          grep -E "error:|warning:|✘|✔ Suite|Test run|\*\* (BUILD|TEST)" xcodebuild.log | tail -300 || true
+          echo "xcodebuild exited with $status"
+          exit $status
 
       - name: Report errors and warnings
         if: always()
@@ -86,6 +91,17 @@ jobs:
           emit('error', errors)
           emit('warning', warnings)
           print(f'::notice::{len(errors)} errors, {len(warnings)} unique warnings')
+
+          # Always publish the tail of the log and every error-looking line as
+          # single multi-line annotations, so a failure that isn't a compiler
+          # diagnostic (a destination or signing problem, a test crash) is still
+          # readable from the run page without downloading the log.
+          lines = open('xcodebuild.log', errors='replace').read().splitlines()
+          enc = lambda text: text.replace('%', '%25').replace('\r', '').replace('\n', '%0A')
+          flagged = [l for l in lines if re.search(r'error|fail|✘|crash|exception', l, re.I)][-40:]
+          if flagged:
+              print('::warning title=Error-looking lines::' + enc('\n'.join(l[:300] for l in flagged)))
+          print('::notice title=Log tail::' + enc('\n'.join(l[:300] for l in lines[-45:])))
           PY
 
       - name: Upload test results
