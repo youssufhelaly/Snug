@@ -5,9 +5,7 @@ name: iOS
 # count is enforced because the project has a zero-warnings policy.
 on:
   push:
-    branches: [main]
-    paths-ignore: ['web/**', 'docs/**', '**.md', '.github/workflows/web.yml']
-  pull_request:
+    branches: ['**']
     paths-ignore: ['web/**', 'docs/**', '**.md', '.github/workflows/web.yml']
   workflow_dispatch:
 
