@@ -111,12 +111,13 @@ struct FurnitureModelTests {
         #expect(o.rotation == footprint.yRotation)
     }
 
-    @Test func onlyKeptUnclearedFurnitureBecomesObstacles() {
+    @Test func everyUnclearedPieceBecomesAnObstacle() {
         let furniture = [
-            sampleFootprint(isKept: true,  isCleared: false),   // counts
-            sampleFootprint(isKept: false, isCleared: false),   // not kept
+            sampleFootprint(isKept: true,  isCleared: false),   // placed product: counts
+            sampleFootprint(isKept: false, isCleared: false),   // detected, left in the room: counts
             sampleFootprint(isKept: true,  isCleared: true),    // cleared away
+            sampleFootprint(isKept: false, isCleared: true),    // cleared away
         ]
-        #expect(furniture.keptObstacles.count == 1)
+        #expect(furniture.keptObstacles.count == 2)
     }
 }

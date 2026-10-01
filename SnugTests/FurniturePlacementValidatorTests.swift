@@ -3,8 +3,9 @@ import Foundation
 import simd
 @testable import Snug
 
-/// `FurniturePlacementValidator` is a pure boundary + overlap classifier. These
-/// tests pin the three states against a rectangular room and neighbor pieces.
+/// `FurniturePlacementValidator` maps `FitService`'s four states onto the
+/// diorama's three tints. These tests pin the tint against a rectangular room
+/// and neighbor pieces, and prove it always agrees with the fit badge.
 struct FurniturePlacementValidatorTests {
 
     /// A rectangular `RoomModel` centered at the origin.
@@ -48,11 +49,19 @@ struct FurniturePlacementValidatorTests {
         #expect(state == .invalid)
     }
 
-    @Test func fiveCentimetersFromWallIsTooClose() {
-        // Right corners at x=2.95 → 0.05 m from the 3.0 wall (< 0.08 wallMargin).
+    @Test func fourCentimetersFromWallIsTooClose() {
+        // Right corners at x=2.96 → 0.04 m from the 3.0 wall, inside the 5 cm margin.
         let state = FurniturePlacementValidator.validate(
-            footprint: footprint(2.45, 0, 1, 1), against: room(width: 6, depth: 6), existingFootprints: [])
+            footprint: footprint(2.46, 0, 1, 1), against: room(width: 6, depth: 6), existingFootprints: [])
         #expect(state == .tooClose)
+    }
+
+    @Test func eightCentimetersFromWallIsValid() {
+        // 0.08 m clears the 5 cm margin, so the badge says "Fits" and the tint is
+        // calm. The old validator's separate 8 cm rule turned this amber.
+        let state = FurniturePlacementValidator.validate(
+            footprint: footprint(2.42, 0, 1, 1), against: room(width: 6, depth: 6), existingFootprints: [])
+        #expect(state == .valid)
     }
 
     @Test func overlappingFootprintIsInvalid() {
@@ -104,6 +113,31 @@ struct FurniturePlacementValidatorTests {
             footprint: footprint(1.0, 3.0, 1.2, 1.2),
             against: FitFixtures.uShapedLounge,
             existingFootprints: [])
+        #expect(state == .valid)
+    }
+
+    /// The tint and the fit badge must agree for every position, rotation and
+    /// neighbor, because the tint is derived from the badge's own result.
+    @Test(arguments: [-2.9, -2.5, -1.0, 0.0, 0.47, 0.52, 1.5, 2.44, 2.47, 2.5, 2.9] as [Float])
+    func tintAlwaysMatchesTheFitBadge(x: Float) {
+        let r = room(width: 6, depth: 6)
+        let neighbor = footprint(1.0, 0, 1, 1)
+        for rotation in [0, Float.pi / 8, Float.pi / 4] {
+            let candidate = footprint(x, 0.3, 1, 0.8, rotation: rotation)
+            var placed = r
+            placed.detectedFurniture = [neighbor, candidate]
+            let badge = placed.fitResult(for: candidate, excluding: candidate.id).state
+            let tint = FurniturePlacementValidator.validate(
+                footprint: candidate, against: r, existingFootprints: [neighbor, candidate])
+            #expect(tint == PlacementState(badge))
+        }
+    }
+
+    @Test func clearedNeighborsNeverBlock() {
+        var cleared = footprint(0, 0, 1, 1)
+        cleared.isCleared = true
+        let state = FurniturePlacementValidator.validate(
+            footprint: footprint(0.2, 0, 1, 1), against: room(width: 6, depth: 6), existingFootprints: [cleared])
         #expect(state == .valid)
     }
 

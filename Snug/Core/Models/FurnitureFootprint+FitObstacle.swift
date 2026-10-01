@@ -28,11 +28,17 @@ extension FurnitureFootprint {
 }
 
 extension Sequence where Element == FurnitureFootprint {
-    /// The kept (and not cleared) furniture as fit obstacles — the only pieces
-    /// that constrain new placements. Cleared pieces are removed from the room,
-    /// so they never occupy floor.
+    /// Every piece still in the room, as fit obstacles. "Kept" means the user
+    /// didn't clear it: placed products, Sandbox shapes, and detected furniture
+    /// left in place all occupy floor. Cleared pieces are out of the room, so
+    /// they never do.
+    ///
+    /// This deliberately ignores `FurnitureFootprint.isKept`. No UI ever sets
+    /// that flag on detected furniture (the detection step's "Done, keep N"
+    /// just leaves pieces in place), so filtering on it silently dropped real
+    /// furniture from the fit check while the diorama still drew it.
     var keptObstacles: [FitObstacle] {
-        filter { $0.isKept && !$0.isCleared }.map(\.fitObstacle)
+        filter { !$0.isCleared }.map(\.fitObstacle)
     }
 }
 
