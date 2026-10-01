@@ -153,6 +153,9 @@ struct MyRoomsView: View {
 
     // MARK: - Pieces
 
+    /// The published privacy policy (also the URL given to App Store Connect).
+    private static let privacyPolicyURL = URL(string: "https://youssufhelaly.github.io/Snug/privacy.html")!
+
     @ToolbarContentBuilder
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
@@ -176,6 +179,9 @@ struct MyRoomsView: View {
                     hasOnboarded = false
                 } label: {
                     Label("Show intro again", systemImage: "sparkles")
+                }
+                Link(destination: Self.privacyPolicyURL) {
+                    Label("Privacy policy", systemImage: "hand.raised")
                 }
             } label: {
                 Image(systemName: "ellipsis.circle")
