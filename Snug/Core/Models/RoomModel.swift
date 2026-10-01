@@ -10,6 +10,9 @@ enum RoomCaptureProvenance: String, Codable, Equatable {
     /// AR-assisted corner tapping with ARKit world tracking (any modern
     /// iPhone, no LiDAR required).
     case manualAR
+    /// A built-in example room, not a scan of the user's space. Recorded so the
+    /// app can always say so (CLAUDE.md: never fake the scan).
+    case sample
 }
 
 /// A point on the floor plane. `x` is world X, `z` is world Z; both meters.

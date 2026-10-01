@@ -7,6 +7,7 @@ import UIKit
 /// saves the room and drops you straight into it.
 struct MyRoomsView: View {
     @Environment(RoomStore.self) private var store
+    @Environment(CatalogService.self) private var catalog
     @Query(sort: \StoredRoom.capturedAt, order: .reverse) private var rooms: [StoredRoom]
 
     /// Flipping this back to `false` re-shows the onboarding flow (value slides +
@@ -26,6 +27,8 @@ struct MyRoomsView: View {
     @State private var duplicateErrorMessage: String?
     /// Toggled on each scan-button tap purely to drive its tap haptic.
     @State private var scanTapped = false
+    @State private var isCreatingSample = false
+    @State private var showSampleError = false
 
     private var methods: [any RoomCaptureMethod] { CaptureMethodRegistry.supported }
 
@@ -141,6 +144,11 @@ struct MyRoomsView: View {
         } message: {
             Text(renameErrorMessage ?? "")
         }
+        .alert("Couldn't open the sample room", isPresented: $showSampleError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Please try again.")
+        }
         .alert(
             "Couldn't duplicate room",
             isPresented: Binding(get: { duplicateErrorMessage != nil }, set: { if !$0 { duplicateErrorMessage = nil } })
@@ -180,6 +188,12 @@ struct MyRoomsView: View {
                 } label: {
                     Label("Show intro again", systemImage: "sparkles")
                 }
+                Button {
+                    Task { await addSampleRoom() }
+                } label: {
+                    Label("Add sample room", systemImage: "sparkles")
+                }
+                .disabled(isCreatingSample)
                 Link(destination: Self.privacyPolicyURL) {
                     Label("Privacy policy", systemImage: "hand.raised")
                 }
@@ -241,9 +255,31 @@ struct MyRoomsView: View {
                 .foregroundStyle(SnugTheme.subtle)
                 .padding(.horizontal, 40)
             Spacer()
-            scanButton.padding(.horizontal)
+            VStack(spacing: 12) {
+                scanButton
+                sampleRoomButton
+            }
+            .padding(.horizontal)
         }
         .padding(.bottom, 24)
+    }
+
+    /// Opens a furnished example bedroom, so the core loop (place, check fit,
+    /// share, shop) can be tried in seconds before scanning anything.
+    private var sampleRoomButton: some View {
+        Button {
+            Task { await addSampleRoom() }
+        } label: {
+            Label("Try a sample room", systemImage: "sparkles")
+                .font(.headline)
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, 14)
+        }
+        .buttonStyle(.bordered)
+        .tint(SnugTheme.clay)
+        .clipShape(Capsule())
+        .disabled(isCreatingSample)
+        .accessibilityHint("Opens an example bedroom with real furniture you can move around")
     }
 
     private var scanButton: some View {
@@ -290,6 +326,22 @@ struct MyRoomsView: View {
             DispatchQueue.main.async { openRoom = copy }
         } catch {
             duplicateErrorMessage = "We couldn't duplicate this room. Please try again."
+        }
+    }
+
+    /// Saves a new furnished sample room and opens it. Waits for the catalog so
+    /// the sample arrives furnished even on a cold launch.
+    private func addSampleRoom() async {
+        guard !isCreatingSample else { return }
+        isCreatingSample = true
+        defer { isCreatingSample = false }
+        await catalog.load()
+        do {
+            let stored = try store.save(SampleRoom.make(catalog: catalog.items), name: SampleRoom.name)
+            UIImpactFeedbackGenerator(style: .medium).impactOccurred()
+            openRoom = stored
+        } catch {
+            showSampleError = true
         }
     }
 

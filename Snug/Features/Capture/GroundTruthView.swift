@@ -145,6 +145,7 @@ struct GroundTruthView: View {
         switch room.provenance {
         case .roomPlan: "LiDAR"
         case .manualAR: "Manual AR"
+        case .sample: "Sample room"
         }
     }
 

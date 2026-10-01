@@ -40,9 +40,14 @@ struct RoomSceneView: View {
     /// The standing spot the walkthrough camera should occupy (ignored in
     /// `.diorama`). Changing it while inside glides to the new vantage.
     var activeVantage: WalkthroughVantage? = nil
-    /// Called once with PNG data after the first frames render, for the room's
+    /// Called once with JPEG data after the first frames render, for the room's
     /// list thumbnail. Optional.
     var onThumbnail: ((Data) -> Void)? = nil
+    /// Bump to request a before/after render of the current view (the room
+    /// without and with its furniture). The result arrives via `onShareImages`.
+    var shareRequest: Int = 0
+    /// Receives the before/after renders for `shareRequest`, or nil on failure.
+    var onShareImages: (((before: UIImage, after: UIImage)?) -> Void)? = nil
     /// When non-nil, the diorama is in furniture-EDITING mode: these footprints
     /// (not `room.detectedFurniture`) drive the furniture entities live via
     /// `syncFurniture`, tinted by `placementStates`. Nil = static viewing mode.
@@ -137,6 +142,7 @@ struct RoomSceneView: View {
                 if let editableFurniture {
                     controller.syncFurniture(editableFurniture, states: placementStates, selectedID: selectedFurnitureID)
                 }
+                controller.handleShareRequest(shareRequest, deliver: onShareImages)
             }
             // Native RealityKit gestures. Furniture interactions are
             // `.targetedToAnyEntity()` (RealityKit unprojects to the right entity
@@ -1041,8 +1047,39 @@ final class RoomSceneController {
     /// Render the current scene offscreen into a `UIImage`, composited over the
     /// backdrop colour. Clones the live scene + camera (the renderer must not be
     /// handed live, parented entities).
-    private func captureSnapshot(pixelSize: CGSize) async -> UIImage? {
+    // MARK: - Before/after share renders
+
+    private var lastShareRequest = 0
+
+    /// Starts a before/after render when `request` changes. The render size is
+    /// the share card's panel, so the composer never resamples it.
+    func handleShareRequest(_ request: Int, deliver: (((before: UIImage, after: UIImage)?) -> Void)?) {
+        guard request != lastShareRequest else { return }
+        lastShareRequest = request
+        guard let deliver else { return }
+        Task { @MainActor in
+            let size = ShareImageComposer.panelSize
+            guard let after = await self.captureSnapshot(pixelSize: size, includeFurniture: true),
+                  let before = await self.captureSnapshot(pixelSize: size, includeFurniture: false) else {
+                deliver(nil)
+                return
+            }
+            deliver((before: before, after: after))
+        }
+    }
+
+    /// Renders the current view offscreen. Selection outlines are always
+    /// removed (the image shows the room, not the editor); with
+    /// `includeFurniture == false` the furniture is removed too, for "before".
+    private func captureSnapshot(pixelSize: CGSize, includeFurniture: Bool = true) async -> UIImage? {
         let sceneClone = root.clone(recursive: true)
+        for child in Array(sceneClone.children) where child.components[FurnitureTagComponent.self] != nil {
+            if includeFurniture {
+                child.findEntity(named: FurnitureEntityBuilder.selectionOutlineName)?.removeFromParent()
+            } else {
+                child.removeFromParent()
+            }
+        }
         let cameraClone = camera.clone(recursive: false)
         cameraClone.transform = Transform(matrix: camera.transformMatrix(relativeTo: nil))
 
