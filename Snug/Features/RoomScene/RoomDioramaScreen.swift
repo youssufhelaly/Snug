@@ -324,6 +324,7 @@ struct RoomDioramaScreen: View {
                     } label: {
                         Label("Rename room", systemImage: "pencil")
                     }
+                    #if DEBUG
                     if let room {
                         NavigationLink {
                             FitDebugView(room: room)
@@ -336,6 +337,7 @@ struct RoomDioramaScreen: View {
                             Label("Log ground truth", systemImage: "ruler")
                         }
                     }
+                    #endif
                 } label: {
                     Image(systemName: "ellipsis.circle")
                 }

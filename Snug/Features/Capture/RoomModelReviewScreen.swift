@@ -72,6 +72,8 @@ struct RoomModelReviewScreen: View {
                 }
             }
 
+            #if DEBUG
+            // Developer tools for fixtures and the accuracy benchmark.
             Section("Export & ground truth") {
                 Button {
                     do { shareItem = ShareItem(url: try FixtureExporter.exportFixture(for: room)) }
@@ -90,6 +92,7 @@ struct RoomModelReviewScreen: View {
                     Label("Fit harness (debug)", systemImage: "shippingbox")
                 }
             }
+            #endif
         }
         .listStyle(.insetGrouped)
     }

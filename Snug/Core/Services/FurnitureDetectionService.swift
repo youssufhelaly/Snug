@@ -6,6 +6,7 @@ import CoreVideo
 import CoreImage
 import CoreImage.CIFilterBuiltins
 import ImageIO
+import os
 
 /// Detects existing furniture from a short post-scan camera pan and resolves a
 /// stable set of `FurnitureObservation`s via IoU-based consensus.
@@ -144,14 +145,14 @@ final class FurnitureDetectionService {
             let labels = parseClassNames(from: wrapper.model)
             return (vision, labels, true)
         } catch {
-            print("⚠️ Snug: failed to load YOLO26nFurniture — \(error.localizedDescription).")
+            SnugLog.detection.error("Failed to load YOLO26nFurniture: \(error.localizedDescription, privacy: .public)")
             #if DEBUG
             // Keep the rendering / de-clutter path exercisable in the simulator
             // without a working model load: synthetic mode counts as "available".
-            print("ℹ️ Snug: using DEBUG synthetic detections.")
+            SnugLog.detection.info("Using DEBUG synthetic detections.")
             return (nil, [:], true)
             #else
-            print("⚠️ Snug: furniture detection disabled — manual picker offered.")
+            SnugLog.detection.notice("Furniture detection disabled; offering the manual picker.")
             return (nil, [:], false)
             #endif
         }
@@ -281,7 +282,7 @@ final class FurnitureDetectionService {
                     }
                     continuation.resume(returning: regions)
                 } catch {
-                    print("⚠️ Snug: Vision request failed — \(error.localizedDescription)")
+                    SnugLog.detection.error("Vision request failed: \(error.localizedDescription, privacy: .public)")
                     continuation.resume(returning: nil)
                 }
             }
