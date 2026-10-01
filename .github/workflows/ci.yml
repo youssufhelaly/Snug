@@ -46,9 +46,6 @@ jobs:
           ")
           echo "udid=$UDID" >> "$GITHUB_OUTPUT"
           echo "::notice::Simulator $(xcrun simctl list devices | grep "$UDID" | head -1 | xargs)"
-          # Boot in the background so the simulator is ready by the time the
-          # build finishes, instead of booting after it.
-          (xcrun simctl boot "$UDID" >/dev/null 2>&1 &)
 
       - name: Build and test
         run: |
