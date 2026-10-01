@@ -19,7 +19,7 @@ USAGE
         --report out-quaternius/report.json \
         --3d-report out-tripo-usdz/report.json \
         --out ../../Snug/Resources/catalog.json \
-        [--affiliate-tag YOUR-TAG-20] [--skip-refresh]
+        [--affiliate-tag snug-20] [--skip-refresh]
 
     --skip-refresh assembles from the seeded price data without touching Canopy
     (useful while iterating on the pipeline; a real release should refresh).
@@ -68,8 +68,7 @@ def main() -> None:
     ap.add_argument("--3d-report", dest="tripo_report", required=True,
                     help="Tripo conversion report.json (out-tripo-usdz/report.json)")
     ap.add_argument("--out", required=True, help="output catalog.json path")
-    ap.add_argument("--affiliate-tag", default=None,
-                    help="Your Amazon Associates tag. Omitted from links when not given.")
+    ap.add_argument("--affiliate-tag", default="snug-20")
     ap.add_argument("--skip-refresh", action="store_true",
                     help="skip the live Canopy price/stock refresh")
     args = ap.parse_args()
