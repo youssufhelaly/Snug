@@ -32,15 +32,6 @@
 - Catalog integration with an ingest pipeline and cached offline fallback (`Resources/catalog.json`).
 - Unit test suite covering geometry, placement validation, and model rendering.
 
-<<<<<<< HEAD
-=======
-**Demo (placeholders)**
-Below are placeholder screenshots you can replace with real captures. To update, record AR captures on-device and drop images into `Resources/demo/` with the same filenames.
-
-![Demo 1](Resources/demo/screen1.svg)
-![Demo 2](Resources/demo/screen2.svg)
-
->>>>>>> 7bf1ef0 (everythign)
 **How to build & run (quick)**
 - Open the workspace in Xcode and run on a device (AR requires a physical iPhone):
 
