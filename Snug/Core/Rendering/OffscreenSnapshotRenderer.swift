@@ -6,6 +6,7 @@
 @preconcurrency import Metal
 import UIKit
 import CoreGraphics
+import os
 
 /// Offscreen RealityKit snapshot for the RoomScene diorama.
 ///
@@ -177,9 +178,13 @@ enum OffscreenSnapshotRenderer {
         }
     }
 
+    /// Logs a snapshot failure. A timeout is an expected runtime condition (a busy
+    /// GPU, a backgrounded app) and must not crash debug builds; every other case
+    /// is a setup bug, so it still trips an assertion during development.
     nonisolated private static func surface(_ error: SnapshotError) {
+        SnugLog.rendering.error("Offscreen snapshot unavailable: \(error.description, privacy: .public)")
+        if case .renderTimedOut = error { return }
         assertionFailure("Snug offscreen snapshot failed: \(error)")
-        print("⚠️ Snug: offscreen snapshot unavailable — \(error)")
     }
 }
 

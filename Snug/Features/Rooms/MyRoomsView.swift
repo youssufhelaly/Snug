@@ -157,6 +157,9 @@ struct MyRoomsView: View {
     private var toolbarContent: some ToolbarContent {
         ToolbarItem(placement: .topBarTrailing) {
             Menu {
+                // Measurement tools for the accuracy benchmark. Debug builds only,
+                // so TestFlight and App Store users never see them.
+                #if DEBUG
                 NavigationLink {
                     AccuracySummaryView()
                 } label: {
@@ -168,6 +171,7 @@ struct MyRoomsView: View {
                     Label("Fit harness (debug)", systemImage: "shippingbox")
                 }
                 Divider()
+                #endif
                 Button {
                     hasOnboarded = false
                 } label: {

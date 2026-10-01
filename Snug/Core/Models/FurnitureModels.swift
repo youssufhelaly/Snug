@@ -170,7 +170,9 @@ struct FurnitureFootprint: Codable, Equatable, Sendable, Identifiable {
     /// Cleared in the de-clutter step (hidden but not deleted, so it can be
     /// restored).
     var isCleared: Bool
-    /// User explicitly kept it — feeds `FitService` as an obstacle.
+    /// Set on placed catalog products and Sandbox shapes. Persisted for
+    /// compatibility, but the fit check no longer reads it: every piece that
+    /// isn't cleared occupies floor (see `keptObstacles`).
     var isKept: Bool
     /// Set when this footprint is a placed *catalog product* rather than detected
     /// existing furniture; links back to `CatalogItem.id` for true-color

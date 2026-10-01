@@ -4,6 +4,7 @@ import RealityKit
 import Observation
 import simd
 import UIKit
+import os
 
 /// Drives the AR-assisted corner-tapping capture: it owns the ARKit session,
 /// turns screen taps into metric floor coordinates via raycasting, renders the
@@ -389,14 +390,31 @@ final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOv
         // re-run WITHOUT `.resetTracking` on purpose — resetting here would discard
         // the world map and warp corners the user already placed. This mirrors
         // `sessionInterruptionEnded`'s deliberate corner-preserving recovery.
+        // `attach` runs again on a rescan, so drop the previous observer first or
+        // each rescan would stack another one.
+        if let foregroundObserver {
+            NotificationCenter.default.removeObserver(foregroundObserver)
+        }
         foregroundObserver = NotificationCenter.default.addObserver(
             forName: UIApplication.didBecomeActiveNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self, let arView = self.arView, self.step != .review else { return }
+            guard let self, self.ownsSession, let arView = self.arView, self.step != .review else { return }
             arView.session.run(self.makeConfiguration())
         }
+    }
+
+    /// Whether this controller still drives the shared capture session.
+    ///
+    /// `sharedARView` outlives every scan, and SwiftUI may release an old
+    /// controller only after the next scan's controller has attached. The newer
+    /// controller takes over by becoming the session delegate, so once that
+    /// happens this one must never pause, re-run, or "recover" the session:
+    /// doing so would freeze or reset someone else's live scan.
+    private var ownsSession: Bool {
+        guard let arView else { return false }
+        return (arView.session.delegate as AnyObject?) === self
     }
 
     /// Renders a zero-scale (invisible) marker for a moment at session start so
@@ -455,7 +473,7 @@ final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOv
     /// capped; past the cap we surface an honest failure, never a silent black view.
     private func scheduleBlackFeedCheck() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) { [weak self] in
-            guard let self, let arView = self.arView else { return }
+            guard let self, self.ownsSession, let arView = self.arView else { return }
             // The scan already finished; the live feed is no longer on screen.
             if self.step == .review { return }
 
@@ -476,7 +494,7 @@ final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOv
                 // `snapshot`'s completion queue isn't contractually main, but the
                 // recovery re-runs the session — hop to main to be safe.
                 DispatchQueue.main.async {
-                    guard let self, self.arView != nil, self.step != .review else { return }
+                    guard let self, self.ownsSession, self.step != .review else { return }
                     self.recoverBlackFeed(arView, reason: "passthrough rendered black in a lit room")
                 }
             }
@@ -488,12 +506,12 @@ final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOv
     /// silent) rather than leaving the user staring at black.
     private func recoverBlackFeed(_ arView: ARView, reason: String) {
         guard blackFeedRecoveryAttempts < maxBlackFeedRecoveryAttempts else {
-            print("⚠️ Snug: camera never recovered (\(reason)) after \(maxBlackFeedRecoveryAttempts) restarts")
+            SnugLog.capture.error("Camera never recovered (\(reason, privacy: .public)) after \(self.maxBlackFeedRecoveryAttempts) restarts")
             onFailure?(.processingFailed("The camera didn't start. Try scanning again."))
             return
         }
         blackFeedRecoveryAttempts += 1
-        print("⚠️ Snug: \(reason) — re-running session (attempt \(blackFeedRecoveryAttempts))")
+        SnugLog.capture.notice("\(reason, privacy: .public); re-running session (attempt \(self.blackFeedRecoveryAttempts))")
         // Reset so the re-kicked session is re-evaluated from scratch on the next check.
         hasReceivedFrame = false
         arView.session.run(makeConfiguration(), options: [.resetTracking, .removeExistingAnchors])
@@ -543,18 +561,26 @@ final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOv
         // on an already-dismissed flow (a stale room write / spurious navigation).
         furnitureTask?.cancel()
         furnitureTask = nil
-        arView?.session.pause()
+        if ownsSession { arView?.session.pause() }
     }
 
     /// SwiftUI doesn't guarantee the view (and this controller) deallocate the
     /// instant a scan ends, so the ARSession can keep holding the camera and the
     /// next scan opens to a black feed. Pause and release the session on teardown
     /// so the hardware is freed immediately.
+    ///
+    /// Inside `deinit` the session's weak delegate reference to this controller
+    /// already reads nil, so "nil" means this controller was the owner. A
+    /// non-nil delegate means a newer scan took the shared session over, and
+    /// pausing it here would freeze that scan.
     deinit {
         if let foregroundObserver {
             NotificationCenter.default.removeObserver(foregroundObserver)
         }
-        arView?.session.pause()
+        furnitureTask?.cancel()
+        if let arView, arView.session.delegate == nil {
+            arView.session.pause()
+        }
         arView = nil
     }
 
@@ -1084,9 +1110,12 @@ final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOv
         // camera's buffer pool (each frame is grabbed and released per tick).
         // `processOneDetectionFrame` also raycasts new detections against the frame's
         // OWN camera pose, so placement reflects where each piece was actually seen.
-        furnitureTask = Task { @MainActor in
+        // Weak capture: the loop runs until cancelled, so a strong `self` would
+        // keep the controller (and its camera session) alive if no one cancels it.
+        furnitureTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
-                await processOneDetectionFrame()
+                guard let self else { return }
+                await self.processOneDetectionFrame()
                 try? await Task.sleep(nanoseconds: 120_000_000)
             }
         }
@@ -1101,11 +1130,11 @@ final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOv
         furnitureTask?.cancel()
         detectedFurniture = resolveFootprints(from: furnitureService.finalizeDetections())
         furnitureDetectionFinished = true
-        furnitureTask = Task { @MainActor in
+        furnitureTask = Task { @MainActor [weak self] in
             // A short beat so the success state + haptic register before advancing.
             try? await Task.sleep(nanoseconds: 700_000_000)
-            guard !Task.isCancelled else { return }
-            beginClose()
+            guard !Task.isCancelled, let self else { return }
+            self.beginClose()
         }
     }
 
@@ -1517,7 +1546,7 @@ final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOv
     /// startup; once corners exist a reset would misalign them, so we surface an
     /// honest failure rather than fake a recovery.
     func session(_ session: ARSession, didFailWithError error: Error) {
-        print("⚠️ Snug: ARSession failed — \(error.localizedDescription)")
+        SnugLog.capture.error("ARSession failed: \(error.localizedDescription, privacy: .public)")
         if (error as? ARError)?.code == .cameraUnauthorized {
             onFailure?(.cameraPermissionDenied)
             return

@@ -1775,8 +1775,10 @@ final class RoomSceneController {
         guard size.width > 0, size.height > 0 else { return }
         didSnapshot = true
         Task { @MainActor in
+            // Thumbnails are small list tiles, so store them downscaled (PNG keeps
+            // the transparent backdrop) instead of a full-screen image per room.
             guard let image = await self.captureSnapshot(pixelSize: size),
-                  let data = image.pngData() else { return }
+                  let data = image.downscaled(toMaxPixelDimension: 900).pngData() else { return }
             self.onThumbnail?(data)
         }
     }

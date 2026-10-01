@@ -8,8 +8,9 @@ import UIKit
 /// at its TRUE size, and the diorama runs the fit check (CLAUDE.md core loop:
 /// scan → redesign → buy with an honest fit).
 ///
-/// Category chips filter the grid; an empty / failed catalog shows a friendly
-/// message rather than a blank sheet (CLAUDE.md: errors are never blank).
+/// A search field and category chips filter the grid together; an empty /
+/// failed catalog, or a search with no matches, shows a friendly message rather
+/// than a blank sheet (CLAUDE.md: errors are never blank).
 struct CatalogBrowseOverlay: View {
     @Environment(CatalogService.self) private var catalog
     @Environment(SandboxLibrary.self) private var sandbox
@@ -31,8 +32,18 @@ struct CatalogBrowseOverlay: View {
 
     @State private var tab: BrowseTab = .shop
     @State private var category: FurnitureCategory?
+    @State private var query = ""
 
-    private var visibleItems: [CatalogItem] { catalog.items(in: category) }
+    private var trimmedQuery: String { query.trimmingCharacters(in: .whitespacesAndNewlines) }
+
+    /// The category filter and the search narrow the grid together, keeping
+    /// `items(in:)`'s in-stock-first order.
+    private var visibleItems: [CatalogItem] {
+        let inCategory = catalog.items(in: category)
+        guard !trimmedQuery.isEmpty else { return inCategory }
+        let matches = Set(catalog.search(trimmedQuery).map(\.id))
+        return inCategory.filter { matches.contains($0.id) }
+    }
     private var visibleAssets: [SandboxAsset] { sandbox.assets(in: category) }
 
     var body: some View {
@@ -57,7 +68,10 @@ struct CatalogBrowseOverlay: View {
         .task { await catalog.load() }
         .task { await sandbox.load() }
         // A category chosen on one tab may not exist on the other; reset on switch.
-        .onChange(of: tab) { category = nil }
+        .onChange(of: tab) {
+            category = nil
+            query = ""
+        }
     }
 
     private var tabPicker: some View {
@@ -71,9 +85,61 @@ struct CatalogBrowseOverlay: View {
         if catalog.items.isEmpty {
             emptyState
         } else {
+            searchField
             categoryChips(catalog.availableCategories)
-            productScroller
+            if visibleItems.isEmpty {
+                noMatches
+            } else {
+                productScroller
+            }
         }
+    }
+
+    private var searchField: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "magnifyingglass")
+                .foregroundStyle(SnugTheme.subtle)
+                .accessibilityHidden(true)
+            TextField("Search beds, desks, brands…", text: $query)
+                .textInputAutocapitalization(.never)
+                .autocorrectionDisabled()
+                .submitLabel(.search)
+                .foregroundStyle(SnugTheme.ink)
+            if !query.isEmpty {
+                Button {
+                    query = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .foregroundStyle(SnugTheme.subtle)
+                }
+                .accessibilityLabel("Clear search")
+            }
+        }
+        .font(.system(size: 15, design: .rounded))
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .background(SnugTheme.surface, in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+
+    private var noMatchesMessage: String {
+        if let category {
+            return "No \(category.displayName.lowercased()) match “\(trimmedQuery)”."
+        }
+        return "No products match “\(trimmedQuery)”."
+    }
+
+    private var noMatches: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: 24))
+                .foregroundStyle(SnugTheme.subtle)
+            Text(noMatchesMessage)
+                .font(.system(size: 14, weight: .medium, design: .rounded))
+                .foregroundStyle(SnugTheme.subtle)
+                .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 32)
     }
 
     @ViewBuilder private var ideasContent: some View {

@@ -1,5 +1,6 @@
 import SwiftUI
 import SwiftData
+import os
 
 @main
 struct SnugApp: App {
@@ -42,7 +43,7 @@ struct SnugApp: App {
             // `.externalStorage`), so an old store can fail to load. Rather than
             // brick launch, recreate it once from scratch — dev builds only carry
             // dev data. Logged loudly; never silent.
-            print("⚠️ Snug: data store incompatible (\(error)). Recreating it fresh.")
+            SnugLog.persistence.error("Data store incompatible (\(String(describing: error), privacy: .public)). Recreating it fresh.")
             Self.destroyStore(at: configuration.url)
             do {
                 container = try Self.makeContainer(schema: schema, configuration: configuration)

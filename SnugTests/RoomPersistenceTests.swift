@@ -10,14 +10,26 @@ import SwiftData
 @MainActor
 struct RoomPersistenceTests {
 
-    /// A fresh in-memory store per test, using the real versioned schema.
-    private func makeStore() throws -> RoomStore {
+    /// The in-memory container behind this test's store, using the real
+    /// versioned schema. Swift Testing makes a fresh instance of this struct for
+    /// every test, so each test still gets its own empty store.
+    ///
+    /// It must be stored, not a local in `makeStore()`: a `ModelContext` does
+    /// not keep its container alive, so saving through the context of a freed
+    /// container crashes the test process.
+    private let container: ModelContainer
+
+    init() throws {
         let schema = Schema(versionedSchema: SnugSchemaV1.self)
-        let container = try ModelContainer(
+        container = try ModelContainer(
             for: schema,
             configurations: [ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)]
         )
-        return RoomStore(context: container.mainContext)
+    }
+
+    /// The store under test, backed by this test's container.
+    private func makeStore() throws -> RoomStore {
+        RoomStore(context: container.mainContext)
     }
 
     @Test func roomModelCodableRoundTrips() throws {
