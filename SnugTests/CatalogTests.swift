@@ -166,6 +166,13 @@ struct CatalogTests {
         #expect(room.detectedFurniture.keptObstacles.count == 1)
     }
 
+    // MARK: - Card copy
+
+    @Test func footprintLabelShowsWidthByDepthInWholeCentimeters() {
+        #expect(lamp.footprintLabel == "100 × 50 cm")
+        #expect(lamp.footprintAccessibilityLabel == "100 by 50 centimeters")
+    }
+
     // MARK: - Fit helper
 
     @Test func candidateFitsEmptyRoom() {

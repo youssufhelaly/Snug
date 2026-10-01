@@ -736,24 +736,34 @@ struct RoomDioramaScreen: View {
         return catalog.items.first { $0.id == id }
     }
 
+    /// The buy out-link, with the affiliate disclosure visible right under it
+    /// (CLAUDE.md: affiliate relationships are disclosed in UI copy). No price:
+    /// the retailer page shows the current one (see `CatalogItem.footprintLabel`).
     private func retailerLink(_ item: CatalogItem) -> some View {
-        Button {
-            UIImpactFeedbackGenerator(style: .light).impactOccurred()
-            openURL(item.outboundURL)
-        } label: {
-            HStack(spacing: 6) {
-                Text("\(item.formattedPrice) · View at \(item.retailerName)")
-                    .font(.system(size: 14, weight: .semibold, design: .rounded))
-                Image(systemName: "arrow.up.right")
-                    .font(.system(size: 12, weight: .bold))
+        VStack(spacing: 6) {
+            Button {
+                UIImpactFeedbackGenerator(style: .light).impactOccurred()
+                openURL(item.outboundURL)
+            } label: {
+                HStack(spacing: 6) {
+                    Text("See price at \(item.retailerName)")
+                        .font(.system(size: 14, weight: .semibold, design: .rounded))
+                    Image(systemName: "arrow.up.right")
+                        .font(.system(size: 12, weight: .bold))
+                }
+                .foregroundStyle(.white)
+                .frame(maxWidth: .infinity)
+                .frame(height: 46)
+                .background(SnugTheme.clay, in: Capsule())
             }
-            .foregroundStyle(.white)
-            .frame(maxWidth: .infinity)
-            .frame(height: 46)
-            .background(SnugTheme.clay, in: Capsule())
+            .accessibilityLabel("See \(item.name) at \(item.retailerName)")
+            .accessibilityHint("Opens the retailer's page. Snug may earn a commission, at no extra cost to you.")
+
+            Text("Snug may earn a commission, at no extra cost to you.")
+                .font(.caption2)
+                .foregroundStyle(SnugTheme.subtle)
+                .accessibilityHidden(true)
         }
-        .accessibilityLabel("View \(item.name) at \(item.retailerName), \(item.formattedPrice)")
-        .accessibilityHint("Opens the retailer's page. Snug may earn a commission.")
     }
 
     /// Rotate the selected piece a quarter-turn (90°) — the precise "snap to wall"
