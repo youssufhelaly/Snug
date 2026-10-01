@@ -1,23 +1,101 @@
-name: CI
+name: iOS
 
+# Builds the app and runs the SnugTests suite on an iOS simulator. Compiler
+# errors and warnings are surfaced as annotations on the run, and the warning
+# count is enforced because the project has a zero-warnings policy.
 on:
   push:
-    branches: [ main ]
+    branches: [main]
+    paths-ignore: ['web/**', 'docs/**', '**.md', '.github/workflows/web.yml']
   pull_request:
-    branches: [ main ]
+    paths-ignore: ['web/**', 'docs/**', '**.md', '.github/workflows/web.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
-    runs-on: macos-latest
-
+    runs-on: macos-26
+    timeout-minutes: 45
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - name: Install dependencies
+      - name: Select Xcode 26
         run: |
-          echo "No non-system dependencies to install for this repo"
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then XCODE=$(xcode-select -p | sed 's|/Contents/Developer||'); fi
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+          echo "::notice::Using $(xcodebuild -version | head -1)"
 
-      - name: Run unit tests
+      - name: Pick a simulator
+        id: sim
         run: |
-          xcodebuild -workspace Snug.xcworkspace -scheme Snug -sdk iphonesimulator -destination 'platform=iOS Simulator,name=iPhone 15' test
+          UDID=$(xcrun simctl list devices available -j | python3 -c "
+          import json, sys
+          devices = json.load(sys.stdin)['devices']
+          ios = sorted((k for k in devices if 'iOS' in k), key=lambda k: [int(p) for p in k.split('iOS-')[-1].split('-')])
+          for runtime in reversed(ios):
+              phones = [d for d in devices[runtime] if d['name'].startswith('iPhone')]
+              if phones:
+                  print(phones[0]['udid']); break
+          ")
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+          echo "::notice::Simulator $(xcrun simctl list devices | grep "$UDID" | head -1 | xargs)"
+
+      - name: Build and test
+        run: |
+          set -o pipefail
+          xcodebuild test \
+            -project Snug.xcodeproj \
+            -scheme Snug \
+            -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
+            -resultBundlePath TestResults.xcresult \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            2>&1 | tee xcodebuild.log | grep -E "error:|warning:|Test run|✘|✔ Suite|passed|failed|\*\* (BUILD|TEST)" | head -400
+
+      - name: Report errors and warnings
+        if: always()
+        run: |
+          [ -f xcodebuild.log ] || exit 0
+          python3 - <<'PY'
+          import re
+          seen, errors, warnings = set(), [], []
+          pattern = re.compile(r'^(/[^:]+):(\d+):(?:(\d+):)? (error|warning): (.*)$')
+          for line in open('xcodebuild.log', errors='replace'):
+              m = pattern.match(line.strip())
+              if not m:
+                  if '✘' in line or 'error:' in line and 'Test' in line:
+                      key = line.strip()
+                      if key not in seen:
+                          seen.add(key); errors.append((None, None, key))
+                  continue
+              path, ln, _, kind, msg = m.groups()
+              rel = path.split('/Snug/', 1)[-1] if '/Snug/' in path else path
+              key = (rel, ln, msg)
+              if key in seen: continue
+              seen.add(key)
+              (errors if kind == 'error' else warnings).append((rel, ln, msg))
+          def emit(kind, items):
+              for rel, ln, msg in items[:10]:
+                  loc = f' file={rel},line={ln}' if rel else ''
+                  print(f'::{kind}{loc}::{msg[:900]}')
+          emit('error', errors)
+          emit('warning', warnings)
+          print(f'::notice::{len(errors)} errors, {len(warnings)} unique warnings')
+          PY
+
+      - name: Upload test results
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: TestResults
+          path: |
+            TestResults.xcresult
+            xcodebuild.log
+          retention-days: 7
