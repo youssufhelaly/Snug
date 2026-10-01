@@ -6,3 +6,5 @@
 export const AMAZON_TAG: string | null = import.meta.env.VITE_AMAZON_TAG || 'snug-20';
 export const TESTFLIGHT_URL: string | null = import.meta.env.VITE_TESTFLIGHT_URL || null;
 export const GITHUB_URL = 'https://github.com/youssufhelaly/Snug';
+/** A video of the iPhone app scanning a room. Shown in the banner when set. */
+export const DEMO_VIDEO_URL: string | null = import.meta.env.VITE_DEMO_VIDEO_URL || null;
