@@ -1,0 +1,12 @@
+{
+  "name": "snug-catalog-tools",
+  "private": true,
+  "type": "module",
+  "description": "Node helpers for the catalog asset pipeline. The Python/Blender tools need no npm install.",
+  "scripts": {
+    "shrink-usdz": "node shrink_usdz.mjs"
+  },
+  "dependencies": {
+    "meshoptimizer": "^1.3.0"
+  }
+}
