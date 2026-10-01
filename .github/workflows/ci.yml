@@ -118,3 +118,39 @@ jobs:
             TestResults.xcresult
             xcodebuild.log
           retention-days: 7
+
+  # Compiles the Release configuration, which tests never build. Code behind
+  # `#if DEBUG` / `#else` (the store fallback, hidden debug tools) would
+  # otherwise only be compiled when someone archives for TestFlight. Runs in
+  # parallel with the tests, so it doesn't add wall time.
+  release-build:
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Select Xcode 26
+        run: |
+          XCODE=$(ls -d /Applications/Xcode_26*.app 2>/dev/null | sort -V | tail -1)
+          if [ -z "$XCODE" ]; then XCODE=$(xcode-select -p | sed 's|/Contents/Developer||'); fi
+          sudo xcode-select -s "$XCODE"
+
+      - name: Build Release
+        run: |
+          status=0
+          xcodebuild build \
+            -project Snug.xcodeproj \
+            -scheme Snug \
+            -configuration Release \
+            -destination "generic/platform=iOS Simulator" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
+            > release.log 2>&1 || status=$?
+          grep -E "^/.*: (error|warning): " release.log | sort -u | head -40 | while IFS= read -r line; do
+            file=$(echo "$line" | cut -d: -f1 | sed 's|.*/Snug/Snug/|Snug/|'); ln=$(echo "$line" | cut -d: -f2)
+            kind=$(echo "$line" | grep -q ": error: " && echo error || echo warning)
+            echo "::$kind file=$file,line=$ln::$(echo "$line" | sed -E 's/^[^:]+:[0-9]+:[0-9]+: (error|warning): //')"
+          done
+          tail -5 release.log
+          echo "xcodebuild exited with $status"
+          exit $status
