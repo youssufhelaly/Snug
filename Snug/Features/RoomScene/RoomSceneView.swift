@@ -441,6 +441,20 @@ final class RoomSceneController {
     /// SwiftUI round-trip.
     private var lastFurnitureStates: [UUID: PlacementState] = [:]
     private var lastSelectedFurnitureID: UUID?
+    /// What each furniture entity's tint currently shows. Building a tint allocates
+    /// fresh materials and reassigns the model component, so `syncFurniture` (which
+    /// runs on every SwiftUI update of the room screen) only re-tints a piece when
+    /// one of these actually changed. Every tint goes through `applyTint` to keep
+    /// this truthful.
+    private struct AppliedTint: Equatable {
+        let state: PlacementState
+        let selected: Bool
+        let hasModel: Bool
+    }
+    private var appliedTints: [UUID: AppliedTint] = [:]
+    /// The dimensions each attached realistic model was last fitted to. Refitting
+    /// walks the whole mesh to measure its bounds, so it only reruns on a resize.
+    private var modelFitDimensions: [UUID: SIMD3<Float>] = [:]
     /// When true, `buildGeometry` skips the static furniture pass — the tray owns
     /// furniture entities through `syncFurniture`.
     private var editingFurniture = false
@@ -1272,6 +1286,8 @@ final class RoomSceneController {
             furnitureEntities[id] = nil
             furnitureSnapshots[id] = nil
             modelPartColors[id] = nil
+            appliedTints[id] = nil
+            modelFitDimensions[id] = nil
         }
 
         for footprint in active {
@@ -1284,14 +1300,17 @@ final class RoomSceneController {
                 root.addChild(entity)
                 furnitureEntities[footprint.id] = entity
                 furnitureSnapshots[footprint.id] = footprint
+                appliedTints[footprint.id] = nil
+                modelFitDimensions[footprint.id] = nil
             }
             if let entity = furnitureEntities[footprint.id] {
                 let selected = footprint.id == selectedID
-                FurnitureEntityBuilder.applyPlacementState(
-                    states[footprint.id] ?? .valid,
-                    selected: selected,
-                    to: entity
-                )
+                let state = states[footprint.id] ?? .valid
+                let wanted = AppliedTint(state: state, selected: selected,
+                                         hasModel: FurnitureEntityBuilder.hasRealisticModel(entity))
+                if appliedTints[footprint.id] != wanted {
+                    applyTint(state, selected: selected, to: entity, id: footprint.id)
+                }
                 // Selection "pop": scale to 1.03 when selected, 1.0 otherwise. Only
                 // animate when the scale actually changes, so a re-sync (e.g. after a
                 // drag ends) doesn't re-fire it — and it stays put during a live drag,
@@ -1331,6 +1350,7 @@ final class RoomSceneController {
             // Non-catalog piece / no bundled model → ensure the box shows.
             if FurnitureEntityBuilder.hasRealisticModel(box) {
                 FurnitureEntityBuilder.removeRealisticModel(from: box)
+                modelFitDimensions[footprint.id] = nil
                 reapplyFurnitureState(for: footprint.id, on: box)
             }
             return
@@ -1346,7 +1366,10 @@ final class RoomSceneController {
             let needsReload = isSandbox && !Set(baked.keys).isSubset(of: Set(desired.keys))
             if !needsReload {
                 // Keep it fit to the current dimensions (covers resize)…
-                FurnitureEntityBuilder.scaleRealisticModel(model, to: footprint.dimensions)
+                if modelFitDimensions[footprint.id] != footprint.dimensions {
+                    FurnitureEntityBuilder.scaleRealisticModel(model, to: footprint.dimensions)
+                    modelFitDimensions[footprint.id] = footprint.dimensions
+                }
                 // …and re-tint only the parts whose color was added or changed
                 // (in place, no reload — smooth for a live swatch/wheel drag).
                 if isSandbox {
@@ -1363,6 +1386,7 @@ final class RoomSceneController {
             // flashing invisible until the fresh model attaches.
             FurnitureEntityBuilder.removeRealisticModel(from: box)
             modelPartColors[footprint.id] = nil
+            modelFitDimensions[footprint.id] = nil
             reapplyFurnitureState(for: footprint.id, on: box)
         }
 
@@ -1386,6 +1410,7 @@ final class RoomSceneController {
                 // only the parts the user has recolored — others stay original, so a
                 // clay bed reads frame/mattress/pillow as distinct colors like the asset.
                 FurnitureEntityBuilder.attachRealisticModel(model, to: box, dimensions: dims, tint: nil)
+                self.modelFitDimensions[id] = dims
                 let desired = self.sandboxDesiredColors(snapshot, model: model)
                 if !desired.isEmpty { FurnitureEntityBuilder.applyPartColors(desired, to: model) }
                 self.modelPartColors[id] = desired
@@ -1407,6 +1432,7 @@ final class RoomSceneController {
             if CatalogModelLoader.isApproximateAsset(assetName) {
                 FurnitureEntityBuilder.attachRealisticModel(
                     model, to: box, dimensions: dims, tint: nil, approximate: true)
+                self.modelFitDimensions[id] = dims
                 self.reapplyFurnitureState(for: id, on: box)
                 return
             }
@@ -1432,6 +1458,7 @@ final class RoomSceneController {
             // (never recolor a verified asset). fitTransform degenerates to identity
             // here because native dims ≈ target dims within tolerance.
             FurnitureEntityBuilder.attachRealisticModel(model, to: box, dimensions: dims, tint: nil)
+            self.modelFitDimensions[id] = dims
             self.reapplyFurnitureState(for: id, on: box)   // box → transparent (red if invalid)
         }
     }
@@ -1441,14 +1468,17 @@ final class RoomSceneController {
     /// static pieces the plain retint.
     private func reapplyFurnitureState(for id: UUID, on box: Entity) {
         if editingFurniture {
-            FurnitureEntityBuilder.applyPlacementState(
-                lastFurnitureStates[id] ?? .valid,
-                selected: id == lastSelectedFurnitureID,
-                to: box
-            )
+            applyTint(lastFurnitureStates[id] ?? .valid, selected: id == lastSelectedFurnitureID, to: box, id: id)
         } else if let footprint = furnitureSnapshots[id] {
             FurnitureEntityBuilder.retint(box, footprint: footprint)
         }
+    }
+
+    /// Tint a furniture entity and record what it now shows (see `AppliedTint`).
+    private func applyTint(_ state: PlacementState, selected: Bool, to entity: Entity, id: UUID) {
+        FurnitureEntityBuilder.applyPlacementState(state, selected: selected, to: entity)
+        appliedTints[id] = AppliedTint(state: state, selected: selected,
+                                       hasModel: FurnitureEntityBuilder.hasRealisticModel(entity))
     }
 
     /// Which colorable part of a sandbox piece sits under a tap, or nil. `throughPoint`
@@ -1520,7 +1550,7 @@ final class RoomSceneController {
             // and the tint is identical across frames sharing a state. Position still
             // updates every frame for 1:1 finger tracking.
             if state != lastDragState {
-                FurnitureEntityBuilder.applyPlacementState(state, selected: true, to: entity)
+                applyTint(state, selected: true, to: entity, id: id)
             }
             furnitureSnapshots[id] = footprint   // keep snapshot in sync so the post-drag re-sync won't rebuild
         }
@@ -1585,10 +1615,11 @@ final class RoomSceneController {
             // Drop the stale-sized selection border so applyPlacementState rebuilds
             // it to fit the resized box.
             entity.findEntity(named: FurnitureEntityBuilder.selectionOutlineName)?.removeFromParent()
-            FurnitureEntityBuilder.applyPlacementState(state, selected: true, to: entity)
+            applyTint(state, selected: true, to: entity, id: id)
             // Keep a shown realistic model fit to the new size.
             if let visual = FurnitureEntityBuilder.realisticModelChild(of: entity) {
                 FurnitureEntityBuilder.scaleRealisticModel(visual, to: footprint.dimensions)
+                modelFitDimensions[id] = footprint.dimensions
             }
             furnitureSnapshots[id] = footprint
         }
@@ -1644,7 +1675,7 @@ final class RoomSceneController {
             // material and rebuilds the selection border, a per-tick hitch across the
             // (nearly always) identical-state frames of a twist. Mirrors `dragFurniture`.
             if state != lastDragState {
-                FurnitureEntityBuilder.applyPlacementState(state, selected: true, to: entity)
+                applyTint(state, selected: true, to: entity, id: id)
             }
             furnitureSnapshots[id] = footprint
         }
@@ -1731,10 +1762,10 @@ final class RoomSceneController {
         // Show every wall, cap, and opening and skip the dollhouse test entirely.
         if perspective == .walkthrough {
             for wall in walls {
-                wall.entity.isEnabled = true
-                wall.cap?.isEnabled = true
+                setEnabled(wall.entity, true)
+                if let cap = wall.cap { setEnabled(cap, true) }
             }
-            for opening in openings { opening.entity.isEnabled = true }
+            for opening in openings { setEnabled(opening.entity, true) }
             return
         }
         let cam = camera.position(relativeTo: nil)
@@ -1744,12 +1775,18 @@ final class RoomSceneController {
             let toCam = camXZ - wall.midXZ
             let isHidden = simd_dot(wall.outwardXZ, toCam) > 0.05
             hidden[i] = isHidden
-            wall.entity.isEnabled = !isHidden
-            wall.cap?.isEnabled = !isHidden
+            setEnabled(wall.entity, !isHidden)
+            if let cap = wall.cap { setEnabled(cap, !isHidden) }
         }
         for opening in openings where hidden.indices.contains(opening.wallIndex) {
-            opening.entity.isEnabled = !hidden[opening.wallIndex]
+            setEnabled(opening.entity, !hidden[opening.wallIndex])
         }
+    }
+
+    /// Culling runs every frame; writing `isEnabled` marks the entity dirty even
+    /// when the value is unchanged, so only write on an actual flip.
+    private func setEnabled(_ entity: Entity, _ enabled: Bool) {
+        if entity.isEnabled != enabled { entity.isEnabled = enabled }
     }
 
     private func captureThumbnailIfNeeded() {
@@ -1774,14 +1811,25 @@ final class RoomSceneController {
         let size = pixelSize
         guard size.width > 0, size.height > 0 else { return }
         didSnapshot = true
+        // Thumbnails are small list tiles, so render straight at tile size rather
+        // than at full screen resolution: the offscreen render, readback and
+        // composite all run on the main actor and scale with pixel count. The
+        // composite is opaque (it fills the backdrop), so JPEG loses nothing, and
+        // encoding happens off the main thread.
+        let scale = min(1, Self.thumbnailMaxPixels / max(size.width, size.height))
+        let renderSize = CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
         Task { @MainActor in
-            // Thumbnails are small list tiles, so store them downscaled (PNG keeps
-            // the transparent backdrop) instead of a full-screen image per room.
-            guard let image = await self.captureSnapshot(pixelSize: size),
-                  let data = image.downscaled(toMaxPixelDimension: 900).pngData() else { return }
+            guard let image = await self.captureSnapshot(pixelSize: renderSize) else { return }
+            let data = await Task.detached(priority: .utility) {
+                image.jpegData(compressionQuality: 0.85)
+            }.value
+            guard let data else { return }
             self.onThumbnail?(data)
         }
     }
+
+    /// Longest side, in pixels, of a stored room thumbnail.
+    private static let thumbnailMaxPixels: CGFloat = 900
 
     private static func easeOutBack(_ t: Float) -> Float {
         let c1: Float = 1.70158

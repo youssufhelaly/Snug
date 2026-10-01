@@ -30,11 +30,24 @@ struct SnugApp: App {
     /// this back to `false`.
     @AppStorage("hasOnboarded") private var hasOnboarded = false
 
+    /// True when the saved-rooms store couldn't be opened this launch and the app
+    /// is running on a temporary in-memory store instead (release builds only).
+    @State private var storeOpenFailed = false
+
     init() {
+        let (container, openFailed) = Self.openStore()
+        self.container = container
+        _roomStore = State(initialValue: RoomStore(context: container.mainContext))
+        _storeOpenFailed = State(initialValue: openFailed)
+    }
+
+    /// Opens the on-disk store. Returns the container plus whether it had to fall
+    /// back to a temporary in-memory store (release builds only).
+    private static func openStore() -> (ModelContainer, fellBack: Bool) {
         let schema = Schema(versionedSchema: SnugSchemaV1.self)
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         do {
-            container = try Self.makeContainer(schema: schema, configuration: configuration)
+            return (try makeContainer(schema: schema, configuration: configuration), false)
         } catch {
             #if DEBUG
             // The on-disk store is incompatible with the current schema. Pre-release,
@@ -44,22 +57,28 @@ struct SnugApp: App {
             // brick launch, recreate it once from scratch — dev builds only carry
             // dev data. Logged loudly; never silent.
             SnugLog.persistence.error("Data store incompatible (\(String(describing: error), privacy: .public)). Recreating it fresh.")
-            Self.destroyStore(at: configuration.url)
+            destroyStore(at: configuration.url)
             do {
-                container = try Self.makeContainer(schema: schema, configuration: configuration)
+                return (try makeContainer(schema: schema, configuration: configuration), false)
             } catch {
                 fatalError("Could not create the Snug data store after reset: \(error)")
             }
             #else
             // NEVER auto-destroy a user's store in release: a container load
             // failure can also be transient (disk full, corruption in flight),
-            // and wiping it here would delete every saved room. Crash loudly so
-            // the failure is visible and the data stays recoverable; a shipped
-            // schema change must land as a proper SnugMigrationPlan stage.
-            fatalError("Could not open the Snug data store: \(error)")
+            // and wiping it here would delete every saved room. The files on disk
+            // stay untouched and recoverable; this session runs on a temporary
+            // in-memory store and the UI says so plainly, instead of crashing on
+            // launch. A shipped schema change must land as a SnugMigrationPlan stage.
+            SnugLog.persistence.fault("Could not open the data store: \(String(describing: error), privacy: .public). Using a temporary in-memory store.")
+            let fallback = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+            do {
+                return (try makeContainer(schema: schema, configuration: fallback), true)
+            } catch {
+                fatalError("Could not create even an in-memory Snug data store: \(error)")
+            }
             #endif
         }
-        _roomStore = State(initialValue: RoomStore(context: container.mainContext))
     }
 
     private static func makeContainer(schema: Schema, configuration: ModelConfiguration) throws -> ModelContainer {
@@ -92,6 +111,11 @@ struct SnugApp: App {
             .environment(sandbox)
             .task { await catalog.load() }
             .task { await sandbox.load() }
+            .alert("Your saved rooms couldn't be opened", isPresented: $storeOpenFailed) {
+                Button("OK", role: .cancel) {}
+            } message: {
+                Text("Your rooms are still on this iPhone. Close Snug completely and open it again. Until then, new rooms you scan won't be saved.")
+            }
         }
         .modelContainer(container)
     }

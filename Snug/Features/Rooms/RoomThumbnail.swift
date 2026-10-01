@@ -6,13 +6,23 @@ import UIKit
 /// (so a just-saved room never shows a blank tile).
 struct RoomThumbnail: View {
     let stored: StoredRoom
+    /// The decoded snapshot, loaded off the main thread (see `ThumbnailDecoder`).
+    @State private var image: UIImage?
+
+    /// Identifies this exact snapshot, so a re-captured thumbnail is re-decoded.
+    private var cacheKey: String? {
+        stored.thumbnailData.map { "\(stored.id.uuidString)-\($0.count)-\($0.hashValue)" }
+    }
 
     var body: some View {
         ZStack {
-            if let data = stored.thumbnailData, let image = UIImage(data: data) {
+            if let image {
                 Image(uiImage: image)
                     .resizable()
                     .aspectRatio(contentMode: .fill)
+            } else if stored.thumbnailData != nil {
+                // Decoding: hold the tile's shape without flashing the placeholder.
+                SnugTheme.surface
             } else if let room = stored.roomModel {
                 MiniFloorPlan(room: room)
                     .background(SnugTheme.surface)
@@ -24,6 +34,14 @@ struct RoomThumbnail: View {
         }
         .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
         .accessibilityHidden(true)
+        .task(id: cacheKey) {
+            guard let key = cacheKey, let data = stored.thumbnailData else {
+                image = nil
+                return
+            }
+            image = ThumbnailDecoder.cachedImage(forKey: key)
+            if image == nil { image = await ThumbnailDecoder.image(forKey: key, data: data) }
+        }
     }
 }
 

@@ -228,15 +228,16 @@ struct CatalogBrowseOverlay: View {
                         .foregroundStyle(SnugTheme.subtle)
                         .lineLimit(1)
                     Spacer(minLength: 4)
-                    Text(item.formattedPrice)
+                    Text(item.footprintLabel)
                         .font(.system(size: 12, weight: .bold, design: .rounded))
                         .foregroundStyle(SnugTheme.ink)
+                        .lineLimit(1)
                 }
             }
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(item.name) by \(item.brand), \(item.formattedPrice)")
+        .accessibilityLabel("\(item.name) by \(item.brand), \(item.footprintAccessibilityLabel)")
         .accessibilityHint("Adds it to your room")
     }
 
@@ -402,39 +403,33 @@ struct CatalogBrowseOverlay: View {
     /// disclosed in UI copy, no hidden costs).
     @ViewBuilder private var disclosure: some View {
         let copy = tab == .shop
-            ? "Prices and links go to the retailer. Snug may earn a commission, at no extra cost to you."
+            ? "Sizes are each product's listed assembled dimensions. Links open the retailer, where you'll see the current price. Snug may earn a commission, at no extra cost to you."
             : "Sketch shapes are for planning only — resize one to fit your space, then find real, buyable furniture that matches."
         Text(copy)
-            .font(.system(size: 10, weight: .medium))
+            .font(.caption2.weight(.medium))
             .foregroundStyle(SnugTheme.subtle)
             .fixedSize(horizontal: false, vertical: true)
     }
 }
 
 extension CatalogItem {
-    /// Display price, e.g. "$1,199". Whole dollars — we never imply cent-level
-    /// precision on a retailer price that can shift. Main-actor isolated: it's
-    /// only ever read from SwiftUI view bodies and uses a shared formatter cache.
-    @MainActor var formattedPrice: String {
-        let formatter = CatalogItem.priceFormatter(for: currencyCode)
-        let dollars = NSNumber(value: Double(priceCents) / 100.0)
-        return formatter.string(from: dollars) ?? "$\(priceCents / 100)"
+    /// Footprint shown on product cards, e.g. "160 × 40 cm" (width × depth),
+    /// rounded to the centimeter like every size we show. It's the number that
+    /// decides whether a piece fits, so it takes the spot a price would.
+    ///
+    /// Prices are deliberately not shown: the bundled catalog is a snapshot, and
+    /// Amazon's Associates rules only allow prices fetched live from their API.
+    /// The retailer page shows the current price.
+    var footprintLabel: String {
+        "\(Self.centimeters(dimensions.x)) × \(Self.centimeters(dimensions.y)) cm"
     }
 
-    /// Cached currency formatters keyed by currency code. `NumberFormatter` is
-    /// costly to build (it initializes locale state), and `formattedPrice` runs
-    /// once per product card on every render pass — so we reuse one per code
-    /// instead of allocating each call. Accessed on the main thread (SwiftUI
-    /// rendering), so the plain dictionary needs no extra synchronization.
-    @MainActor private static var priceFormatters: [String: NumberFormatter] = [:]
+    /// The footprint read out in words for VoiceOver.
+    var footprintAccessibilityLabel: String {
+        "\(Self.centimeters(dimensions.x)) by \(Self.centimeters(dimensions.y)) centimeters"
+    }
 
-    @MainActor private static func priceFormatter(for currencyCode: String) -> NumberFormatter {
-        if let cached = priceFormatters[currencyCode] { return cached }
-        let formatter = NumberFormatter()
-        formatter.numberStyle = .currency
-        formatter.currencyCode = currencyCode
-        formatter.maximumFractionDigits = 0
-        priceFormatters[currencyCode] = formatter
-        return formatter
+    private static func centimeters(_ meters: Float) -> Int {
+        Int((meters * 100).rounded())
     }
 }

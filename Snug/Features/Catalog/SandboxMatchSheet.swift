@@ -96,7 +96,7 @@ struct SandboxMatchSheet: View {
                         Text(item.brand).font(.system(size: 12, weight: .medium))
                             .foregroundStyle(SnugTheme.subtle)
                         Text("·").foregroundStyle(SnugTheme.subtle)
-                        Text(item.formattedPrice)
+                        Text(item.footprintLabel)
                             .font(.system(size: 13, weight: .bold, design: .rounded))
                             .foregroundStyle(SnugTheme.ink)
                     }
@@ -111,7 +111,7 @@ struct SandboxMatchSheet: View {
         }
         .buttonStyle(.plain)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel("\(item.name) by \(item.brand), \(item.formattedPrice). \(fitState(for: item).headline)")
+        .accessibilityLabel("\(item.name) by \(item.brand), \(item.footprintAccessibilityLabel). \(fitState(for: item).headline)")
         .accessibilityHint("Replaces your sketch with this real product")
     }
 
