@@ -86,6 +86,12 @@ struct RoomDioramaScreen: View {
     /// by default so the card stays short and doesn't cover the piece you selected;
     /// the "paint" tool in the action row toggles it. Reset on selection change.
     @State private var showRecolor = false
+    /// Bumped to ask the scene for a before/after render (see `shareRoom`).
+    @State private var shareRequest = 0
+    @State private var isPreparingShare = false
+    @State private var shareImage: SharedImage?
+    @State private var showShareError = false
+    @State private var showShopList = false
 
     private static let pillSpring = Animation.spring(response: 0.3, dampingFraction: 0.85)
     private static let maxFurniture = 8
@@ -236,6 +242,8 @@ struct RoomDioramaScreen: View {
                     // A failed thumbnail write is cosmetic (regenerated on the
                     // next open), so this one is deliberately not surfaced.
                     onThumbnail: { data in try? store.setThumbnail(data, for: stored) },
+                    shareRequest: shareRequest,
+                    onShareImages: { handleShareImages($0) },
                     editableFurniture: footprints,
                     placementStates: placementStates(for: room),
                     selectedFurnitureID: selectedFurnitureID,
@@ -266,6 +274,7 @@ struct RoomDioramaScreen: View {
         }
         .overlay(alignment: .bottom) { selectedItemOverlay }
         .overlay(alignment: .topTrailing) { if !isWalkthrough { toolCluster } }
+        .overlay(alignment: .topLeading) { sampleRoomChip }
         .overlay(alignment: .top) { limitToast }
         .overlay(alignment: .top) { saveErrorToast }
         .overlay(alignment: .top) { wallPickBanner }
@@ -313,9 +322,32 @@ struct RoomDioramaScreen: View {
                 )
             }
         }
+        .sheet(item: $shareImage) { shared in
+            ShareSheet(items: [shared.image])
+        }
+        .sheet(isPresented: $showShopList) {
+            RoomShoppingListSheet(list: shoppingList)
+        }
+        .alert("Couldn't create the image", isPresented: $showShareError) {
+            Button("OK", role: .cancel) {}
+        } message: {
+            Text("Please try again in a moment.")
+        }
         .navigationTitle(stored.name)
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
+            ToolbarItem(placement: .topBarTrailing) {
+                Button(action: shareRoom) {
+                    if isPreparingShare {
+                        ProgressView()
+                    } else {
+                        Image(systemName: "square.and.arrow.up")
+                    }
+                }
+                .disabled(isPreparingShare || room == nil || isWalkthrough)
+                .accessibilityLabel("Share before and after")
+                .accessibilityHint("Creates an image of your room empty and furnished")
+            }
             ToolbarItem(placement: .topBarTrailing) {
                 Menu {
                     Button {
@@ -1003,6 +1035,7 @@ struct RoomDioramaScreen: View {
             Spacer()
             HStack(spacing: 12) {
                 dimensionsToggle
+                if !shoppingList.isEmpty { shopDockButton }
                 Spacer(minLength: 8)
                 addDockButton
             }
@@ -1011,6 +1044,87 @@ struct RoomDioramaScreen: View {
             .opacity(busy ? 0 : 1)
             .allowsHitTesting(!busy)
         }
+    }
+
+    /// Says plainly that a sample room is an example, not a scan of the user's
+    /// space (CLAUDE.md: never fake the scan).
+    @ViewBuilder private var sampleRoomChip: some View {
+        if room?.provenance == .sample, !isWalkthrough {
+            Label("Sample room", systemImage: "sparkles")
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(SnugTheme.ink)
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                .glassEffect(.regular, in: .capsule)
+                .padding(.leading, 16)
+                .padding(.top, 14)
+                .accessibilityLabel("Sample room. Scan your own room from Home to check real fit.")
+        }
+    }
+
+    /// "Shop" pill: opens every real product in the room with its fit verdict.
+    private var shopDockButton: some View {
+        Button {
+            UIImpactFeedbackGenerator(style: .light).impactOccurred()
+            selectedFurnitureID = nil   // keep the inspector off the sheet
+            showShopList = true
+        } label: {
+            Label("Shop · \(shoppingList.pieceCount)", systemImage: "bag.fill")
+                .font(.subheadline.weight(.semibold))
+                .labelStyle(.titleAndIcon)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 11)
+                .foregroundStyle(SnugTheme.ink)
+        }
+        .buttonStyle(.plain)
+        .glassEffect(.regular.interactive(), in: .capsule)
+        .accessibilityLabel("Shop this room")
+        .accessibilityValue("\(shoppingList.pieceCount) \(shoppingList.pieceCount == 1 ? "piece" : "pieces")")
+        .accessibilityHint("Lists the products in this room with their fit and retailer links")
+    }
+
+    // MARK: - Share & shop
+
+    /// The room as it is right now, with the live (possibly unsaved) layout.
+    private var liveRoom: RoomModel? {
+        guard var room else { return nil }
+        room.detectedFurniture = footprints
+        return room
+    }
+
+    private var shoppingList: RoomShoppingList {
+        guard let liveRoom else { return .empty }
+        return RoomShoppingList(room: liveRoom, catalog: catalog.items)
+    }
+
+    /// Asks the scene for before/after renders; `handleShareImages` composes them.
+    private func shareRoom() {
+        UIImpactFeedbackGenerator(style: .light).impactOccurred()
+        selectedFurnitureID = nil
+        isPreparingShare = true
+        shareRequest += 1
+    }
+
+    private func handleShareImages(_ renders: (before: UIImage, after: UIImage)?) {
+        isPreparingShare = false
+        guard let renders else {
+            showShareError = true
+            return
+        }
+        let list = shoppingList
+        let image = ShareImageComposer.compose(
+            before: renders.before,
+            after: renders.after,
+            roomName: stored.name,
+            caption: ShareImageComposer.caption(productCount: list.pieceCount, fittingCount: fittingPieceCount(list))
+        )
+        shareImage = SharedImage(image: image)
+        UINotificationFeedbackGenerator().notificationOccurred(.success)
+    }
+
+    /// Pieces (not products) that fit, so the caption counts what's in the room.
+    private func fittingPieceCount(_ list: RoomShoppingList) -> Int {
+        list.entries.filter { $0.fit == .fits || $0.fit == .fitsWithRoom }.reduce(0) { $0 + $1.quantity }
     }
 
     /// The "measurements" pill: shows/hides the blueprint dimension labels. An
@@ -1202,4 +1316,10 @@ struct RoomDioramaScreen: View {
             description: Text("The saved data looks damaged. Try scanning the room again.")
         )
     }
+}
+
+/// A composed share image, identifiable so it can drive `.sheet(item:)`.
+private struct SharedImage: Identifiable {
+    let id = UUID()
+    let image: UIImage
 }
