@@ -6,7 +6,8 @@ name: iOS
 on:
   push:
     branches: ['**']
-    paths-ignore: ['web/**', 'docs/**', '**.md', '.github/workflows/web.yml']
+    # Only changes that can affect the app or its tests need a Mac runner.
+    paths-ignore: ['web/**', 'docs/**', 'ml/**', 'tools/**', '**.md', '.github/workflows/web.yml']
   workflow_dispatch:
 
 permissions:
@@ -56,7 +57,9 @@ jobs:
             -scheme Snug \
             -destination "platform=iOS Simulator,id=${{ steps.sim.outputs.udid }}" \
             -resultBundlePath TestResults.xcresult \
+            -enableCodeCoverage NO \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            COMPILER_INDEX_STORE_ENABLE=NO \
             > xcodebuild.log 2>&1 || status=$?
           grep -E "error:|warning:|✘|✔ Suite|Test run|\*\* (BUILD|TEST)" xcodebuild.log | grep -v CoreData | tail -300 || true
           echo "xcodebuild exited with $status"

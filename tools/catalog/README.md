@@ -107,3 +107,28 @@ height)` so the guardrail can compare directly. `assetName` is the file basename
   A `false` model needs a flat-shaded variant or is unusable for tint-per-SKU.
 - **Assigning models to SKUs** — `catalog.json`'s `modelAssetName` is edited by a
   human after the guardrail passes. The pipeline never rewrites the catalog.
+
+## Shrinking Tripo models before they ship
+
+Tripo meshes come out at 300k to 1.5M triangles, 17 to 85 MB per USDZ. That
+pushed the app bundle near 700 MB, past the App Store's 200 MB cellular download
+limit. Fit checks never read the mesh, so the visual mesh can be simplified hard.
+
+```sh
+cd tools/catalog
+npm install
+node shrink_usdz.mjs            # writes shrunk copies to out-shrunk/ for review
+node shrink_usdz.mjs --apply    # replaces the tripo_*.usdz files in the app bundle
+```
+
+For each `tripo_*.usdz` it simplifies the mesh to about 60,000 triangles with
+meshoptimizer (UV-weighted, so texture seams hold), recomputes smooth normals,
+resizes textures to 1024 px, then repackages with `usdzip --arkitAsset` and
+validates with `usdchecker --arkit`. Only the mesh arrays change; transforms,
+materials and texture paths are untouched, so orientation and look match the
+originals. It needs only the USD tools that ship with macOS (`usdcat`,
+`usdzip`, `usdchecker`) plus Node.
+
+Run it after every `generate_3d.py --finalize`. The first run took the bundled
+models from 682 MB to 28 MB. Compare a model before and after with
+`usdrecord -w 600 <file>.usdz out.png`.

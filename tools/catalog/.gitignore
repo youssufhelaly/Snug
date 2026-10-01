@@ -28,3 +28,7 @@ raw_cache/
 
 # Local review scratch (downloaded product photos for the human dim/quality pass)
 review_imgs/
+
+# Node helpers (shrink_usdz.mjs)
+node_modules/
+out-shrunk/
