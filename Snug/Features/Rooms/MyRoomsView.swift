@@ -32,12 +32,24 @@ struct MyRoomsView: View {
 
     private var methods: [any RoomCaptureMethod] { CaptureMethodRegistry.supported }
 
-    private let columns = [GridItem(.adaptive(minimum: 150), spacing: 16)]
+    /// Whether to show the normal home rather than the unsupported-device page.
+    /// The screenshot harness runs in the simulator, which has no AR, so it
+    /// shows the home anyway; nothing there starts a capture.
+    private var showsHome: Bool {
+        #if DEBUG
+        if ScreenshotHarness.isActive { return true }
+        #endif
+        return !methods.isEmpty
+    }
+
+    /// One wide card per row on a phone: a room is something you come back to,
+    /// so its picture gets room to breathe.
+    private let columns = [GridItem(.adaptive(minimum: 300), spacing: 18)]
 
     var body: some View {
         NavigationStack {
             Group {
-                if methods.isEmpty {
+                if !showsHome {
                     UnsupportedDeviceView()
                 } else if rooms.isEmpty {
                     emptyState
@@ -48,6 +60,9 @@ struct MyRoomsView: View {
             .background(SnugTheme.background.ignoresSafeArea())
             .navigationTitle("My rooms")
             .toolbar { toolbarContent }
+            #if DEBUG
+            .task { await runScreenshotHarness() }
+            #endif
             .navigationDestination(item: $openRoom) { stored in
                 RoomDioramaScreen(stored: stored)
             }
@@ -58,7 +73,7 @@ struct MyRoomsView: View {
                 )
             }
             .safeAreaInset(edge: .bottom) {
-                if !methods.isEmpty && !rooms.isEmpty {
+                if showsHome && !rooms.isEmpty {
                     scanButton.padding()
                 }
             }
@@ -240,21 +255,29 @@ struct MyRoomsView: View {
     }
 
     private var emptyState: some View {
-        VStack(spacing: 20) {
-            Spacer()
-            Image(systemName: "house.and.flag")
-                .font(.system(size: 56))
-                .foregroundStyle(SnugTheme.sage)
+        VStack(spacing: 0) {
+            Spacer(minLength: 8)
+            Image("SampleRoomHero")
+                .resizable()
+                .scaledToFit()
+                .clipShape(.rect(cornerRadius: 32))
+                .shadow(color: SnugTheme.clay.opacity(0.25), radius: 24, y: 12)
+                .padding(.horizontal, 36)
                 .accessibilityHidden(true)
-            Text("No rooms yet")
-                .font(.title2.weight(.bold))
-                .foregroundStyle(SnugTheme.ink)
-            Text("Scan your first room and watch it come to life as a cozy little world you can furnish.")
-                .font(.body)
-                .multilineTextAlignment(.center)
-                .foregroundStyle(SnugTheme.subtle)
-                .padding(.horizontal, 40)
-            Spacer()
+            VStack(spacing: 10) {
+                Text("See it in your room\nbefore you buy it")
+                    .font(.system(.title, design: .rounded).weight(.bold))
+                    .foregroundStyle(SnugTheme.ink)
+                    .multilineTextAlignment(.center)
+                Text("Scan a room, drop in real furniture at its true size, and get an honest fit check on every piece.")
+                    .font(.body)
+                    .foregroundStyle(SnugTheme.subtle)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.top, 28)
+            .padding(.horizontal, 32)
+            Spacer(minLength: 16)
             VStack(spacing: 12) {
                 scanButton
                 sampleRoomButton
@@ -272,12 +295,13 @@ struct MyRoomsView: View {
         } label: {
             Label("Try a sample room", systemImage: "sparkles")
                 .font(.headline)
+                .foregroundStyle(SnugTheme.clay)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 14)
+                .padding(.vertical, 16)
+                .background(SnugTheme.surface, in: .capsule)
+                .overlay(Capsule().strokeBorder(SnugTheme.clay.opacity(0.25), lineWidth: 1))
         }
-        .buttonStyle(.bordered)
-        .tint(SnugTheme.clay)
-        .clipShape(Capsule())
+        .buttonStyle(.plain)
         .disabled(isCreatingSample)
         .accessibilityHint("Opens an example bedroom with real furniture you can move around")
     }
@@ -329,6 +353,16 @@ struct MyRoomsView: View {
         }
     }
 
+    #if DEBUG
+    /// Screenshot harness: seed the sample room, and open it for room screens.
+    private func runScreenshotHarness() async {
+        guard ScreenshotHarness.seedsSampleRoom, rooms.isEmpty else { return }
+        await catalog.load()
+        guard let stored = try? store.save(SampleRoom.make(catalog: catalog.items), name: SampleRoom.name) else { return }
+        if ScreenshotHarness.opensSampleRoom { openRoom = stored }
+    }
+    #endif
+
     /// Saves a new furnished sample room and opens it. Waits for the catalog so
     /// the sample arrives furnished even on a cold launch.
     private func addSampleRoom() async {
@@ -364,26 +398,68 @@ struct MyRoomsView: View {
     }
 }
 
-/// One room tile: thumbnail, name, and a friendly size/date subtitle.
+/// One room card: a wide picture of the room, its name, and what's in it.
 private struct RoomCard: View {
     let stored: StoredRoom
 
+    /// "4 pieces · 10.8 m²", decoded off the body so scrolling stays cheap.
+    @State private var details: String?
+    @State private var isSample = false
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            RoomThumbnail(stored: stored)
-                .aspectRatio(4.0 / 3.0, contentMode: .fit)
+        VStack(alignment: .leading, spacing: 12) {
+            // A fixed-shape frame the picture fills; a fill-scaled image would
+            // otherwise grow the frame to its own (square) shape.
+            Color.clear
+                .aspectRatio(16.0 / 10.0, contentMode: .fit)
+                .overlay { RoomThumbnail(stored: stored) }
+                .clipShape(.rect(cornerRadius: 20))
 
-            Text(stored.name)
-                .font(.subheadline.weight(.semibold))
-                .foregroundStyle(SnugTheme.ink)
-                .lineLimit(1)
-
-            Text(stored.capturedAt, format: .dateTime.month().day())
-                .font(.caption)
-                .foregroundStyle(SnugTheme.subtle)
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 3) {
+                    Text(stored.name)
+                        .font(.system(.title3, design: .rounded).weight(.bold))
+                        .foregroundStyle(SnugTheme.ink)
+                        .lineLimit(1)
+                    Text(subtitle)
+                        .font(.subheadline)
+                        .foregroundStyle(SnugTheme.subtle)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 8)
+                if isSample {
+                    Text("Sample")
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(SnugTheme.clay)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 5)
+                        .background(SnugTheme.clay.opacity(0.12), in: .capsule)
+                }
+            }
+            .padding(.horizontal, 6)
         }
+        .padding(10)
+        .padding(.bottom, 6)
+        .background(SnugTheme.surface, in: .rect(cornerRadius: 28))
+        .shadow(color: .black.opacity(0.05), radius: 12, y: 4)
         .accessibilityElement(children: .combine)
-        .accessibilityLabel(stored.name)
+        .accessibilityLabel(isSample ? "\(stored.name), sample room" : stored.name)
+        .accessibilityValue(subtitle)
+        .task(id: stored.roomData) { loadDetails() }
+    }
+
+    private var subtitle: String {
+        let date = stored.capturedAt.formatted(.dateTime.month().day())
+        guard let details else { return date }
+        return "\(details) · \(date)"
+    }
+
+    private func loadDetails() {
+        guard let room = stored.roomModel else { return }
+        let pieces = room.detectedFurniture.filter { !$0.isCleared }.count
+        let area = room.floorArea.formatted(.number.precision(.fractionLength(1)))
+        details = pieces == 0 ? "\(area) m²" : "\(pieces) \(pieces == 1 ? "piece" : "pieces") · \(area) m²"
+        isSample = room.provenance == .sample
     }
 }
 

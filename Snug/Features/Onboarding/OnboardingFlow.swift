@@ -67,11 +67,20 @@ private struct OnboardingSlidesView: View {
     let onGetStarted: () -> Void
 
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @State private var selection = 0
+    @State private var selection = Self.initialSlide
     /// Toggled on each forward step purely to drive a light tap haptic.
     @State private var stepped = false
 
     private let slides = OnboardingSlide.all
+
+    /// The first slide shown; the screenshot harness can start further in.
+    private static var initialSlide: Int {
+        #if DEBUG
+        return UserDefaults.standard.integer(forKey: "snugSlide")
+        #else
+        return 0
+        #endif
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -134,7 +143,8 @@ private struct OnboardingSlidesView: View {
     }
 }
 
-/// One value slide: a friendly symbol, a rounded headline, and warm body copy.
+/// One value slide: a visual that shows the idea, a rounded headline, and
+/// warm body copy.
 private struct OnboardingSlideView: View {
     let slide: OnboardingSlide
     let isActive: Bool
@@ -142,14 +152,12 @@ private struct OnboardingSlideView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     var body: some View {
-        VStack(spacing: 24) {
-            Spacer()
+        VStack(spacing: 28) {
+            Spacer(minLength: 12)
 
-            Image(systemName: slide.symbol)
-                .font(.system(size: 88))
-                .foregroundStyle(slide.tint)
-                .symbolRenderingMode(.hierarchical)
-                .symbolEffect(.bounce, value: isActive && !reduceMotion)
+            visual
+                .frame(maxWidth: .infinity)
+                .frame(height: 320)
                 .accessibilityHidden(true)
 
             VStack(spacing: 12) {
@@ -165,41 +173,116 @@ private struct OnboardingSlideView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
 
-            Spacer()
-            Spacer()
+            Spacer(minLength: 12)
         }
         .frame(maxWidth: .infinity)
         .accessibilityElement(children: .combine)
         .accessibilityLabel("\(slide.title). \(slide.body)")
     }
+
+    @ViewBuilder private var visual: some View {
+        switch slide.visual {
+        case .scan:
+            ScanVisual(isActive: isActive && !reduceMotion)
+        case .room:
+            Image("SampleRoomHero")
+                .resizable()
+                .scaledToFit()
+                .clipShape(.rect(cornerRadius: 32))
+                .shadow(color: SnugTheme.clay.opacity(0.25), radius: 24, y: 12)
+                .padding(.horizontal, 8)
+        case .verdicts:
+            VerdictsVisual(isActive: isActive, reduceMotion: reduceMotion)
+        }
+    }
+}
+
+/// A camera mark inside soft, breathing rings: "point your phone at the room".
+private struct ScanVisual: View {
+    let isActive: Bool
+
+    var body: some View {
+        ZStack {
+            ForEach(0..<3, id: \.self) { ring in
+                Circle()
+                    .stroke(SnugTheme.clay.opacity(0.18 - Double(ring) * 0.05), lineWidth: 2)
+                    .frame(width: 170 + CGFloat(ring) * 60, height: 170 + CGFloat(ring) * 60)
+            }
+            Circle()
+                .fill(SnugTheme.clay.opacity(0.12))
+                .frame(width: 170, height: 170)
+            Image(systemName: "camera.viewfinder")
+                .font(.system(size: 76, weight: .medium))
+                .foregroundStyle(SnugTheme.clay)
+                .symbolEffect(.breathe, isActive: isActive)
+        }
+    }
+}
+
+/// The four honest fit verdicts, exactly as the app shows them, so the promise
+/// on this slide is the real product, not a marketing claim.
+private struct VerdictsVisual: View {
+    let isActive: Bool
+    let reduceMotion: Bool
+
+    private let states: [FitResult.State] = [.fitsWithRoom, .fits, .tooCloseToCall, .wontFit]
+
+    var body: some View {
+        VStack(spacing: 12) {
+            ForEach(states, id: \.headline) { state in
+                let index = states.firstIndex(of: state) ?? 0
+                HStack(spacing: 12) {
+                    Image(systemName: state.symbol)
+                        .font(.system(size: 20, weight: .semibold))
+                        .foregroundStyle(state.tint)
+                        .frame(width: 40, height: 40)
+                        .background(state.tint.opacity(0.14), in: .circle)
+                    Text(state.headline)
+                        .font(.system(.headline, design: .rounded))
+                        .foregroundStyle(SnugTheme.ink)
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 16)
+                .padding(.vertical, 10)
+                .background(SnugTheme.surface, in: .rect(cornerRadius: 18))
+                .shadow(color: .black.opacity(0.05), radius: 10, y: 4)
+                .opacity(isActive || reduceMotion ? 1 : 0)
+                .offset(y: isActive || reduceMotion ? 0 : 16)
+                .animation(SnugTheme.spring.delay(Double(index) * 0.08), value: isActive)
+            }
+        }
+        .padding(.horizontal, 8)
+    }
 }
 
 /// Static copy for the value slides. Kept as data so the slide view stays dumb.
 private struct OnboardingSlide: Identifiable {
+    enum Visual {
+        case scan
+        case room
+        case verdicts
+    }
+
     let id = UUID()
-    let symbol: String
-    let tint: Color
+    let visual: Visual
     let title: String
     let body: String
 
     static let all: [OnboardingSlide] = [
         OnboardingSlide(
-            symbol: "camera.viewfinder",
-            tint: SnugTheme.clay,
+            visual: .scan,
             title: "Scan your room",
-            body: "A quick sweep with your camera turns your space into a cozy little 3D world — no tape measure, no guesswork."
+            body: "Tap the corners of your room with your iPhone's camera. No LiDAR, no tape measure."
         ),
         OnboardingSlide(
-            symbol: "wand.and.stars",
-            tint: SnugTheme.sage,
-            title: "Play house, for real",
-            body: "Drag in furniture and rearrange to your heart's content in a playful 3D view that's all yours."
+            visual: .room,
+            title: "Try real furniture",
+            body: "Drop in real products at their true size and arrange them until it feels like home."
         ),
         OnboardingSlide(
-            symbol: "checkmark.seal.fill",
-            tint: SnugTheme.clay,
-            title: "Buy what truly fits",
-            body: "Flip to true-to-scale, true-color mode and we'll tell you honestly whether it fits — tape-measure honest, never a fake green check."
+            visual: .verdicts,
+            title: "Know before you buy",
+            body: "Every piece gets an honest fit check. When it's too close to call, we'll tell you to measure."
         )
     ]
 }

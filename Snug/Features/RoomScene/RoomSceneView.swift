@@ -126,9 +126,13 @@ struct RoomSceneView: View {
                 // `SceneEvents.Update` fires on the main thread; `assumeIsolated`
                 // bridges the non-isolated handler to the controller's main-actor
                 // methods (and crashes loudly if that ever stops being true).
-                controller.updateSub = content.subscribe(to: SceneEvents.Update.self) { [weak controller] event in
+                // Bind a local first: `controller` here is the view's `@State`, read
+                // through `self`, so weak-capturing it directly conflicts with the
+                // strong capture of `self` the outer closure already holds.
+                let sceneController = controller
+                sceneController.updateSub = content.subscribe(to: SceneEvents.Update.self) { [weak sceneController] event in
                     MainActor.assumeIsolated {
-                        controller?.onSceneUpdate(deltaTime: event.deltaTime)
+                        sceneController?.onSceneUpdate(deltaTime: event.deltaTime)
                     }
                 }
             } update: { _ in
@@ -661,10 +665,15 @@ final class RoomSceneController {
         // the whole session (orbiting/zooming won't revert it and re-break gestures).
         var cam = PerspectiveCameraComponent()
         cam.fieldOfViewInDegrees = Self.isoFOVDegrees
+        // The diorama FOV spans the screen's WIDTH. On a portrait phone width is
+        // the tight dimension, so a vertical FOV framed the room to the screen's
+        // height and cropped its sides; `frameCamera` fits the room to this angle.
+        cam.fieldOfViewOrientation = .horizontal
         camera.components.set(cam)
         cameraAnchor.addChild(camera)
 
         frameCamera(room: room)
+        playIntroReveal()
         applyPalette()
         updateCamera()
     }
@@ -1073,6 +1082,10 @@ final class RoomSceneController {
     /// `includeFurniture == false` the furniture is removed too, for "before".
     private func captureSnapshot(pixelSize: CGSize, includeFurniture: Bool = true) async -> UIImage? {
         let sceneClone = root.clone(recursive: true)
+        // RealityKit's offscreen renderer crashes (EXC_BAD_ACCESS in
+        // BillboardManager) on billboarded entities, which the floating category
+        // labels are. They're editor aids, not part of the room, so strip them.
+        Self.removeBillboards(from: sceneClone)
         for child in Array(sceneClone.children) where child.components[FurnitureTagComponent.self] != nil {
             if includeFurniture {
                 child.findEntity(named: FurnitureEntityBuilder.selectionOutlineName)?.removeFromParent()
@@ -1081,11 +1094,29 @@ final class RoomSceneController {
             }
         }
         let cameraClone = camera.clone(recursive: false)
+        // The live lens spans the portrait screen's width. A landscape image (the
+        // share panels) is limited by its height instead, so measure the same
+        // angle vertically there or the room's top and bottom get cropped.
+        if pixelSize.width > pixelSize.height, var lens = cameraClone.components[PerspectiveCameraComponent.self] {
+            lens.fieldOfViewOrientation = .vertical
+            cameraClone.components.set(lens)
+        }
         cameraClone.transform = Transform(matrix: camera.transformMatrix(relativeTo: nil))
 
         guard let raw = await OffscreenSnapshotRenderer.image(
             scene: sceneClone, camera: cameraClone, pixelSize: pixelSize) else { return nil }
         return Self.composite(raw, over: RoomPalette.palette(style: surfaceStyle).background)
+    }
+
+    /// Removes every billboarded descendant of `entity` (see `captureSnapshot`).
+    private static func removeBillboards(from entity: Entity) {
+        for child in Array(entity.children) {
+            if child.components.has(BillboardComponent.self) {
+                child.removeFromParent()
+            } else {
+                removeBillboards(from: child)
+            }
+        }
     }
 
     /// Flatten a (transparent-backed) render over a solid background colour so the
@@ -1125,7 +1156,10 @@ final class RoomSceneController {
         // reads near-isometric, but it IS perspective (required for native gestures).
         let halfFOV = (Self.isoFOVDegrees * .pi / 180) / 2
         let fitDistance = (extent * 0.5) / tan(halfFOV)
-        radius = max(fitDistance * 0.85, 2.0)
+        // Past the exact fit on purpose: the fit uses the floor's diagonal, but in
+        // this angled view the wall tops project wider than the floor, so extra
+        // distance keeps every wall on screen with breathing room around it.
+        radius = max(fitDistance * 1.18, 2.0)
         radiusRange = max(fitDistance * 0.3, 0.8)...max(fitDistance * 3.0, 14)
         // Slightly steeper than the canonical iso angle — a more top-down read makes
         // the floor plan and furniture placement clearer.
@@ -1149,6 +1183,19 @@ final class RoomSceneController {
         // `PerspectiveCameraComponent` from `makeEntities` must persist (re-setting an
         // ortho component each frame is what re-broke native gesture hit-testing).
         camera.look(at: target, from: position, relativeTo: nil)
+    }
+
+    /// Opens on a wider, slightly turned view and glides into the framed room, so
+    /// the room arrives instead of popping in. Skipped with Reduce Motion.
+    private func playIntroReveal() {
+        guard !UIAccessibility.isReduceMotionEnabled else { return }
+        cameraAnim = CameraAnim(
+            duration: 1.1,
+            fromAz: defaultAzimuth + 0.55, toAz: defaultAzimuth,
+            fromEl: defaultElevation + 0.18, toEl: defaultElevation,
+            fromR: defaultRadius * 1.5, toR: defaultRadius,
+            fromTarget: defaultTarget, toTarget: defaultTarget
+        )
     }
 
     func resetCamera(animated: Bool) {
@@ -1291,9 +1338,13 @@ final class RoomSceneController {
 
     /// Change the FOV of the existing perspective camera in place (never swaps the
     /// component type — that's what re-broke gesture hit-testing historically).
+    /// Sets the lens. The diorama measures its narrow FOV across the screen's
+    /// width (see `makeEntities`); the first-person walkthrough's wide FOV range
+    /// is tuned as a vertical angle, so it switches orientation with the mode.
     private func setCameraFOV(_ degrees: Float) {
         guard var cam = camera.components[PerspectiveCameraComponent.self] else { return }
         cam.fieldOfViewInDegrees = degrees
+        cam.fieldOfViewOrientation = degrees == Self.isoFOVDegrees ? .horizontal : .vertical
         camera.components.set(cam)
     }
 
@@ -1827,7 +1878,9 @@ final class RoomSceneController {
     }
 
     private func captureThumbnailIfNeeded() {
-        guard !didSnapshot, onThumbnail != nil else { return }
+        // Wait for any camera glide (the intro reveal) so the thumbnail is the
+        // settled, framed view rather than a mid-animation angle.
+        guard !didSnapshot, onThumbnail != nil, cameraAnim == nil else { return }
         frameCount += 1
         // Give the scene a few frames to render (and the async environment a chance
         // to load) before grabbing the thumbnail. Wait, too, until the view's pixel

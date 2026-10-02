@@ -115,6 +115,15 @@ struct RoomDioramaScreen: View {
 
     private var isWalkthrough: Bool { perspective == .walkthrough }
 
+    /// Debug-only: the screenshot harness can hide every control for a clean render.
+    private var chromeHidden: Bool {
+        #if DEBUG
+        ScreenshotHarness.hidesChrome
+        #else
+        false
+        #endif
+    }
+
     init(stored: StoredRoom) {
         self.stored = stored
         let decoded = stored.roomModel
@@ -267,14 +276,15 @@ struct RoomDioramaScreen: View {
                 .ignoresSafeArea()
 
                 // Editing chrome only in the diorama; walkthrough is a preview.
-                if !isWalkthrough { controls }
+                if !isWalkthrough && !chromeHidden { controls }
             } else {
                 unreadableRoom
             }
         }
         .overlay(alignment: .bottom) { selectedItemOverlay }
-        .overlay(alignment: .topTrailing) { if !isWalkthrough { toolCluster } }
-        .overlay(alignment: .topLeading) { sampleRoomChip }
+        .overlay(alignment: .topTrailing) { if !isWalkthrough && !chromeHidden { toolCluster } }
+        .overlay(alignment: .topLeading) { if !chromeHidden { sampleRoomChip } }
+        .toolbarVisibility(chromeHidden ? .hidden : .automatic, for: .navigationBar)
         .overlay(alignment: .top) { limitToast }
         .overlay(alignment: .top) { saveErrorToast }
         .overlay(alignment: .top) { wallPickBanner }
@@ -299,6 +309,20 @@ struct RoomDioramaScreen: View {
             Text("Removes all furniture so you can start over. You can undo this.")
         }
         .sheet(isPresented: $showCarousel) { carousel }
+        #if DEBUG
+        .task {
+            // Screenshot harness: wait for the scene and models, then stage the screen.
+            guard let screen = ScreenshotHarness.screen else { return }
+            try? await Task.sleep(for: .seconds(2))
+            switch screen {
+            case .selected: selectedFurnitureID = footprints.first(where: { $0.catalogItemID != nil })?.id
+            case .catalog: showCarousel = true
+            case .shop: showShopList = true
+            case .share: shareRoom()
+            default: break
+            }
+        }
+        #endif
         .sheet(isPresented: $showSurfaces) {
             if let room {
                 RoomSurfacesSheet(style: room.surfaceStyle, onChange: setSurfaceStyle)
@@ -1120,6 +1144,11 @@ struct RoomDioramaScreen: View {
         )
         shareImage = SharedImage(image: image)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+        #if DEBUG
+        if ScreenshotHarness.screen == .share, let png = image.pngData() {
+            try? png.write(to: FileManager.default.temporaryDirectory.appending(path: "snug-share.png"))
+        }
+        #endif
     }
 
     /// Pieces (not products) that fit, so the caption counts what's in the room.
@@ -1159,7 +1188,7 @@ struct RoomDioramaScreen: View {
     @ViewBuilder private var toolCluster: some View {
         let busy = showCarousel || showFineTune
         GlassEffectContainer {
-            HStack(spacing: 2) {
+            VStack(spacing: 2) {
                 // Signature "step inside" — clay-tinted so it reads as special, not
                 // just another utility. Disabled if the room has no valid vantages.
                 toolButton("figure.walk", label: "Step inside",
@@ -1191,10 +1220,12 @@ struct RoomDioramaScreen: View {
                     resetToken += 1
                 }
             }
-            .padding(.horizontal, 4)
-            .frame(height: 46)
+            .padding(.vertical, 4)
+            .frame(width: 46)
             .glassEffect(.regular, in: .capsule)
         }
+        // A vertical column on the trailing edge (like Maps' controls) keeps the
+        // top-left free for the room chip and never crowds the navigation bar.
         .padding(.trailing, 16)
         .padding(.top, 8)
         .opacity(busy ? 0 : 1)
