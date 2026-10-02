@@ -45,6 +45,15 @@ struct SnugApp: App {
     /// back to a temporary in-memory store (release builds only).
     private static func openStore() -> (ModelContainer, fellBack: Bool) {
         let schema = Schema(versionedSchema: SnugSchemaV1.self)
+        #if DEBUG
+        // Screenshot runs use a throwaway store so they never touch real rooms.
+        if ScreenshotHarness.isActive {
+            let scratch = ModelConfiguration(schema: schema, isStoredInMemoryOnly: true)
+            if let container = try? makeContainer(schema: schema, configuration: scratch) {
+                return (container, false)
+            }
+        }
+        #endif
         let configuration = ModelConfiguration(schema: schema, isStoredInMemoryOnly: false)
         do {
             return (try makeContainer(schema: schema, configuration: configuration), false)
@@ -111,6 +120,11 @@ struct SnugApp: App {
             .environment(sandbox)
             .task { await catalog.load() }
             .task { await sandbox.load() }
+            #if DEBUG
+            .onAppear {
+                if let screen = ScreenshotHarness.screen { hasOnboarded = screen != .onboarding }
+            }
+            #endif
             .alert("Your saved rooms couldn't be opened", isPresented: $storeOpenFailed) {
                 Button("OK", role: .cancel) {}
             } message: {
