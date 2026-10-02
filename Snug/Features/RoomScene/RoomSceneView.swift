@@ -83,6 +83,10 @@ struct RoomSceneView: View {
     @State private var furnitureDragIsMove = false
     @State private var furnitureResizeActive = false
     @State private var furnitureRotateActive = false
+    /// Set once a camera swipe is underway, so sweeping the finger across
+    /// furniture mid-orbit can't select or grab a piece. Written once per
+    /// gesture (not per tick), then cleared when the swipe ends.
+    @State private var cameraOrbitActive = false
 
     @Environment(\.displayScale) private var displayScale
     @Environment(CatalogService.self) private var catalog
@@ -256,30 +260,28 @@ struct RoomSceneView: View {
         DragGesture()
             .targetedToAnyEntity()
             .onChanged { value in
-                guard perspective == .diorama else { return }
+                guard perspective == .diorama, !cameraOrbitActive else { return }
                 guard let (root, id) = taggedFurnitureRoot(for: value.entity),
                       let parent = root.parent else { return }
                 let floorPlane = Self.horizontalPlane(atHeight: root.position.y)
 
                 if furnitureDragID != id {
+                    // Only the selected piece can be dragged. A drag that lands on
+                    // any other piece is a camera swipe passing over it: it must
+                    // not select it (selection is a tap) or stop the orbit.
+                    guard id == selectedFurnitureID else { return }
                     furnitureDragID = id
+                    furnitureDragIsMove = true
 
-                    if id == selectedFurnitureID {
-                        furnitureDragIsMove = true
-
-                        // Anchor the grab at the finger's CURRENT location, not
-                        // `startLocation`. DragGesture's ~10pt minimumDistance deadzone
-                        // means the finger has already traveled before this first tick
-                        // fires; anchoring at startLocation would make the piece lurch
-                        // by that gap on frame one (the "initial hard push"). Using the
-                        // same point we feed to `dragFurniture` below yields zero jump.
-                        if let grab = value.unproject(value.location, from: .local,
-                                                      to: parent, ontoPlane: floorPlane) {
-                            controller.beginFurnitureDrag(id, grabWorldXZ: SIMD2(grab.x, grab.z))
-                        }
-                    } else {
-                        furnitureDragIsMove = false
-                        onSelectFurniture?(id)
+                    // Anchor the grab at the finger's CURRENT location, not
+                    // `startLocation`. DragGesture's ~10pt minimumDistance deadzone
+                    // means the finger has already traveled before this first tick
+                    // fires; anchoring at startLocation would make the piece lurch
+                    // by that gap on frame one (the "initial hard push"). Using the
+                    // same point we feed to `dragFurniture` below yields zero jump.
+                    if let grab = value.unproject(value.location, from: .local,
+                                                  to: parent, ontoPlane: floorPlane) {
+                        controller.beginFurnitureDrag(id, grabWorldXZ: SIMD2(grab.x, grab.z))
                     }
                 }
 
@@ -368,9 +370,15 @@ struct RoomSceneView: View {
                 // its first tick; once set, this simultaneous orbit no-ops so dragging
                 // a piece doesn't also spin the camera. Empty-space drags never set it.
                 guard furnitureDragID == nil else { return }
+                // Past the drag threshold with no piece claimed, this is a camera
+                // swipe; lock furniture out until it ends (see `cameraOrbitActive`).
+                if !cameraOrbitActive, hypot(value.translation.width, value.translation.height) > 12 {
+                    cameraOrbitActive = true
+                }
                 controller.orbitContinuous(translation: value.translation)
             }
             .onEnded { _ in
+                cameraOrbitActive = false
                 if perspective == .walkthrough { controller.endLook() } else { controller.endOrbit() }
             }
     }
@@ -677,6 +685,8 @@ final class RoomSceneController {
         // the whole session (orbiting/zooming won't revert it and re-break gestures).
         var cam = PerspectiveCameraComponent()
         cam.fieldOfViewInDegrees = Self.isoFOVDegrees
+        cam.near = Self.dioramaNearPlane
+        cam.far = Self.farPlane
         // The diorama FOV spans the screen's WIDTH. On a portrait phone width is
         // the tight dimension, so a vertical FOV framed the room to the screen's
         // height and cropped its sides; `frameCamera` fits the room to this angle.
@@ -846,11 +856,13 @@ final class RoomSceneController {
         let w = (maxX - minX) + margin * 2
         let dz = (maxZ - minZ) + margin * 2
         // A deep, rounded platform — the chunky base of the floating model. Its top
-        // sits at floor level (y == 0); it extrudes downward.
+        // sits 1 cm below the floor sheet: a top flush with the floor z-fought
+        // with it (flickering floor). It extrudes downward.
         let baseHeight: Float = 0.14
+        let baseTopGap: Float = 0.01
         let mesh = MeshResource.generateBox(size: [w, baseHeight, dz], cornerRadius: 0.10)
         let entity = ModelEntity(mesh: mesh, materials: [placeholderMaterial()])
-        entity.position = SIMD3((minX + maxX) / 2, -baseHeight / 2, (minZ + maxZ) / 2)
+        entity.position = SIMD3((minX + maxX) / 2, -baseHeight / 2 - baseTopGap, (minZ + maxZ) / 2)
         return entity
     }
 
@@ -1353,10 +1365,21 @@ final class RoomSceneController {
     /// is tuned as a vertical angle, so it switches orientation with the mode.
     private func setCameraFOV(_ degrees: Float) {
         guard var cam = camera.components[PerspectiveCameraComponent.self] else { return }
+        let isDiorama = degrees == Self.isoFOVDegrees
         cam.fieldOfViewInDegrees = degrees
-        cam.fieldOfViewOrientation = degrees == Self.isoFOVDegrees ? .horizontal : .vertical
+        cam.fieldOfViewOrientation = isDiorama ? .horizontal : .vertical
+        cam.near = isDiorama ? Self.dioramaNearPlane : Self.walkthroughNearPlane
         camera.components.set(cam)
     }
+
+    /// Clipping planes. The default near plane (1 cm) with the diorama camera
+    /// 15-20 m out spread depth precision so thin that the floor sheet and the
+    /// base beneath it z-fought ("TV static" on the floor). The diorama camera
+    /// never gets within a few meters of anything, so 0.5 m costs nothing;
+    /// first-person needs a close near plane to stand next to furniture.
+    static let dioramaNearPlane: Float = 0.5
+    static let walkthroughNearPlane: Float = 0.05
+    static let farPlane: Float = 200
 
     /// Apply a changed wall/floor choice live (the surfaces sheet is open over the
     /// diorama, so the pick previews instantly). Materials only — no geometry.
@@ -1709,7 +1732,8 @@ final class RoomSceneController {
             // FurnitureEntityBuilder. Replace mesh + collision in place.
             model.mesh = .generateBox(width: width, height: height, depth: depth, cornerRadius: 0.04)
             entity.model = model
-            entity.collision = CollisionComponent(shapes: [.generateBox(size: SIMD3(width, height, depth))])
+            entity.collision = CollisionComponent(shapes: [.generateBox(
+                size: FurnitureEntityBuilder.tapTargetSize(for: SIMD3(width, height, depth)))])
             // Drop the stale-sized selection border so applyPlacementState rebuilds
             // it to fit the resized box.
             entity.findEntity(named: FurnitureEntityBuilder.selectionOutlineName)?.removeFromParent()

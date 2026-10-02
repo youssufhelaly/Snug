@@ -61,7 +61,7 @@ enum FurnitureEntityBuilder {
         root.orientation = simd_quatf(angle: footprint.yRotation, axis: [0, 1, 0])
 
         // Collision + input target so the de-clutter scene can hit-test taps.
-        root.collision = CollisionComponent(shapes: [.generateBox(size: size)])
+        root.collision = CollisionComponent(shapes: [.generateBox(size: tapTargetSize(for: size))])
         root.components.set(InputTargetComponent())
         root.components.set(FurnitureTagComponent(
             footprintID: footprint.id,
@@ -591,6 +591,14 @@ enum FurnitureEntityBuilder {
         }
         component.materials = [material(for: footprint, opacity: defaultOpacity)]
         model.model = component
+    }
+
+    /// The tap/drag hit box for a piece of `size` (model axes: width, height,
+    /// depth). Slightly larger than the piece and never tiny: with the whole room
+    /// on screen a nightstand is only ~20 pt wide, and exact-size boxes made taps
+    /// miss. Fit checks never read this; they use the real footprint.
+    static func tapTargetSize(for size: SIMD3<Float>) -> SIMD3<Float> {
+        SIMD3(max(size.x + 0.08, 0.35), size.y + 0.08, max(size.z + 0.08, 0.35))
     }
 
     /// Name of the floating category label child, so model attach/detach can
