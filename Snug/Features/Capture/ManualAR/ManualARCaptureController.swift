@@ -337,25 +337,58 @@ final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOv
     /// arrive but the passthrough renders black, alternating every other scan). A
     /// reused `ARView` initializes its renderer ONCE (first cold scan) and is never
     /// re-created, so there is no fresh renderer for the RealityView to poison.
-    /// Created lazily on the main thread at first capture. `attach` fully re-prepares
-    /// it each time (clears prior gestures/coaching/anchors), so reuse is clean.
-    /// Only ever accessed on the main thread (from the representable's makeUIView).
-    static let sharedARView = ARView(frame: .zero)
-
-    /// Creates `sharedARView` now, at launch, before any 3D room has been shown.
+    /// Created and briefly hosted at launch (`prewarmCaptureView`). `attach` fully
+    /// re-prepares it each time (clears prior gestures/coaching/anchors), so reuse
+    /// is clean. Only ever accessed on the main thread.
     ///
-    /// It used to be created on the first scan. If that first scan came after a
-    /// room was opened, the new ARView came up under the diorama's lingering
-    /// RealityView render context and showed a black feed (the next attempt
-    /// worked, hence "black every other time"). Creating it before any diorama
-    /// exists keeps its renderer clean. Main thread only; no-op once created.
+    /// `automaticallyConfigureSession: false`: `attach` runs its own configuration,
+    /// and the launch prewarm must put this view on screen WITHOUT starting a
+    /// session (that would light the camera and could prompt for permission
+    /// before onboarding's primer).
+    static let sharedARView = ARView(frame: .zero, cameraMode: .ar, automaticallyConfigureSession: false)
+
+    private static var didPrewarm = false
+
+    /// Creates `sharedARView` at launch and puts it on screen for a moment,
+    /// before any 3D room exists.
+    ///
+    /// Two device bugs come from the order the app's two RealityKit views first
+    /// appear. Created lazily at the first scan, after a room had been shown, the
+    /// ARView came up black. Created at launch but never shown, it left the
+    /// room's `RealityView` blank on the first open after launch, until a scan
+    /// had put the ARView on screen. Hosting it once, 2pt and behind all content,
+    /// with no session running, gets its renderer fully set up first so neither
+    /// view breaks the other. Main thread only; runs once.
     static func prewarmCaptureView() {
-        guard ARWorldTrackingConfiguration.isSupported else { return }
-        _ = sharedARView
+        guard ARWorldTrackingConfiguration.isSupported, !didPrewarm else { return }
+        didPrewarm = true
+        Task { @MainActor in
+            // The window may not exist yet on the first `onAppear`.
+            var window: UIWindow?
+            for _ in 0..<20 {
+                window = UIApplication.shared.connectedScenes
+                    .compactMap { ($0 as? UIWindowScene)?.keyWindow }.first
+                if window != nil { break }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard let window else { return }
+            let arView = sharedARView
+            // A scan may have hosted it in the meantime; leave it there.
+            guard arView.superview == nil else { return }
+            arView.frame = CGRect(x: 0, y: 0, width: 2, height: 2)
+            arView.isUserInteractionEnabled = false
+            window.insertSubview(arView, at: 0)
+            // A few frames is enough for the renderer to come up.
+            try? await Task.sleep(for: .milliseconds(500))
+            if arView.superview === window { arView.removeFromSuperview() }
+            arView.isUserInteractionEnabled = true
+        }
     }
 
     func attach(to arView: ARView) {
         self.arView = arView
+        // The launch prewarm hosts it non-interactive; a scan can start mid-prewarm.
+        arView.isUserInteractionEnabled = true
 
         // This ARView is REUSED across captures, so strip anything a previous scan's
         // controller left on it before re-preparing — otherwise gesture recognizers,

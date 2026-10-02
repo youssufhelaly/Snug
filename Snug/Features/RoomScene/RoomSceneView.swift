@@ -198,6 +198,9 @@ struct RoomSceneView: View {
     /// A horizontal plane (normal = +Y) at world height `y`, expressed as a 4×4
     /// transform for `unproject(…ontoPlane:)`. Used to drop the 2D drag point onto
     /// the floor during a furniture move.
+    /// How far (pt) a finger can travel and still count as a tap on furniture.
+    private static let tapSlop: CGFloat = 24
+
     private static func horizontalPlane(atHeight y: Float) -> float4x4 {
         var m = matrix_identity_float4x4
         m.columns.3.y = y
@@ -254,8 +257,9 @@ struct RoomSceneView: View {
     }
 
     /// Drag a furniture entity. On the selected piece → move it on the floor using
-    /// RealityKit's native `unproject(…ontoPlane:)` (camera-correct, no manual ray);
-    /// dragging an UNselected piece selects it without moving (a second drag moves).
+    /// RealityKit's native `unproject(…ontoPlane:)` (camera-correct, no manual ray).
+    /// Dragging any other piece doesn't grab it: a long drag orbits the camera, and
+    /// a short one (within `tapSlop`) counts as a tap and selects it.
     private var furnitureDragGesture: some Gesture {
         DragGesture()
             .targetedToAnyEntity()
@@ -291,9 +295,16 @@ struct RoomSceneView: View {
                     controller.dragFurniture(toWorldXZ: SIMD2(world.x, world.z))
                 }
             }
-            .onEnded { _ in
+            .onEnded { value in
                 if furnitureDragIsMove {
                     onFurnitureChanged?(controller.endFurnitureDrag())
+                } else if perspective == .diorama,
+                          hypot(value.translation.width, value.translation.height) < Self.tapSlop,
+                          let (_, id) = taggedFurnitureRoot(for: value.entity),
+                          id != selectedFurnitureID {
+                    // A finger that wobbled a few points while tapping fails
+                    // SpatialTapGesture but is still a tap, not a camera swipe.
+                    onSelectFurniture?(id)
                 }
 
                 furnitureDragID = nil
@@ -372,12 +383,12 @@ struct RoomSceneView: View {
                 guard furnitureDragID == nil else { return }
                 // Past the drag threshold with no piece claimed, this is a camera
                 // swipe; lock furniture out until it ends (see `cameraOrbitActive`).
-                if !cameraOrbitActive, hypot(value.translation.width, value.translation.height) > 12 {
+                if !cameraOrbitActive, hypot(value.translation.width, value.translation.height) > Self.tapSlop {
                     cameraOrbitActive = true
                 }
                 controller.orbitContinuous(translation: value.translation)
             }
-            .onEnded { _ in
+            .onEnded { value in
                 cameraOrbitActive = false
                 if perspective == .walkthrough { controller.endLook() } else { controller.endOrbit() }
             }
@@ -639,7 +650,12 @@ final class RoomSceneController {
     var updateSub: EventSubscription?
     /// The view's drawable size in PIXELS (points × display scale), kept current by
     /// the view; the offscreen snapshot renders at this resolution.
-    var pixelSize: CGSize = .zero
+    var pixelSize: CGSize = .zero {
+        didSet {
+            // The diorama lens is derived from the screen's shape; keep it in step.
+            if perspective == .diorama, pixelSize != oldValue { setCameraFOV(Self.isoFOVDegrees) }
+        }
+    }
 
     // MARK: - Teardown
 
@@ -684,14 +700,9 @@ final class RoomSceneController {
         // only moves it (zoom = distance via `radius`), so it stays perspective for
         // the whole session (orbiting/zooming won't revert it and re-break gestures).
         var cam = PerspectiveCameraComponent()
-        cam.fieldOfViewInDegrees = Self.isoFOVDegrees
-        cam.near = Self.dioramaNearPlane
         cam.far = Self.farPlane
-        // The diorama FOV spans the screen's WIDTH. On a portrait phone width is
-        // the tight dimension, so a vertical FOV framed the room to the screen's
-        // height and cropped its sides; `frameCamera` fits the room to this angle.
-        cam.fieldOfViewOrientation = .horizontal
         camera.components.set(cam)
+        setCameraFOV(Self.isoFOVDegrees)
         cameraAnchor.addChild(camera)
 
         frameCamera(room: room)
@@ -1115,11 +1126,12 @@ final class RoomSceneController {
             }
         }
         let cameraClone = camera.clone(recursive: false)
-        // The live lens spans the portrait screen's width. A landscape image (the
-        // share panels) is limited by its height instead, so measure the same
-        // angle vertically there or the room's top and bottom get cropped.
-        if pixelSize.width > pixelSize.height, var lens = cameraClone.components[PerspectiveCameraComponent.self] {
-            lens.fieldOfViewOrientation = .vertical
+        // The live lens fits the room to the portrait screen's width. A landscape
+        // image (thumbnail, share panels) is limited by its height instead, so
+        // spend the same angle vertically there or the room's top and bottom crop.
+        if perspective == .diorama, pixelSize.width > pixelSize.height,
+           var lens = cameraClone.components[PerspectiveCameraComponent.self] {
+            lens.fieldOfViewInDegrees = Self.isoFOVDegrees
             cameraClone.components.set(lens)
         }
         cameraClone.transform = Transform(matrix: camera.transformMatrix(relativeTo: nil))
@@ -1360,16 +1372,31 @@ final class RoomSceneController {
 
     /// Change the FOV of the existing perspective camera in place (never swaps the
     /// component type — that's what re-broke gesture hit-testing historically).
-    /// Sets the lens. The diorama measures its narrow FOV across the screen's
-    /// width (see `makeEntities`); the first-person walkthrough's wide FOV range
-    /// is tuned as a vertical angle, so it switches orientation with the mode.
+    ///
+    /// The lens is always measured VERTICALLY. RealityKit's entity gesture
+    /// hit-testing assumes a vertical FOV, so a `.horizontal` lens drew the room
+    /// with one projection and hit-tested taps with another: taps landed beside
+    /// or above the piece the user touched. The diorama's `isoFOVDegrees` is
+    /// meant across the screen's WIDTH (the tight side on a portrait phone, which
+    /// `frameCamera` fits the room to), so it's converted to the equivalent
+    /// vertical angle for the current screen shape.
     private func setCameraFOV(_ degrees: Float) {
         guard var cam = camera.components[PerspectiveCameraComponent.self] else { return }
-        let isDiorama = degrees == Self.isoFOVDegrees
-        cam.fieldOfViewInDegrees = degrees
-        cam.fieldOfViewOrientation = isDiorama ? .horizontal : .vertical
+        let isDiorama = perspective == .diorama
+        cam.fieldOfViewOrientation = .vertical
+        cam.fieldOfViewInDegrees = isDiorama ? Self.verticalFOV(forHorizontal: degrees, pixelSize: pixelSize) : degrees
         cam.near = isDiorama ? Self.dioramaNearPlane : Self.walkthroughNearPlane
         camera.components.set(cam)
+    }
+
+    /// The vertical FOV that spans `horizontalDegrees` across a viewport of
+    /// `pixelSize`. Assumes a typical portrait phone until the view reports its size.
+    static func verticalFOV(forHorizontal horizontalDegrees: Float, pixelSize: CGSize) -> Float {
+        let aspect = pixelSize.width > 0 && pixelSize.height > 0
+            ? Float(pixelSize.height / pixelSize.width)
+            : 19.5 / 9
+        let halfH = horizontalDegrees * .pi / 360
+        return 2 * atan(tan(halfH) * aspect) * 180 / .pi
     }
 
     /// Clipping planes. The default near plane (1 cm) with the diorama camera
