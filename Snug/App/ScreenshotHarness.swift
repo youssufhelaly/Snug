@@ -16,6 +16,7 @@ enum ScreenshotHarness {
         case selected       // a piece selected, inspector card showing
         case catalog        // the "Add furniture" sheet
         case shop           // the "Shop this room" sheet
+        case share          // renders the before/after image to tmp/snug-share.png
     }
 
     /// The requested screen, from the `-snugScreen` launch argument.
@@ -30,7 +31,7 @@ enum ScreenshotHarness {
     /// Whether the home should create the sample room and open it.
     static var opensSampleRoom: Bool {
         guard let screen else { return false }
-        return [.room, .selected, .catalog, .shop].contains(screen)
+        return [.room, .selected, .catalog, .shop, .share].contains(screen)
     }
 
     /// Whether the home should be seeded with the sample room.

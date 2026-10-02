@@ -318,6 +318,7 @@ struct RoomDioramaScreen: View {
             case .selected: selectedFurnitureID = footprints.first(where: { $0.catalogItemID != nil })?.id
             case .catalog: showCarousel = true
             case .shop: showShopList = true
+            case .share: shareRoom()
             default: break
             }
         }
@@ -1143,6 +1144,11 @@ struct RoomDioramaScreen: View {
         )
         shareImage = SharedImage(image: image)
         UINotificationFeedbackGenerator().notificationOccurred(.success)
+        #if DEBUG
+        if ScreenshotHarness.screen == .share, let png = image.pngData() {
+            try? png.write(to: FileManager.default.temporaryDirectory.appending(path: "snug-share.png"))
+        }
+        #endif
     }
 
     /// Pieces (not products) that fit, so the caption counts what's in the room.
