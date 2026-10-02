@@ -9,8 +9,8 @@ import ImageIO
 /// downscaled carry full-screen PNGs, so the room list could stall long enough
 /// to drop touches. ImageIO's thumbnail path decodes straight to the target size.
 enum ThumbnailDecoder {
-    /// Longest side, in pixels, of a decoded list tile (two columns at 3x).
-    static let tilePixelSize = 720
+    /// Longest side, in pixels, of a decoded room card picture (full width at 3x).
+    static let tilePixelSize = 1200
 
     private static let cache: NSCache<NSString, UIImage> = {
         let cache = NSCache<NSString, UIImage>()

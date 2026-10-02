@@ -342,6 +342,18 @@ final class ManualARCaptureController: NSObject, ARSessionDelegate, ARCoachingOv
     /// Only ever accessed on the main thread (from the representable's makeUIView).
     static let sharedARView = ARView(frame: .zero)
 
+    /// Creates `sharedARView` now, at launch, before any 3D room has been shown.
+    ///
+    /// It used to be created on the first scan. If that first scan came after a
+    /// room was opened, the new ARView came up under the diorama's lingering
+    /// RealityView render context and showed a black feed (the next attempt
+    /// worked, hence "black every other time"). Creating it before any diorama
+    /// exists keeps its renderer clean. Main thread only; no-op once created.
+    static func prewarmCaptureView() {
+        guard ARWorldTrackingConfiguration.isSupported else { return }
+        _ = sharedARView
+    }
+
     func attach(to arView: ARView) {
         self.arView = arView
 

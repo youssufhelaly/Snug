@@ -120,6 +120,8 @@ struct SnugApp: App {
             .environment(sandbox)
             .task { await catalog.load() }
             .task { await sandbox.load() }
+            // Before any room's 3D view can exist (see `prewarmCaptureView`).
+            .onAppear { ManualARCaptureController.prewarmCaptureView() }
             #if DEBUG
             .onAppear {
                 if let screen = ScreenshotHarness.screen { hasOnboarded = screen != .onboarding }

@@ -1901,13 +1901,12 @@ final class RoomSceneController {
         let size = pixelSize
         guard size.width > 0, size.height > 0 else { return }
         didSnapshot = true
-        // Thumbnails are small list tiles, so render straight at tile size rather
-        // than at full screen resolution: the offscreen render, readback and
-        // composite all run on the main actor and scale with pixel count. The
+        // Render straight in the home card's 16:10 shape, sharp enough for a
+        // full-width card at 3x. Rendering the portrait screen and letting the
+        // card crop and upscale it gave a blurry, badly framed tile. The
         // composite is opaque (it fills the backdrop), so JPEG loses nothing, and
         // encoding happens off the main thread.
-        let scale = min(1, Self.thumbnailMaxPixels / max(size.width, size.height))
-        let renderSize = CGSize(width: (size.width * scale).rounded(), height: (size.height * scale).rounded())
+        let renderSize = Self.thumbnailSize
         Task { @MainActor in
             guard let image = await self.captureSnapshot(pixelSize: renderSize) else { return }
             let data = await Task.detached(priority: .utility) {
@@ -1918,8 +1917,8 @@ final class RoomSceneController {
         }
     }
 
-    /// Longest side, in pixels, of a stored room thumbnail.
-    private static let thumbnailMaxPixels: CGFloat = 900
+    /// Pixel size of a stored room thumbnail: the home card's 16:10 shape.
+    private static let thumbnailSize = CGSize(width: 1600, height: 1000)
 
     private static func easeOutBack(_ t: Float) -> Float {
         let c1: Float = 1.70158

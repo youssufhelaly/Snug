@@ -228,7 +228,7 @@ struct MyRoomsView: View {
                     } label: {
                         RoomCard(stored: stored)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PressableCardStyle())
                     .contextMenu {
                         Button {
                             renameDraft = stored.name
@@ -441,6 +441,9 @@ private struct RoomCard: View {
         .padding(10)
         .padding(.bottom, 6)
         .background(SnugTheme.surface, in: .rect(cornerRadius: 28))
+        // The picture sits over a transparent spacer, which doesn't take taps on
+        // its own; make the whole card the button's hit area.
+        .contentShape(.rect(cornerRadius: 28))
         .shadow(color: .black.opacity(0.05), radius: 12, y: 4)
         .accessibilityElement(children: .combine)
         .accessibilityLabel(isSample ? "\(stored.name), sample room" : stored.name)
@@ -460,6 +463,21 @@ private struct RoomCard: View {
         let area = room.floorArea.formatted(.number.precision(.fractionLength(1)))
         details = pieces == 0 ? "\(area) m²" : "\(pieces) \(pieces == 1 ? "piece" : "pieces") · \(area) m²"
         isSample = room.provenance == .sample
+    }
+}
+
+/// Press feedback for a tappable card: it dips slightly under the finger and
+/// springs back, so a tap feels answered immediately even while the next
+/// screen is still building.
+private struct PressableCardStyle: ButtonStyle {
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(configuration.isPressed && !reduceMotion ? 0.97 : 1)
+            .opacity(configuration.isPressed ? 0.92 : 1)
+            .animation(.spring(response: 0.25, dampingFraction: 0.7), value: configuration.isPressed)
+            .sensoryFeedback(.impact(weight: .light), trigger: configuration.isPressed) { _, pressed in pressed }
     }
 }
 
