@@ -23,6 +23,13 @@ struct RoomThumbnail: View {
             } else if stored.thumbnailData != nil {
                 // Decoding: hold the tile's shape without flashing the placeholder.
                 SnugTheme.surface
+            } else if let room = stored.roomModel, room.provenance == .sample {
+                // A sample room shows its known render until it gets its own,
+                // fitted whole on the render's own backdrop so no wall is cropped.
+                Color(red: 232 / 255, green: 118 / 255, blue: 74 / 255)
+                Image("SampleRoomHero")
+                    .resizable()
+                    .scaledToFit()
             } else if let room = stored.roomModel {
                 MiniFloorPlan(room: room)
                     .background(SnugTheme.surface)
@@ -32,7 +39,7 @@ struct RoomThumbnail: View {
                     .foregroundStyle(SnugTheme.subtle)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 16, style: .continuous))
+        .clipShape(.rect(cornerRadius: 20))
         .accessibilityHidden(true)
         .task(id: cacheKey) {
             guard let key = cacheKey, let data = stored.thumbnailData else {
