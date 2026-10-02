@@ -51,7 +51,25 @@ enum RoomMaterials {
     /// A matte, non-metallic physically-based material. Shared by every surface
     /// so callers can reuse one instance across same-color components (don't
     /// allocate a material per entity).
+    private struct MatteKey: Hashable {
+        let rgba: [CGFloat]
+        let roughness: Float
+    }
+    /// Surface materials by color and roughness, so reopening a room (or
+    /// re-applying its palette) reuses them instead of building new ones.
+    private static var matteCache: [MatteKey: PhysicallyBasedMaterial] = [:]
+
     private static func matte(_ color: UIColor, roughness: Float) -> PhysicallyBasedMaterial {
+        var r: CGFloat = 0, g: CGFloat = 0, b: CGFloat = 0, a: CGFloat = 0
+        color.getRed(&r, green: &g, blue: &b, alpha: &a)
+        let key = MatteKey(rgba: [r, g, b, a], roughness: roughness)
+        if let cached = matteCache[key] { return cached }
+        let material = makeMatte(color, roughness: roughness)
+        matteCache[key] = material
+        return material
+    }
+
+    private static func makeMatte(_ color: UIColor, roughness: Float) -> PhysicallyBasedMaterial {
         var material = PhysicallyBasedMaterial()
         material.baseColor = .init(tint: color)
         material.roughness = .init(floatLiteral: roughness)

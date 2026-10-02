@@ -437,6 +437,18 @@ final class RoomSceneController {
     /// Dimension labels (lie flat on the floor like a blueprint), shown only
     /// while the measurements overlay is on.
     private var labels: [ModelEntity] = []
+    /// The walls the dimension labels describe, kept until the labels are built.
+    private var labelWalls: [WallSegment] = []
+
+    /// Builds the wall-length labels the first time they're shown.
+    private func buildDimensionLabelsIfNeeded() {
+        guard labels.isEmpty, !labelWalls.isEmpty else { return }
+        for wall in labelWalls {
+            guard let label = makeDimensionLabel(for: wall) else { continue }
+            labels.append(label)
+            root.addChild(label)
+        }
+    }
 
     // MARK: Phase 2 furniture (separate keyed store — never mixed into the
     // wall/floor/opening scene building). In editing mode these are driven live
@@ -774,14 +786,11 @@ final class RoomSceneController {
             openings.append((panel.entity, panel.pane, panel.trims, panel.wallIndex))
         }
 
-        // Dimension labels (shown while the measurements overlay is on): wall
-        // length, laid flat near each wall's midpoint like a floor-plan annotation.
-        for wall in room.walls {
-            guard let label = makeDimensionLabel(for: wall) else { continue }
-            label.isEnabled = false
-            labels.append(label)
-            root.addChild(label)
-        }
+        // Dimension labels (shown while the measurements overlay is on) are built
+        // on first use: each is 3D text, which is costly to generate, and they're
+        // hidden until the user taps Measure. See `buildDimensionLabelsIfNeeded`.
+        labelWalls = room.walls
+        labels = []
 
         // Phase 2: detected existing furniture, rendered as true-color identity
         // boxes (collision + tap-target tagged) so it appears in the diorama. Y is
@@ -1222,6 +1231,7 @@ final class RoomSceneController {
                             perspective newPerspective: CameraPerspective, vantage: WalkthroughVantage?) {
         if self.showsDimensions != showsDimensions {
             self.showsDimensions = showsDimensions
+            if showsDimensions { buildDimensionLabelsIfNeeded() }
             // Purely additive info overlay — label visibility only, never a material.
             for label in labels { label.isEnabled = showsDimensions }
         }

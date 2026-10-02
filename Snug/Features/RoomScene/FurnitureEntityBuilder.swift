@@ -109,13 +109,45 @@ enum FurnitureEntityBuilder {
         guard let model = entity as? ModelEntity, var component = model.model,
               let tag = entity.components[FurnitureTagComponent.self] else { return }
 
+        let hasModel = hasRealisticModel(entity)
+        let rgb = tag.exactColorRGB ?? tag.colorCategory.representativeRGB
+        component.materials = [placementMaterial(state, selected: selected, hasModel: hasModel, tag: tag, rgb: rgb)]
+        model.model = component
+        applySelectionBorder(selected, to: entity, size: component.mesh.bounds.extents)
+    }
+
+    private struct PlacementMaterialKey: Hashable {
+        let state: PlacementState
+        let selected: Bool
+        let hasModel: Bool
+        let r, g, b: Float
+    }
+
+    /// Tint materials by look. Opening a room tints every piece; building fresh
+    /// `PhysicallyBasedMaterial`s for each showed up in a device trace, and
+    /// identical looks can share one material.
+    private static var placementMaterials: [PlacementMaterialKey: any Material] = [:]
+
+    private static func placementMaterial(_ state: PlacementState, selected: Bool, hasModel: Bool,
+                                          tag: FurnitureTagComponent, rgb: SIMD3<Float>) -> any Material {
+        // A modeled piece's box looks the same whatever its color or selection.
+        let key = PlacementMaterialKey(state: state, selected: hasModel ? false : selected, hasModel: hasModel,
+                                       r: hasModel ? 0 : rgb.x, g: hasModel ? 0 : rgb.y, b: hasModel ? 0 : rgb.z)
+        if let cached = placementMaterials[key] { return cached }
+        let material = makePlacementMaterial(state, selected: selected, hasModel: hasModel, tag: tag)
+        placementMaterials[key] = material
+        return material
+    }
+
+    private static func makePlacementMaterial(_ state: PlacementState, selected: Bool, hasModel: Bool,
+                                              tag: FurnitureTagComponent) -> any Material {
         // A piece showing a realistic model (catalog product or Sandbox clay
         // shape): the box mesh stays invisible so the model reads through,
         // EXCEPT an `.invalid` overflow flashes a translucent red so a piece
         // that won't fit is still obvious. Selection is signaled by the Clay outline +
         // scale-pop, not box opacity. (valid / tooClose lean on the 2D FitBadge — the
         // honest state is always on screen.)
-        if hasRealisticModel(entity) {
+        if hasModel {
             switch state {
             case .invalid:
                 let red = UIColor(rgb: 0xB85450)
@@ -124,7 +156,7 @@ enum FurnitureEntityBuilder {
                 box.emissiveColor = .init(color: red)
                 box.emissiveIntensity = 0.4
                 box.blending = .transparent(opacity: .init(floatLiteral: 0.5))
-                component.materials = [box]
+                return box
             case .tooClose:
                 // Amber "too close to call" wash — the same honest uncertain-fit cue
                 // the identity box shows, at a lighter opacity so the model's true
@@ -137,13 +169,10 @@ enum FurnitureEntityBuilder {
                 box.emissiveColor = .init(color: keptOutlineColor)
                 box.emissiveIntensity = 0.3
                 box.blending = .transparent(opacity: .init(floatLiteral: 0.28))
-                component.materials = [box]
+                return box
             case .valid:
-                component.materials = [invisibleBoxMaterial()]
+                return invisibleBoxMaterial()
             }
-            model.model = component
-            applySelectionBorder(selected, to: entity, size: component.mesh.bounds.extents)
-            return
         }
 
         var material = PhysicallyBasedMaterial()
@@ -169,11 +198,7 @@ enum FurnitureEntityBuilder {
             material.emissiveColor = .init(color: Self.selectionColor)
             material.emissiveIntensity = 0.6
         }
-
-        component.materials = [material]
-        model.model = component
-
-        applySelectionBorder(selected, to: entity, size: component.mesh.bounds.extents)
+        return material
     }
 
     /// Add or remove the persistent Clay selection border. Sized to the box's
@@ -514,7 +539,24 @@ enum FurnitureEntityBuilder {
 
     /// Material in the piece's true color. `opacity` drives transparent
     /// blending — translucent while pending, solid once kept.
+    private struct MaterialKey: Hashable {
+        let r, g, b, roughness, opacity: Float
+    }
+    /// Box materials by look. Building a `PhysicallyBasedMaterial` allocates a
+    /// new material instance; identical pieces can share one.
+    private static var materialCache: [MaterialKey: PhysicallyBasedMaterial] = [:]
+
     private static func material(for footprint: FurnitureFootprint, opacity: Float) -> PhysicallyBasedMaterial {
+        let rgb = footprint.appearance.exactColorRGB ?? footprint.appearance.colorCategory.representativeRGB
+        let key = MaterialKey(r: rgb.x, g: rgb.y, b: rgb.z,
+                              roughness: footprint.appearance.materialClass.roughness, opacity: opacity)
+        if let cached = materialCache[key] { return cached }
+        let m = makeMaterial(for: footprint, opacity: opacity)
+        materialCache[key] = m
+        return m
+    }
+
+    private static func makeMaterial(for footprint: FurnitureFootprint, opacity: Float) -> PhysicallyBasedMaterial {
         var m = PhysicallyBasedMaterial()
         m.baseColor = .init(tint: tint(footprint.appearance.colorCategory,
                                        exact: footprint.appearance.exactColorRGB))
@@ -555,7 +597,15 @@ enum FurnitureEntityBuilder {
     /// hide and restore it.
     static let categoryLabelName = "category_label"
 
-    private static func label(_ category: FurnitureCategory, atHeight y: Float) -> Entity {
+    /// Text meshes by label, so each category's 3D text is generated once per
+    /// launch. `generateText` lays out and tessellates glyphs on the main thread,
+    /// and a device trace showed it as the top cost of opening a room.
+    private static var labelMeshes: [String: MeshResource] = [:]
+    private static let labelMaterial = UnlitMaterial(color: UIColor(rgb: 0x2B2722))
+
+    /// The category label's text mesh, built on first use and cached.
+    static func labelMesh(for category: FurnitureCategory) -> MeshResource {
+        if let cached = labelMeshes[category.displayName] { return cached }
         let mesh = MeshResource.generateText(
             category.displayName,
             extrusionDepth: 0.005,
@@ -564,7 +614,12 @@ enum FurnitureEntityBuilder {
             alignment: .center,
             lineBreakMode: .byTruncatingTail
         )
-        let text = ModelEntity(mesh: mesh, materials: [UnlitMaterial(color: UIColor(rgb: 0x2B2722))])
+        labelMeshes[category.displayName] = mesh
+        return mesh
+    }
+
+    private static func label(_ category: FurnitureCategory, atHeight y: Float) -> Entity {
+        let text = ModelEntity(mesh: labelMesh(for: category), materials: [labelMaterial])
         let bounds = text.visualBounds(relativeTo: text)
         text.position = -bounds.center
         let holder = Entity()

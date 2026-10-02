@@ -8,7 +8,7 @@ import simd
 /// 5 cm margins, so a piece's tint and its fit badge could disagree on the same
 /// geometry, which is exactly the false precision the trust layer exists to
 /// prevent. Deriving the tint from `FitResult.State` makes that impossible.
-enum PlacementState: Equatable {
+enum PlacementState: Hashable {
     /// "Fits" or "Fits with room to spare". (base color)
     case valid
     /// "Too close to call". (amber)

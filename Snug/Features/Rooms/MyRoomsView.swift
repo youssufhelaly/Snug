@@ -63,6 +63,7 @@ struct MyRoomsView: View {
             #if DEBUG
             .task { await runScreenshotHarness() }
             #endif
+            .task { await warmUpRendering() }
             .navigationDestination(item: $openRoom) { stored in
                 RoomDioramaScreen(stored: stored)
             }
@@ -362,6 +363,20 @@ struct MyRoomsView: View {
         if ScreenshotHarness.opensSampleRoom { openRoom = stored }
     }
     #endif
+
+    /// Once the home has settled, prepares 3D rendering and the newest room's
+    /// product models, so opening a room doesn't stall (see `RealityWarmup`).
+    private func warmUpRendering() async {
+        try? await Task.sleep(for: .milliseconds(700))
+        await catalog.load()
+        let products = rooms.first?.roomModel?.detectedFurniture
+            .filter { !$0.isCleared }
+            .compactMap(\.catalogItemID) ?? []
+        let assets = products.compactMap { id in
+            catalog.items.first { $0.id == id }?.modelAssetName
+        }
+        await RealityWarmup.prewarm(modelAssetNames: assets)
+    }
 
     /// Saves a new furnished sample room and opens it. Waits for the catalog so
     /// the sample arrives furnished even on a cold launch.
