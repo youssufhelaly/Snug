@@ -60,6 +60,32 @@ enum OffscreenSnapshotRenderer {
 
     private static let device: MTLDevice? = MTLCreateSystemDefaultDevice()
 
+    /// Brightness of the neutral ambient light, tuned so offscreen renders match
+    /// the on-screen diorama (see `neutralEnvironment()`).
+    static let ambientIntensityExponent: Float = 1.0
+
+    private static var cachedEnvironment: EnvironmentResource?
+
+    /// A uniform light-grey environment: plain white ambient light. The on-screen
+    /// RealityView gets a default environment light that an offscreen
+    /// `RealityRenderer` doesn't, so without this every render came out far darker
+    /// than the room on screen. Uniform grey adds brightness without tinting any
+    /// color (the true-color rule). Built once and cached.
+    private static func neutralEnvironment() async -> EnvironmentResource? {
+        if let cachedEnvironment { return cachedEnvironment }
+        let width = 64, height = 32
+        guard let space = CGColorSpace(name: CGColorSpace.sRGB),
+              let context = CGContext(data: nil, width: width, height: height, bitsPerComponent: 8, bytesPerRow: 0,
+                                      space: space, bitmapInfo: CGImageAlphaInfo.noneSkipLast.rawValue) else { return nil }
+        context.setFillColor(CGColor(gray: 0.85, alpha: 1))
+        context.fill(CGRect(x: 0, y: 0, width: width, height: height))
+        guard let image = context.makeImage(),
+              let environment = try? await EnvironmentResource(equirectangular: image, withName: "snug-neutral-ambient")
+        else { return nil }
+        cachedEnvironment = environment
+        return environment
+    }
+
     /// Render `scene` through `camera` into a `pixelSize`-sized `UIImage`, or `nil`
     /// (with a loud surfaced failure) if any step fails.
     ///
@@ -78,6 +104,10 @@ enum OffscreenSnapshotRenderer {
             surface(.rendererInitFailed(error)); return nil
         }
 
+        if let environment = await neutralEnvironment() {
+            renderer.lighting.resource = environment
+            renderer.lighting.intensityExponent = ambientIntensityExponent
+        }
         renderer.entities.append(scene)
         renderer.entities.append(camera)
         renderer.activeCamera = camera

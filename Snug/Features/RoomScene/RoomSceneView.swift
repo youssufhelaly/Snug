@@ -673,6 +673,7 @@ final class RoomSceneController {
         cameraAnchor.addChild(camera)
 
         frameCamera(room: room)
+        playIntroReveal()
         applyPalette()
         updateCamera()
     }
@@ -1081,6 +1082,10 @@ final class RoomSceneController {
     /// `includeFurniture == false` the furniture is removed too, for "before".
     private func captureSnapshot(pixelSize: CGSize, includeFurniture: Bool = true) async -> UIImage? {
         let sceneClone = root.clone(recursive: true)
+        // RealityKit's offscreen renderer crashes (EXC_BAD_ACCESS in
+        // BillboardManager) on billboarded entities, which the floating category
+        // labels are. They're editor aids, not part of the room, so strip them.
+        Self.removeBillboards(from: sceneClone)
         for child in Array(sceneClone.children) where child.components[FurnitureTagComponent.self] != nil {
             if includeFurniture {
                 child.findEntity(named: FurnitureEntityBuilder.selectionOutlineName)?.removeFromParent()
@@ -1089,11 +1094,29 @@ final class RoomSceneController {
             }
         }
         let cameraClone = camera.clone(recursive: false)
+        // The live lens spans the portrait screen's width. A landscape image (the
+        // share panels) is limited by its height instead, so measure the same
+        // angle vertically there or the room's top and bottom get cropped.
+        if pixelSize.width > pixelSize.height, var lens = cameraClone.components[PerspectiveCameraComponent.self] {
+            lens.fieldOfViewOrientation = .vertical
+            cameraClone.components.set(lens)
+        }
         cameraClone.transform = Transform(matrix: camera.transformMatrix(relativeTo: nil))
 
         guard let raw = await OffscreenSnapshotRenderer.image(
             scene: sceneClone, camera: cameraClone, pixelSize: pixelSize) else { return nil }
         return Self.composite(raw, over: RoomPalette.palette(style: surfaceStyle).background)
+    }
+
+    /// Removes every billboarded descendant of `entity` (see `captureSnapshot`).
+    private static func removeBillboards(from entity: Entity) {
+        for child in Array(entity.children) {
+            if child.components.has(BillboardComponent.self) {
+                child.removeFromParent()
+            } else {
+                removeBillboards(from: child)
+            }
+        }
     }
 
     /// Flatten a (transparent-backed) render over a solid background colour so the
@@ -1160,6 +1183,19 @@ final class RoomSceneController {
         // `PerspectiveCameraComponent` from `makeEntities` must persist (re-setting an
         // ortho component each frame is what re-broke native gesture hit-testing).
         camera.look(at: target, from: position, relativeTo: nil)
+    }
+
+    /// Opens on a wider, slightly turned view and glides into the framed room, so
+    /// the room arrives instead of popping in. Skipped with Reduce Motion.
+    private func playIntroReveal() {
+        guard !UIAccessibility.isReduceMotionEnabled else { return }
+        cameraAnim = CameraAnim(
+            duration: 1.1,
+            fromAz: defaultAzimuth + 0.55, toAz: defaultAzimuth,
+            fromEl: defaultElevation + 0.18, toEl: defaultElevation,
+            fromR: defaultRadius * 1.5, toR: defaultRadius,
+            fromTarget: defaultTarget, toTarget: defaultTarget
+        )
     }
 
     func resetCamera(animated: Bool) {
@@ -1842,7 +1878,9 @@ final class RoomSceneController {
     }
 
     private func captureThumbnailIfNeeded() {
-        guard !didSnapshot, onThumbnail != nil else { return }
+        // Wait for any camera glide (the intro reveal) so the thumbnail is the
+        // settled, framed view rather than a mid-animation angle.
+        guard !didSnapshot, onThumbnail != nil, cameraAnim == nil else { return }
         frameCount += 1
         // Give the scene a few frames to render (and the async environment a chance
         // to load) before grabbing the thumbnail. Wait, too, until the view's pixel
