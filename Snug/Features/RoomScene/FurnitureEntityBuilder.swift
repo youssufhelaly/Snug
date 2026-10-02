@@ -223,6 +223,9 @@ enum FurnitureEntityBuilder {
         if let tint { applyModelTint(tint, to: model) }
         box.addChild(model)
         setBoxMeshHidden(true, on: box)
+        // A real model shows what the piece is, so its floating name label would
+        // only clutter the room (and clip through the model). Boxes keep theirs.
+        box.findEntity(named: categoryLabelName)?.isEnabled = false
     }
 
     /// Override every descendant mesh's material with a solid PBR tint.
@@ -493,6 +496,7 @@ enum FurnitureEntityBuilder {
     /// when none is attached.
     static func removeRealisticModel(from entity: Entity) {
         realisticModelChild(of: entity)?.removeFromParent()
+        entity.findEntity(named: categoryLabelName)?.isEnabled = true
     }
 
     /// Animate a cleared box out: shrink + fade over 0.35 s, then detach. Runs on
@@ -547,6 +551,10 @@ enum FurnitureEntityBuilder {
         model.model = component
     }
 
+    /// Name of the floating category label child, so model attach/detach can
+    /// hide and restore it.
+    static let categoryLabelName = "category_label"
+
     private static func label(_ category: FurnitureCategory, atHeight y: Float) -> Entity {
         let mesh = MeshResource.generateText(
             category.displayName,
@@ -560,6 +568,7 @@ enum FurnitureEntityBuilder {
         let bounds = text.visualBounds(relativeTo: text)
         text.position = -bounds.center
         let holder = Entity()
+        holder.name = categoryLabelName
         holder.addChild(text)
         holder.position = [0, y, 0]
         // Billboard so the label faces the orbiting camera (RealityKit iOS 18+).

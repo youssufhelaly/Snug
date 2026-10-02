@@ -126,9 +126,13 @@ struct RoomSceneView: View {
                 // `SceneEvents.Update` fires on the main thread; `assumeIsolated`
                 // bridges the non-isolated handler to the controller's main-actor
                 // methods (and crashes loudly if that ever stops being true).
-                controller.updateSub = content.subscribe(to: SceneEvents.Update.self) { [weak controller] event in
+                // Bind a local first: `controller` here is the view's `@State`, read
+                // through `self`, so weak-capturing it directly conflicts with the
+                // strong capture of `self` the outer closure already holds.
+                let sceneController = controller
+                sceneController.updateSub = content.subscribe(to: SceneEvents.Update.self) { [weak sceneController] event in
                     MainActor.assumeIsolated {
-                        controller?.onSceneUpdate(deltaTime: event.deltaTime)
+                        sceneController?.onSceneUpdate(deltaTime: event.deltaTime)
                     }
                 }
             } update: { _ in
@@ -661,6 +665,10 @@ final class RoomSceneController {
         // the whole session (orbiting/zooming won't revert it and re-break gestures).
         var cam = PerspectiveCameraComponent()
         cam.fieldOfViewInDegrees = Self.isoFOVDegrees
+        // The diorama FOV spans the screen's WIDTH. On a portrait phone width is
+        // the tight dimension, so a vertical FOV framed the room to the screen's
+        // height and cropped its sides; `frameCamera` fits the room to this angle.
+        cam.fieldOfViewOrientation = .horizontal
         camera.components.set(cam)
         cameraAnchor.addChild(camera)
 
@@ -1125,7 +1133,10 @@ final class RoomSceneController {
         // reads near-isometric, but it IS perspective (required for native gestures).
         let halfFOV = (Self.isoFOVDegrees * .pi / 180) / 2
         let fitDistance = (extent * 0.5) / tan(halfFOV)
-        radius = max(fitDistance * 0.85, 2.0)
+        // Past the exact fit on purpose: the fit uses the floor's diagonal, but in
+        // this angled view the wall tops project wider than the floor, so extra
+        // distance keeps every wall on screen with breathing room around it.
+        radius = max(fitDistance * 1.18, 2.0)
         radiusRange = max(fitDistance * 0.3, 0.8)...max(fitDistance * 3.0, 14)
         // Slightly steeper than the canonical iso angle — a more top-down read makes
         // the floor plan and furniture placement clearer.
@@ -1291,9 +1302,13 @@ final class RoomSceneController {
 
     /// Change the FOV of the existing perspective camera in place (never swaps the
     /// component type — that's what re-broke gesture hit-testing historically).
+    /// Sets the lens. The diorama measures its narrow FOV across the screen's
+    /// width (see `makeEntities`); the first-person walkthrough's wide FOV range
+    /// is tuned as a vertical angle, so it switches orientation with the mode.
     private func setCameraFOV(_ degrees: Float) {
         guard var cam = camera.components[PerspectiveCameraComponent.self] else { return }
         cam.fieldOfViewInDegrees = degrees
+        cam.fieldOfViewOrientation = degrees == Self.isoFOVDegrees ? .horizontal : .vertical
         camera.components.set(cam)
     }
 
