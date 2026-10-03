@@ -3,7 +3,7 @@
 // Usage: npm run build && npx vite preview --port 4173 & node scripts/e2e.mjs
 import { chromium } from 'playwright-core';
 
-const url = process.argv[2] ?? 'http://localhost:4173/';
+const url = process.argv[2] ?? 'http://localhost:4173/demo.html';
 const shots = process.argv[3] ?? '/tmp';
 const browser = await chromium.launch({ channel: 'chrome' });
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } });

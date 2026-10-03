@@ -23,6 +23,15 @@ button, input, select { font: inherit; color: inherit; }
 [hidden] { display: none !important; }
 .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
 
+/* Preview banner: says up front that the real product is the iPhone app. */
+.preview-banner {
+  display: flex; align-items: center; justify-content: center; gap: 14px; flex-wrap: wrap;
+  padding: 8px 16px; background: var(--ink); color: #fff; font-size: 13px; text-align: center;
+}
+.preview-banner a { color: #f6b49b; font-weight: 600; text-decoration: none; }
+.preview-banner a:hover { text-decoration: underline; }
+.preview-short { display: none; }
+
 /* Top bar */
 .topbar {
   display: flex; align-items: center; gap: 16px; flex-wrap: wrap;
@@ -140,8 +149,15 @@ button, input, select { font: inherit; color: inherit; }
   .panel-head p { display: none; }
   .panel-foot { display: none; }
   .hint { display: none; }
-  .top-left { display: none; }
-  .top-right { top: 10px; right: 10px; }
+  .preview-long { display: none; }
+  .preview-short { display: inline; }
+  .preview-banner { gap: 10px; padding: 7px 12px; font-size: 12px; }
+  /* Keep the sample-room note visible on phones, stacked with the summary so
+     the two chips never collide on a narrow screen. */
+  .top-left { top: 10px; left: 10px; }
+  #room-name { display: none; }
+  .chip.subtle { font-size: 11px; padding: 6px 11px; }
+  .top-right { top: 46px; left: 10px; right: auto; }
   .inspector { bottom: 10px; padding: 12px; grid-template-columns: 48px 1fr; }
   .inspector img { width: 48px; height: 48px; }
 }

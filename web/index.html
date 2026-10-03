@@ -3,69 +3,159 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <title>Snug · Try furniture in your room before you buy</title>
-    <meta name="description" content="Place real, true-to-scale furniture in a room and get an honest fit verdict before you buy. A browser demo of the Snug iOS app." />
-    <meta property="og:title" content="Snug · Try furniture in your room before you buy" />
-    <meta property="og:description" content="Real products at their real size, with an honest fit check: fits, fits tight, too close to call, or won't fit." />
+    <title>Snug · Try furniture in your room before you buy it</title>
+    <meta name="description" content="Snug is an iOS app that scans your room with any iPhone, places real Amazon furniture at its true size, and tells you honestly whether it fits. Try the browser demo." />
+    <meta property="og:title" content="Snug · Try furniture in your room before you buy it" />
+    <meta property="og:description" content="An iOS app: AR room capture on any iPhone, an on-device furniture detector, and an honest fit check for real products." />
+    <meta property="og:image" content="./shots/fit.webp" />
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='16' fill='%23E8714A'/><path d='M14 40h36v8H14zM18 28h28v12H18z' fill='%23FAF7F2'/></svg>" />
+    <script>
+      // Shared layout links used to point here (/#room=…); the demo now lives at demo.html.
+      if (location.hash.includes('room=')) location.replace('demo.html' + location.hash);
+    </script>
   </head>
   <body>
-    <header class="topbar">
-      <div class="brand">
+    <header class="nav">
+      <a class="brand" href="#top" aria-label="Snug home">
         <span class="logo" aria-hidden="true"></span>
-        <div>
-          <h1>Snug</h1>
-          <p>Try real furniture in your room before you buy it.</p>
-        </div>
-      </div>
-      <div class="room-controls">
-        <label class="select">
-          <span class="sr-only">Room</span>
-          <select id="room-select" aria-label="Room"></select>
-        </label>
-        <form id="custom-size" class="custom-size" hidden>
-          <label>W <input id="custom-w" type="number" min="1.5" max="12" step="0.05" inputmode="decimal" /> m</label>
-          <label>D <input id="custom-d" type="number" min="1.5" max="12" step="0.05" inputmode="decimal" /> m</label>
-          <button type="submit" class="btn small">Apply</button>
-        </form>
-      </div>
-      <nav class="actions">
-        <button id="share-link" class="btn ghost" type="button">Copy link</button>
-        <button id="share-image" class="btn" type="button">Before / after image</button>
-        <a id="github-link" class="btn ghost" target="_blank" rel="noopener">GitHub</a>
-        <a id="testflight-link" class="btn ghost" target="_blank" rel="noopener" hidden>Get the iPhone app</a>
+        <span>Snug</span>
+      </a>
+      <nav aria-label="Sections">
+        <a href="#how">How it works</a>
+        <a href="#engineering">Engineering</a>
+        <a class="github-link" target="_blank" rel="noopener">GitHub</a>
+        <a class="btn small" href="demo.html">Try the demo</a>
       </nav>
     </header>
 
-    <main class="layout">
-      <section class="viewport-wrap" aria-label="3D room">
-        <div id="viewport" class="viewport"></div>
-        <div class="overlay top-left">
-          <div id="room-name" class="chip strong"></div>
-          <div id="room-note" class="chip subtle">Sample room. The iPhone app measures your real one.</div>
+    <main id="top">
+      <section class="hero">
+        <div class="hero-copy">
+          <p class="eyebrow">iOS app · AR · on-device ML</p>
+          <h1>Try real furniture in your room before you buy it.</h1>
+          <p class="lede">
+            Snug scans your room with any iPhone's camera, places real Amazon products in it at their true size,
+            and tells you honestly whether each one fits, including when it's too close to call.
+          </p>
+          <div class="ctas">
+            <a class="btn" href="demo.html">Try the live demo</a>
+            <a class="btn ghost github-link" target="_blank" rel="noopener">View the code</a>
+            <a class="btn ghost testflight-link" target="_blank" rel="noopener" hidden>Get the iPhone app</a>
+          </div>
+          <p class="note">The demo runs in your browser with sample rooms. The iPhone app measures your real one.</p>
         </div>
-        <div id="summary" class="overlay top-right chip" aria-live="polite"></div>
-        <div id="inspector" class="inspector" hidden aria-live="polite"></div>
-        <div class="overlay bottom-left hint">Drag furniture to move it · drag empty space to orbit · scroll to zoom</div>
+        <div class="hero-phones" aria-hidden="true">
+          <img class="phone back" src="./shots/home.webp" alt="" width="300" height="650" />
+          <img class="phone front" src="./shots/fit.webp" alt="" width="300" height="650" />
+        </div>
       </section>
 
-      <aside class="panel" aria-label="Catalog">
-        <div class="panel-head">
-          <h2>Add furniture</h2>
-          <p>Real Amazon products. Sizes come from each listing's assembled dimensions.</p>
-          <input id="search" class="search" type="search" placeholder="Search beds, desks, dressers…" aria-label="Search the catalog" />
-          <div id="categories" class="chips" role="tablist" aria-label="Categories"></div>
+      <section class="stats" aria-label="Results">
+        <div><strong>3.4 cm</strong><span>median wall error vs. a tape measure</span></div>
+        <div><strong>Any iPhone</strong><span>AR capture, no LiDAR needed</span></div>
+        <div><strong>0.74 mAP50</strong><span>custom furniture detector, on-device</span></div>
+        <div><strong>197</strong><span>unit tests, run in CI</span></div>
+        <div><strong>96%</strong><span>smaller 3D assets (682 MB to 28 MB)</span></div>
+      </section>
+
+      <section id="how" class="section">
+        <h2>How it works</h2>
+        <p class="section-lede">
+          Furniture returns are expensive and most come down to one question: will it fit, and will it look right?
+          Snug answers it in three steps.
+        </p>
+        <ol class="steps">
+          <li>
+            <img src="./shots/scan.webp" alt="Snug's scan screen: tap the corners of your room with your iPhone's camera" width="300" height="650" loading="lazy" />
+            <span class="step-num">1</span>
+            <h3>Scan your room</h3>
+            <p>Tap the room's corners through the camera. ARKit turns them into walls, doors and windows. Pro iPhones can use LiDAR, but you don't need it.</p>
+          </li>
+          <li>
+            <img src="./shots/catalog.webp" alt="The furniture catalog over a 3D model of the room" width="300" height="650" loading="lazy" />
+            <span class="step-num">2</span>
+            <h3>Place real products</h3>
+            <p>Pick from real Amazon listings. Each one drops into a 3D model of your room at its listed size, in its true colors.</p>
+          </li>
+          <li>
+            <img src="./shots/shop.webp" alt="The shopping list, with a fit verdict on every product" width="300" height="650" loading="lazy" />
+            <span class="step-num">3</span>
+            <h3>Know before you buy</h3>
+            <p>Every piece gets a fit verdict against your walls, doors and other furniture. Then buy the whole room in one list.</p>
+          </li>
+        </ol>
+      </section>
+
+      <section class="section honest">
+        <h2>An honest fit check</h2>
+        <p class="section-lede">
+          A phone scan isn't a laser. Snug knows its measurements can be off by a few centimeters, so it never shows a
+          green check it can't back up. Every verdict accounts for a ±5 cm uncertainty band.
+        </p>
+        <ul class="verdicts">
+          <li class="v-room"><strong>Fits with room to spare</strong><span>Clear by more than twice the margin.</span></li>
+          <li class="v-fits"><strong>Fits</strong><span>Clear by more than the margin.</span></li>
+          <li class="v-close"><strong>Too close to call</strong><span>Within the margin. Snug tells you which wall to measure.</span></li>
+          <li class="v-no"><strong>Won't fit</strong><span>Overlaps by more than the margin.</span></li>
+        </ul>
+      </section>
+
+      <section id="engineering" class="section">
+        <h2>Engineering</h2>
+        <p class="section-lede">A native iOS app built end to end: capture, ML, geometry, rendering and the asset pipeline.</p>
+        <div class="cards">
+          <article>
+            <h3>AR capture on any iPhone</h3>
+            <p>Corner tapping on ARKit world tracking, with a floor baseline and projection for walls taller than the camera can see. Results go into one room model shared by both capture paths (corner tapping and LiDAR).</p>
+          </article>
+          <article>
+            <h3>On-device furniture detection</h3>
+            <p>A YOLO model fine-tuned on merged open datasets to detect 11 furniture classes at 0.74 mAP50. It runs on the phone with CoreML, so the furniture you already own shows up in your scan.</p>
+          </article>
+          <article>
+            <h3>Fit engine</h3>
+            <p>Separating-axis collision on rotated footprints, plus clearance to walls and doorways, classified against the uncertainty band. It's pure, deterministic and covered by Swift Testing.</p>
+          </article>
+          <article>
+            <h3>True-to-life 3D</h3>
+            <p>A RealityKit diorama under neutral white light, so colors match what arrives. An offscreen renderer makes the room thumbnails and before/after share images.</p>
+          </article>
+          <article>
+            <h3>3D asset pipeline</h3>
+            <p>Mesh simplification and compression cut the product models from 682 MB to 28 MB, small enough to download over cellular.</p>
+          </article>
+          <article>
+            <h3>Built to last</h3>
+            <p>SwiftUI with MVVM, SwiftData with versioned schema migrations, no third-party dependencies in the app, zero compiler warnings, and CI on GitHub Actions.</p>
+          </article>
         </div>
-        <ul id="catalog" class="catalog"></ul>
-        <footer class="panel-foot">
-          <p id="disclosure"></p>
-          <p>3D models are generated from product photos, so the look is approximate. The size is not: every fit check uses the product's real dimensions.</p>
-          <p><a href="./privacy.html">Privacy policy</a></p>
-        </footer>
-      </aside>
+        <ul class="stack" aria-label="Tech stack">
+          <li>Swift</li><li>SwiftUI</li><li>RealityKit</li><li>ARKit</li><li>CoreML</li><li>YOLO</li><li>SwiftData</li>
+          <li>Swift Testing</li><li>GitHub Actions</li><li>TypeScript</li><li>three.js</li>
+        </ul>
+      </section>
+
+      <section class="section demo-band">
+        <div>
+          <h2>Try it in your browser</h2>
+          <p>
+            The web demo runs the same fit check as the app. It's ported line for line to TypeScript, and the Swift test
+            cases are ported with it. Drag real products around a sample room, or type in your own room's size.
+          </p>
+        </div>
+        <a class="btn" href="demo.html">Open the demo</a>
+      </section>
     </main>
 
-    <div id="toast" class="toast" role="status" hidden></div>
-    <script type="module" src="/src/main.ts"></script>
+    <footer class="footer">
+      <p>Built by <strong>Youssuf Helaly</strong></p>
+      <nav aria-label="Links">
+        <a class="github-link" target="_blank" rel="noopener">Code</a>
+        <a href="https://github.com/youssufhelaly" target="_blank" rel="noopener">GitHub</a>
+        <a href="https://linkedin.com/in/youssuf-helaly-644957295" target="_blank" rel="noopener">LinkedIn</a>
+        <a href="./privacy.html">Privacy</a>
+      </nav>
+    </footer>
+    <script type="module" src="/src/landing.ts"></script>
   </body>
 </html>

@@ -6,7 +6,7 @@
  */
 import './styles.css';
 import { CATALOG, CATEGORY_LABELS, type CatalogItem, catalogItem, categories, outboundURL, thumbURL } from './catalog';
-import { AMAZON_TAG, GITHUB_URL, TESTFLIGHT_URL } from './config';
+import { AMAZON_TAG, DEMO_VIDEO_URL, GITHUB_URL, TESTFLIGHT_URL } from './config';
 import { type RoomSpec, SAMPLE_ROOMS, customRectangle } from './data/rooms';
 import { ERROR_MARGIN, FIT_COPY, type FitObstacle, type FitResult, type FitState, evaluateFit } from './fit/fitService';
 import { type OrientedFootprint, isPointInsidePolygon, vec2 } from './fit/geometry';
@@ -300,6 +300,7 @@ function renderRoomPicker(): void {
   $('room-note').textContent = isCustom
     ? 'Typed-in size. The iPhone app measures your real room.'
     : 'Sample room. The iPhone app measures your real one.';
+  $('room-note').title = $('room-note').textContent ?? '';
   if (isCustom) fillCustomInputs();
 }
 
@@ -463,6 +464,12 @@ $('disclosure').textContent = AMAZON_TAG
   ? 'Links go to Amazon. Snug may earn a commission, at no extra cost to you.'
   : 'Links go to the product on Amazon.';
 $<HTMLAnchorElement>('github-link').href = GITHUB_URL;
+$<HTMLAnchorElement>('preview-github').href = GITHUB_URL;
+if (DEMO_VIDEO_URL) {
+  const video = $<HTMLAnchorElement>('preview-video');
+  video.href = DEMO_VIDEO_URL;
+  video.hidden = false;
+}
 if (TESTFLIGHT_URL) {
   const link = $<HTMLAnchorElement>('testflight-link');
   link.href = TESTFLIGHT_URL;

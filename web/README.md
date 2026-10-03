@@ -1,6 +1,6 @@
 # Snug web demo
 
-A browser version of Snug's core loop: put real Amazon furniture into a room at its real size, drag it around, and get an honest fit verdict. It exists so anyone can try Snug from a link, without an iPhone.
+The site has two pages. `index.html` is the project overview: what Snug is, how it works, and the engineering behind it, with screenshots from the iOS app in `public/shots/`. `demo.html` is the interactive demo, a browser version of Snug's core loop: put real Amazon furniture into a room at its real size, drag it around, and get an honest fit verdict. It exists so anyone can try Snug from a link, without an iPhone.
 
 The iOS app is still the real product. It measures your actual room with AR. The web demo uses sample rooms, or a rectangle you type in, and says so on screen.
 
