@@ -1,0 +1,78 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <title>Snug · Try furniture in your room before you buy</title>
+    <meta name="description" content="Place real, true-to-scale furniture in a room and get an honest fit verdict before you buy. A browser demo of the Snug iOS app." />
+    <meta property="og:title" content="Snug · Try furniture in your room before you buy" />
+    <meta property="og:description" content="Real products at their real size, with an honest fit check: fits, fits tight, too close to call, or won't fit." />
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='16' fill='%23E8714A'/><path d='M14 40h36v8H14zM18 28h28v12H18z' fill='%23FAF7F2'/></svg>" />
+  </head>
+  <body>
+    <div class="preview-banner" role="note">
+      <a href="./">← About Snug</a>
+      <span class="preview-long">Browser preview of <strong>Snug for iPhone</strong>, which scans your real room with AR.</span>
+      <span class="preview-short">Browser preview of <strong>Snug for iPhone</strong></span>
+      <a id="preview-video" target="_blank" rel="noopener" hidden>Watch it scan a room</a>
+      <a id="preview-github" target="_blank" rel="noopener">See the code</a>
+    </div>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo" aria-hidden="true"></span>
+        <div>
+          <h1>Snug</h1>
+          <p>Try real furniture in your room before you buy it.</p>
+        </div>
+      </div>
+      <div class="room-controls">
+        <label class="select">
+          <span class="sr-only">Room</span>
+          <select id="room-select" aria-label="Room"></select>
+        </label>
+        <form id="custom-size" class="custom-size" hidden>
+          <label>W <input id="custom-w" type="number" min="1.5" max="12" step="0.05" inputmode="decimal" /> m</label>
+          <label>D <input id="custom-d" type="number" min="1.5" max="12" step="0.05" inputmode="decimal" /> m</label>
+          <button type="submit" class="btn small">Apply</button>
+        </form>
+      </div>
+      <nav class="actions">
+        <button id="share-link" class="btn ghost" type="button">Copy link</button>
+        <button id="share-image" class="btn" type="button">Before / after image</button>
+        <a id="github-link" class="btn ghost" target="_blank" rel="noopener">GitHub</a>
+        <a id="testflight-link" class="btn ghost" target="_blank" rel="noopener" hidden>Get the iPhone app</a>
+      </nav>
+    </header>
+
+    <main class="layout">
+      <section class="viewport-wrap" aria-label="3D room">
+        <div id="viewport" class="viewport"></div>
+        <div class="overlay top-left">
+          <div id="room-name" class="chip strong"></div>
+          <div id="room-note" class="chip subtle">Sample room. The iPhone app measures your real one.</div>
+        </div>
+        <div id="summary" class="overlay top-right chip" aria-live="polite"></div>
+        <div id="inspector" class="inspector" hidden aria-live="polite"></div>
+        <div class="overlay bottom-left hint">Drag furniture to move it · drag empty space to orbit · scroll to zoom</div>
+      </section>
+
+      <aside class="panel" aria-label="Catalog">
+        <div class="panel-head">
+          <h2>Add furniture</h2>
+          <p>Real Amazon products. Sizes come from each listing's assembled dimensions.</p>
+          <input id="search" class="search" type="search" placeholder="Search beds, desks, dressers…" aria-label="Search the catalog" />
+          <div id="categories" class="chips" role="tablist" aria-label="Categories"></div>
+        </div>
+        <ul id="catalog" class="catalog"></ul>
+        <footer class="panel-foot">
+          <p id="disclosure"></p>
+          <p>3D models are generated from product photos, so the look is approximate. The size is not: every fit check uses the product's real dimensions.</p>
+          <p><a href="./privacy.html">Privacy policy</a></p>
+        </footer>
+      </aside>
+    </main>
+
+    <div id="toast" class="toast" role="status" hidden></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
